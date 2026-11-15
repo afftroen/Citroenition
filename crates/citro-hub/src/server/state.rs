@@ -7,7 +7,8 @@
 use super::error::{ApiError, ApiResult};
 use super::util::{clean_text, ct_eq, random_id, token_hash};
 use crate::model::{
-    Holder, HubGroup, HubProfile, Lease, LockInfo, LogLevel, Member, Team, TeamEntry, TeamRole, UNGROUPED, User, UserRole,
+    Holder, HubGroup, HubProfile, Lease, LockInfo, LogLevel, Member, Team, TeamEntry, TeamRole, UNGROUPED, User,
+    UserRole,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -38,21 +39,37 @@ pub struct TeamRec {
     pub next_serial: u64,
 }
 
-/// A lock with its secret lease. Expiry is kept in milliseconds so sub-second TTLs behave.
+/// A lock. The lease token is a secret only the holder knows: the hub keeps its SHA-256, never the token, so a
+/// copy of `state.json` cannot be used to impersonate a holder. Expiry is kept in milliseconds so sub-second TTLs
+/// behave.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockRec {
     pub user_id: String,
     pub user: String,
     pub device_id: String,
     pub device_name: String,
-    pub lease: String,
+    /// Lower-case hex SHA-256 of the lease token.
+    pub lease_hash: String,
     pub since: i64,
     pub expires_ms: i64,
+    /// How long one heartbeat keeps this lock, in milliseconds (`0` = the hub's default).
+    #[serde(default)]
+    pub ttl_ms: i64,
 }
 
 impl LockRec {
     pub fn expired(&self, now_ms: i64) -> bool {
         now_ms >= self.expires_ms
+    }
+
+    /// This lock's lease length, falling back to the hub default.
+    pub fn ttl(&self, default_ms: i64) -> i64 {
+        if self.ttl_ms > 0 { self.ttl_ms } else { default_ms }
+    }
+
+    /// Does `lease` (the token a client presented) belong to this lock? Constant time.
+    pub fn lease_matches(&self, lease: &str) -> bool {
+        ct_eq(&self.lease_hash, &token_hash(lease))
     }
 
     /// Whole seconds, rounded up (so a lock never looks expired to a client before it is).
@@ -157,12 +174,14 @@ impl Cx {
         });
     }
 
-    /// The lease answer for a lock record.
-    pub fn lease_of(&self, pid: &str, l: &LockRec) -> Lease {
+    /// The lease answer for a lock record; `lease` is the token (only known to the caller, never stored).
+    pub fn lease_of(&self, pid: &str, l: &LockRec, lease: &str) -> Lease {
+        let ttl = l.ttl(self.ttl_ms);
         Lease {
-            lease: l.lease.clone(),
+            lease: lease.to_owned(),
             expires_at: l.expires_at(),
-            ttl_secs: (self.ttl_ms / 1000).max(1) as u64,
+            ttl_secs: (ttl / 1000).max(1) as u64,
+            ttl_ms: ttl.max(1) as u64,
             profile_id: pid.to_owned(),
             max_data_bytes: self.max_blob,
         }
@@ -170,6 +189,16 @@ impl Cx {
 }
 
 // ---- lookups and access control ------------------------------------------------------------------------------------
+
+/// The `403` text for a request that needs at least `min`.
+fn forbidden_text(min: TeamRole) -> &'static str {
+    match min {
+        TeamRole::Owner => "this needs the team owner",
+        TeamRole::Admin => "this needs a team owner or admin",
+        TeamRole::Member => "this needs a team member; viewers are read-only",
+        TeamRole::Viewer => "this needs a team member",
+    }
+}
 
 impl State {
     pub fn user_by_token(&self, token: &str) -> Option<&UserRec> {
@@ -205,20 +234,27 @@ impl State {
     pub fn require_role(&self, user: &User, team_id: &str, min: TeamRole) -> ApiResult<TeamRole> {
         match self.role_in(user, team_id) {
             None => Err(ApiError::not_found("no such team")),
-            Some(r) if r < min => Err(ApiError::forbidden(match min {
-                TeamRole::Owner => "this needs the team owner",
-                _ => "this needs a team owner or admin",
-            })),
+            Some(r) if r < min => Err(ApiError::forbidden(forbidden_text(min))),
             Some(r) => Ok(r),
         }
     }
 
+    /// The profile and the caller's role in its team; `404` for outsiders (they cannot tell it exists).
     pub fn profile_role(&self, user: &User, pid: &str) -> ApiResult<(&HubProfile, TeamRole)> {
         let hp = self.profiles.get(pid).ok_or_else(|| ApiError::not_found("no such profile"))?;
         match self.role_in(user, &hp.team_id) {
             Some(r) => Ok((hp, r)),
             None => Err(ApiError::not_found("no such profile")),
         }
+    }
+
+    /// Like [`State::profile_role`] but `403` below `min`.
+    pub fn profile_role_min(&self, user: &User, pid: &str, min: TeamRole) -> ApiResult<(&HubProfile, TeamRole)> {
+        let (hp, role) = self.profile_role(user, pid)?;
+        if role < min {
+            return Err(ApiError::forbidden(forbidden_text(min)));
+        }
+        Ok((hp, role))
     }
 
     pub fn group_role(&self, user: &User, gid: &str) -> ApiResult<(&HubGroup, TeamRole)> {
@@ -278,7 +314,7 @@ impl State {
     }
 
     pub fn members_of(&self, user: &User, team_id: &str) -> ApiResult<Vec<Member>> {
-        self.require_role(user, team_id, TeamRole::Member)?;
+        self.require_role(user, team_id, TeamRole::Viewer)?;
         let mut out: Vec<Member> = self.members.iter().filter(|m| m.team_id == team_id).cloned().collect();
         out.sort_by(|a, b| b.role.cmp(&a.role).then_with(|| a.user_name.cmp(&b.user_name)));
         Ok(out)
@@ -315,7 +351,8 @@ impl State {
             cx.log(team_id, LogLevel::Info, None, format!("member `{}` is now {}", m.user_name, role.as_str()));
             return Ok(m);
         }
-        let m = Member { team_id: team_id.to_owned(), user_id: target.id.clone(), user_name: target.name.clone(), role };
+        let m =
+            Member { team_id: team_id.to_owned(), user_id: target.id.clone(), user_name: target.name.clone(), role };
         self.members.push(m.clone());
         cx.log(team_id, LogLevel::Info, None, format!("member `{}` added as {}", m.user_name, role.as_str()));
         Ok(m)
@@ -323,7 +360,7 @@ impl State {
 
     /// Remove a member (or let a member leave). Locks the user holds in the team are released.
     pub fn remove_member(&mut self, cx: &mut Cx, team_id: &str, user_id: &str) -> ApiResult<Member> {
-        let caller = self.require_role(&cx.user, team_id, TeamRole::Member)?;
+        let caller = self.require_role(&cx.user, team_id, TeamRole::Viewer)?;
         let idx = self
             .members
             .iter()
@@ -346,12 +383,19 @@ impl State {
         let held: Vec<String> = self
             .locks
             .iter()
-            .filter(|(pid, l)| l.user_id == target.user_id && self.profiles.get(*pid).is_some_and(|p| p.team_id == team_id))
+            .filter(|(pid, l)| {
+                l.user_id == target.user_id && self.profiles.get(*pid).is_some_and(|p| p.team_id == team_id)
+            })
             .map(|(pid, _)| pid.clone())
             .collect();
         for pid in held {
             self.locks.remove(&pid);
-            cx.log(team_id, LogLevel::Warn, Some(&pid), format!("lock of removed member `{}` released", target.user_name));
+            cx.log(
+                team_id,
+                LogLevel::Warn,
+                Some(&pid),
+                format!("lock of removed member `{}` released", target.user_name),
+            );
         }
         cx.log(team_id, LogLevel::Info, None, format!("member `{}` removed", target.user_name));
         Ok(target)
@@ -360,7 +404,7 @@ impl State {
     // ---- groups ------------------------------------------------------------------------------------------------
 
     pub fn groups_of(&self, user: &User, team_id: &str) -> ApiResult<Vec<HubGroup>> {
-        self.require_role(user, team_id, TeamRole::Member)?;
+        self.require_role(user, team_id, TeamRole::Viewer)?;
         let mut out: Vec<HubGroup> = self.groups.values().filter(|g| g.team_id == team_id).cloned().collect();
         out.sort_by_key(|g| g.id.parse::<u64>().unwrap_or(u64::MAX));
         Ok(out)
@@ -414,7 +458,10 @@ impl State {
         name: Option<&str>,
         remark: Option<&str>,
     ) -> ApiResult<HubGroup> {
-        let (g, _) = self.group_role(&cx.user, gid)?;
+        let (g, role) = self.group_role(&cx.user, gid)?;
+        if role < TeamRole::Member {
+            return Err(ApiError::forbidden(forbidden_text(TeamRole::Member)));
+        }
         let team_id = g.team_id.clone();
         let new_name = match name {
             Some(n) => Self::check_group_text(n, remark.unwrap_or(&g.remark))?,
@@ -479,8 +526,11 @@ pub(crate) mod testkit {
     /// root (server admin), ann and bob (members), one team "Alpha" (root = owner, ann = member, bob outside).
     pub fn world() -> (State, UserRec, UserRec, UserRec, String) {
         let mut st = State::default();
-        let (admin, ann, bob) =
-            (user("u1", "root", UserRole::Admin), user("u2", "ann", UserRole::Member), user("u3", "bob", UserRole::Member));
+        let (admin, ann, bob) = (
+            user("u1", "root", UserRole::Admin),
+            user("u2", "ann", UserRole::Member),
+            user("u3", "bob", UserRole::Member),
+        );
         st.users = vec![admin.clone(), ann.clone(), bob.clone()];
         let tid = st.create_team(&mut cx(&admin), "Alpha").unwrap().team.id;
         st.add_member(&mut cx(&admin), &tid, "ann", TeamRole::Member).unwrap();
@@ -495,8 +545,11 @@ mod tests {
 
     fn world() -> (State, UserRec, UserRec, UserRec) {
         let mut st = State::default();
-        let (admin, ann, bob) =
-            (user("u1", "root", UserRole::Admin), user("u2", "ann", UserRole::Member), user("u3", "bob", UserRole::Member));
+        let (admin, ann, bob) = (
+            user("u1", "root", UserRole::Admin),
+            user("u2", "ann", UserRole::Member),
+            user("u3", "bob", UserRole::Member),
+        );
         st.users = vec![admin.clone(), ann.clone(), bob.clone()];
         (st, admin, ann, bob)
     }
@@ -584,11 +637,14 @@ mod tests {
             user: "ann".into(),
             device_id: "d".into(),
             device_name: "Laptop".into(),
-            lease: "ls_x".into(),
+            lease_hash: token_hash("ls_x"),
             since: 10,
             expires_ms: 100_001,
+            ttl_ms: 0,
         };
         assert!(!l.expired(100_000) && l.expired(100_001));
+        assert!(l.lease_matches("ls_x") && !l.lease_matches("ls_y") && !l.lease_matches(""));
+        assert_eq!(l.ttl(90_000), 90_000, "0 means the hub default");
         assert_eq!(l.expires_at(), 101);
         assert_eq!(l.holder().device_name, "Laptop");
         assert_eq!(l.info().device_id, "d");

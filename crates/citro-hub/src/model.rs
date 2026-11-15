@@ -20,7 +20,8 @@ pub const DATA_SHA256_HEADER: &str = "X-Citro-Data-Sha256";
 /// The group id of profiles that are in no group.
 pub const UNGROUPED: &str = "0";
 
-/// A server-wide role: admins create teams and see everything, members only see their own teams.
+/// A server-wide role: admins (the hub operators) create teams and see everything, members only see their own
+/// teams. Per-team privileges are a [`TeamRole`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UserRole {
@@ -39,11 +40,12 @@ impl UserRole {
 
 impl std::str::FromStr for UserRole {
     type Err = String;
+    /// `owner` is accepted as another word for `admin`: the person who runs the hub.
     fn from_str(s: &str) -> Result<Self, String> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "admin" => Ok(UserRole::Admin),
+            "admin" | "owner" => Ok(UserRole::Admin),
             "member" => Ok(UserRole::Member),
-            other => Err(format!("unknown role `{other}` (expected admin or member)")),
+            other => Err(format!("unknown role `{other}` (expected owner, admin or member)")),
         }
     }
 }
@@ -66,10 +68,16 @@ pub struct Team {
     pub created_at: i64,
 }
 
-/// A role inside one team. The derived order is the privilege order: `Member < Admin < Owner`.
+/// A role inside one team. The derived order is the privilege order: `Viewer < Member < Admin < Owner`.
+///
+/// * `Viewer` reads (profile list without secrets, groups, logs, CSV) but cannot open, edit or create anything.
+/// * `Member` opens profiles (takes locks, syncs data), creates and edits profiles and groups.
+/// * `Admin` additionally deletes profiles and groups, breaks locks, manages members (but not owners), sees secrets.
+/// * `Owner` additionally manages owners; a team always keeps at least one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TeamRole {
+    Viewer,
     Member,
     Admin,
     Owner,
@@ -78,9 +86,23 @@ pub enum TeamRole {
 impl TeamRole {
     pub fn as_str(self) -> &'static str {
         match self {
+            TeamRole::Viewer => "viewer",
             TeamRole::Member => "member",
             TeamRole::Admin => "admin",
             TeamRole::Owner => "owner",
+        }
+    }
+}
+
+impl std::str::FromStr for TeamRole {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "viewer" => Ok(TeamRole::Viewer),
+            "member" => Ok(TeamRole::Member),
+            "admin" => Ok(TeamRole::Admin),
+            "owner" => Ok(TeamRole::Owner),
+            other => Err(format!("unknown team role `{other}` (expected viewer, member, admin or owner)")),
         }
     }
 }
@@ -168,8 +190,13 @@ pub struct HubProfile {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lease {
     pub lease: String,
+    /// Unix seconds, rounded up: the lock is certainly still held before this second.
     pub expires_at: i64,
+    /// How long one heartbeat keeps the lock (whole seconds, at least 1).
     pub ttl_secs: u64,
+    /// The same in milliseconds (sub-second TTLs only exist in tests); `0` when talking to an older hub.
+    #[serde(default)]
+    pub ttl_ms: u64,
     /// The locked profile (filled in by the server; empty when talking to an older hub).
     #[serde(default)]
     pub profile_id: String,
@@ -187,18 +214,19 @@ pub struct ProfilePage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub enum LogKind {
-    /// Citroenition itself (app events and everything the hub does).
+    /// Citroenition itself (app events and everything the hub does). `citro` is accepted as a short spelling.
+    #[serde(rename = "citroenition", alias = "citro")]
     Citro,
     /// The browser kernel.
+    #[serde(rename = "browser")]
     Browser,
 }
 
 impl LogKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            LogKind::Citro => "citro",
+            LogKind::Citro => "citroenition",
             LogKind::Browser => "browser",
         }
     }
@@ -208,9 +236,9 @@ impl std::str::FromStr for LogKind {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, String> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "citro" => Ok(LogKind::Citro),
+            "citroenition" | "citro" => Ok(LogKind::Citro),
             "browser" => Ok(LogKind::Browser),
-            other => Err(format!("unknown log kind `{other}` (expected citro or browser)")),
+            other => Err(format!("unknown log kind `{other}` (expected citroenition or browser)")),
         }
     }
 }
@@ -267,18 +295,9 @@ pub struct LogEntry {
 impl LogEntry {
     /// An entry stamped with the current time.
     pub fn now(kind: LogKind, level: LogLevel, profile_id: Option<&str>, message: impl Into<String>) -> LogEntry {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        LogEntry {
-            ts,
-            kind,
-            level,
-            profile_id: profile_id.map(str::to_owned),
-            team_id: None,
-            message: message.into(),
-        }
+        let ts =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        LogEntry { ts, kind, level, profile_id: profile_id.map(str::to_owned), team_id: None, message: message.into() }
     }
 }
 

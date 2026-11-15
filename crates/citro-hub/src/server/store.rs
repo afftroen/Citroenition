@@ -9,7 +9,8 @@
 
 use super::error::ApiResult;
 use super::fsio::{
-    FileLock, Stamp, create_private_dir, read_state, serve_lock_path, stamp_of, state_lock_path, state_path, write_state,
+    FileLock, Stamp, create_private_dir, read_state, serve_lock_path, stamp_of, state_lock_path, state_path,
+    write_state,
 };
 use super::logs::{LogQuery, LogSink, SERVER_LOG};
 use super::state::{Cx, Event, State};

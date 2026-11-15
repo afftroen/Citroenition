@@ -210,11 +210,15 @@ mod tests {
         let d = tmp("rotate");
         let sink = LogSink::new(d.clone(), 1024, 3);
         for i in 0..60 {
-            sink.append("t1", &[rec(i, LogKind::Citro, LogLevel::Info, None, &format!("line {i:03} {}", "x".repeat(80)))])
-                .unwrap();
+            sink.append(
+                "t1",
+                &[rec(i, LogKind::Citro, LogLevel::Info, None, &format!("line {i:03} {}", "x".repeat(80)))],
+            )
+            .unwrap();
         }
         let names: Vec<_> = {
-            let mut v: Vec<_> = fs::read_dir(&d).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+            let mut v: Vec<_> =
+                fs::read_dir(&d).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
             v.sort();
             v
         };

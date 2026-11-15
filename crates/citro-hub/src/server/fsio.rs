@@ -125,8 +125,9 @@ pub fn serve_lock_path(dir: &Path) -> PathBuf {
 
 pub fn read_state(dir: &Path) -> io::Result<State> {
     let bytes = fs::read(state_path(dir))?;
-    serde_json::from_slice(&bytes)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{} is corrupt: {e}", state_path(dir).display())))
+    serde_json::from_slice(&bytes).map_err(|e| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("{} is corrupt: {e}", state_path(dir).display()))
+    })
 }
 
 pub fn write_state(dir: &Path, state: &State) -> io::Result<()> {

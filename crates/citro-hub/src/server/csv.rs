@@ -107,7 +107,8 @@ pub fn export_profiles(
     for hp in profiles {
         let p = &hp.profile;
         let lock = st.effective_lock(&p.profile_id, now_ms);
-        let group_name = if p.group_id == UNGROUPED || p.group_id.is_empty() { String::new() } else { st.group_name(&p.group_id) };
+        let group_name =
+            if p.group_id == UNGROUPED || p.group_id.is_empty() { String::new() } else { st.group_name(&p.group_id) };
         let proxy = &p.user_proxy_config;
         let tabs = p.tabs.iter().map(|t| mask_url_credentials(t)).collect::<Vec<_>>().join(" | ");
         let cells = [

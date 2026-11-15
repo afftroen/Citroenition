@@ -103,10 +103,7 @@ fn client_ip(real_ip_header: Option<&str>, peer: SocketAddr, headers: &HeaderMap
 }
 
 fn lease_of(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get(LEASE_HEADER)
-        .map(|v| String::from_utf8_lossy(v.as_bytes()).trim().to_owned())
-        .filter(|s| !s.is_empty())
+    headers.get(LEASE_HEADER).map(|v| String::from_utf8_lossy(v.as_bytes()).trim().to_owned()).filter(|s| !s.is_empty())
 }
 
 fn content_length(headers: &HeaderMap) -> ApiResult<Option<u64>> {
@@ -122,7 +119,8 @@ fn content_length(headers: &HeaderMap) -> ApiResult<Option<u64>> {
 }
 
 fn parse_query<T: DeserializeOwned>(uri: &Uri) -> ApiResult<T> {
-    serde_urlencoded::from_str(uri.query().unwrap_or("")).map_err(|e| ApiError::invalid(format!("bad query string: {e}")))
+    serde_urlencoded::from_str(uri.query().unwrap_or(""))
+        .map_err(|e| ApiError::invalid(format!("bad query string: {e}")))
 }
 
 fn parse_flag(v: Option<&str>, name: &str) -> ApiResult<bool> {
@@ -168,7 +166,11 @@ async fn read_json<T: DeserializeOwned>(app: &App, headers: &HeaderMap, body: Bo
 }
 
 /// Like [`read_json`], but an empty body means "all defaults".
-async fn read_json_or_default<T: DeserializeOwned + Default>(app: &App, headers: &HeaderMap, body: Body) -> ApiResult<T> {
+async fn read_json_or_default<T: DeserializeOwned + Default>(
+    app: &App,
+    headers: &HeaderMap,
+    body: Body,
+) -> ApiResult<T> {
     let bytes = read_limited(headers, body, app.store.config().max_json_bytes).await?;
     if bytes.iter().all(u8::is_ascii_whitespace) {
         return Ok(T::default());
@@ -723,7 +725,8 @@ async fn post_logs(
 ) -> ApiResult<Json<Value>> {
     let b: LogsBody = read_json(&app, &headers, body).await?;
     let accepted = b.entries.len();
-    let records = app.read(&c, move |st, cx| st.stamp_log_entries(&cx.user, &b.device_id, &b.entries, cx.now())).await?;
+    let records =
+        app.read(&c, move |st, cx| st.stamp_log_entries(&cx.user, &b.device_id, &b.entries, cx.now())).await?;
     let store = app.store.clone();
     blocking(move || store.append_logs(records)).await??;
     Ok(Json(json!({ "accepted": accepted })))
@@ -775,7 +778,11 @@ async fn team_logs(
 }
 
 /// Server-level events (failed logins, start-ups) that belong to no team; server admins only.
-async fn admin_logs(State(app): State<App>, Extension(c): Extension<Caller>, uri: Uri) -> ApiResult<Json<Vec<LogRecord>>> {
+async fn admin_logs(
+    State(app): State<App>,
+    Extension(c): Extension<Caller>,
+    uri: Uri,
+) -> ApiResult<Json<Vec<LogRecord>>> {
     let q = log_query(parse_query(&uri)?)?;
     require_server_admin(&app, &c).await?;
     let store = app.store.clone();
@@ -803,10 +810,8 @@ async fn require_server_admin(app: &App, c: &Caller) -> ApiResult<()> {
 
 /// `acme-profiles-2026-11-15.csv`-style file names: letters, digits and dashes only.
 fn csv_filename(team: &str, now_secs: i64) -> String {
-    let mut slug: String = team
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '-' })
-        .collect();
+    let mut slug: String =
+        team.chars().map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '-' }).collect();
     while slug.contains("--") {
         slug = slug.replace("--", "-");
     }
@@ -924,12 +929,19 @@ mod tests {
 
     #[test]
     fn log_queries_are_validated() {
-        let q = log_query(LogsQuery { level: Some("warn, error".into()), kind: Some("browser".into()), ..Default::default() })
-            .unwrap();
+        let q = log_query(LogsQuery {
+            level: Some("warn, error".into()),
+            kind: Some("browser".into()),
+            ..Default::default()
+        })
+        .unwrap();
         assert_eq!(q.levels, [LogLevel::Warn, LogLevel::Error]);
         assert_eq!(q.kind, Some(LogKind::Browser));
         assert_eq!(q.limit, DEFAULT_LOG_LIMIT);
-        assert_eq!(log_query(LogsQuery { limit: Some(10_000_000), ..Default::default() }).unwrap().limit, MAX_LOG_LIMIT);
+        assert_eq!(
+            log_query(LogsQuery { limit: Some(10_000_000), ..Default::default() }).unwrap().limit,
+            MAX_LOG_LIMIT
+        );
         assert!(log_query(LogsQuery { kind: Some("nope".into()), ..Default::default() }).is_err());
         assert!(log_query(LogsQuery { level: Some("loud".into()), ..Default::default() }).is_err());
     }

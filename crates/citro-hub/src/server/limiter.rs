@@ -41,7 +41,8 @@ impl AuthLimiter {
             return None;
         }
         let until = self.map().get(&ip)?.blocked_until?;
-        let left = until.checked_duration_since(now)?;
+        // exactly at `until` the block is over (`left` is zero), not "blocked for 0 more seconds"
+        let left = until.checked_duration_since(now).filter(|d| !d.is_zero())?;
         Some(left.as_secs() + u64::from(left.subsec_nanos() > 0))
     }
 

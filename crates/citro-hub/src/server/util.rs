@@ -78,9 +78,7 @@ pub fn ct_eq(a: &str, b: &str) -> bool {
 
 /// A user name: 1-64 characters out of letters, digits, `.`, `_`, `-`, `@`.
 pub fn valid_user_name(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 64
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '@'))
+    !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '@'))
 }
 
 /// Free text such as a team / group / device name: trimmed, 1..=`max` characters, no control characters.

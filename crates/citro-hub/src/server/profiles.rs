@@ -5,7 +5,7 @@
 use super::error::{ApiError, ApiResult};
 use super::redact::{merge_patch, redact, restore_masked};
 use super::state::{Cx, LockRec, State};
-use super::util::{clean_text, ct_eq, new_lease, random_id};
+use super::util::{clean_text, new_lease, random_id, token_hash};
 use crate::model::{DataMeta, HubProfile, Lease, LogLevel, ProfilePage, TeamRole, UNGROUPED, User};
 use citro_core::profile::Profile;
 use serde_json::Value;
@@ -97,7 +97,7 @@ impl State {
     }
 
     pub fn list_profiles(&self, user: &User, team_id: &str, q: &ProfileQuery, now_ms: i64) -> ApiResult<ProfilePage> {
-        self.require_role(user, team_id, TeamRole::Member)?;
+        self.require_role(user, team_id, TeamRole::Viewer)?;
         let group = match q.group.as_deref().map(str::trim).filter(|g| !g.is_empty()) {
             None => None,
             // an unknown group matches nothing (it is a filter, not a reference)
@@ -194,8 +194,14 @@ impl State {
         Ok(())
     }
 
-    pub fn patch_profile(&mut self, cx: &mut Cx, pid: &str, patch: &Value, lease: Option<&str>) -> ApiResult<HubProfile> {
-        let (hp, role) = self.profile_role(&cx.user, pid)?;
+    pub fn patch_profile(
+        &mut self,
+        cx: &mut Cx,
+        pid: &str,
+        patch: &Value,
+        lease: Option<&str>,
+    ) -> ApiResult<HubProfile> {
+        let (hp, role) = self.profile_role_min(&cx.user, pid, TeamRole::Member)?;
         let team_id = hp.team_id.clone();
         let old = hp.profile.clone();
         let Value::Object(fields) = patch else {
@@ -266,23 +272,36 @@ impl State {
 
     // ---- locks and leases --------------------------------------------------------------------------------------
 
-    /// The caller's lease is the live one for this profile: same user, same token, not expired. The comparison is
-    /// constant-time. `Err(lease_required)` when there is none, `Err(lease_invalid)` when it does not match.
+    /// The caller holds the live lock of this profile: same user, the lease token matches, not expired (the token
+    /// comparison is constant-time and only the token's SHA-256 is stored). Otherwise:
+    ///
+    /// | live lock | lease sent | answer |
+    /// |---|---|---|
+    /// | held by somebody | none | `409 locked` + who/which device (the caller never locked it) |
+    /// | held by somebody | does not match | `403 lease_invalid` + who holds it now (voided, taken over, someone else's) |
+    /// | nobody | any | `403 lease_invalid` (expired, released or force-unlocked) |
+    /// | nobody | none | `403 lease_required` (lock the profile first) |
     pub fn check_lease(&self, user: &User, pid: &str, lease: Option<&str>, now_ms: i64) -> ApiResult<&LockRec> {
-        let Some(given) = lease.filter(|l| !l.is_empty()) else {
-            return Err(ApiError::lease_required());
-        };
-        match self.effective_lock(pid, now_ms) {
-            Some(l) if l.user_id == user.id && ct_eq(&l.lease, given) => Ok(l),
-            _ => Err(ApiError::lease_invalid()),
+        let given = lease.filter(|l| !l.is_empty());
+        match (self.effective_lock(pid, now_ms), given) {
+            (Some(live), Some(g)) if live.user_id == user.id && live.lease_matches(g) => Ok(live),
+            (Some(live), None) => Err(ApiError::locked(live.holder())),
+            (Some(live), Some(_)) => Err(ApiError::lease_invalid().with_holder(live.holder())),
+            (None, Some(_)) => Err(ApiError::lease_invalid()),
+            (None, None) => Err(ApiError::lease_required()),
         }
     }
 
-    /// Take the lock of a profile for a device (see the state machine in `docs/HUB_API.md`).
+    /// Take the lock of a profile for a device (see the lock protocol in `docs/HUB.md`).
+    ///
+    /// The lock is exclusive: while it is live every other caller, even the same user on another device, gets
+    /// `409 locked`. The same device asking again (a restarted client) is given a fresh lease and the old one dies.
+    /// `cx.ttl_ms` is the lease length the caller asked for (already clamped by the HTTP layer).
     pub fn lock_profile(&mut self, cx: &mut Cx, pid: &str, device_id: &str, device_name: &str) -> ApiResult<Lease> {
-        let (hp, _) = self.profile_role(&cx.user, pid)?;
+        let (hp, _) = self.profile_role_min(&cx.user, pid, TeamRole::Member)?;
         let (team_id, pname) = (hp.team_id.clone(), hp.profile.name.clone());
-        let device_id = clean_text(device_id, 128).ok_or_else(|| ApiError::invalid("device_id must be 1-128 characters"))?;
+        let device_id =
+            clean_text(device_id, 128).ok_or_else(|| ApiError::invalid("device_id must be 1-128 characters"))?;
         let device_name = clean_text(device_name, 100).unwrap_or_else(|| device_id.chars().take(100).collect());
         cx.device_id = device_id.clone();
         let now_ms = cx.now_ms;
@@ -291,12 +310,19 @@ impl State {
         if let Some(l) = self.locks.get_mut(pid) {
             if !l.expired(now_ms) {
                 if l.user_id == cx.user.id && l.device_id == device_id {
-                    // the same device asks again: idempotent, same lease, just renewed
+                    let lease = new_lease();
+                    l.lease_hash = token_hash(&lease);
                     l.expires_ms = now_ms + cx.ttl_ms;
-                    l.device_name = device_name;
-                    cx.lazy = true;
+                    l.ttl_ms = cx.ttl_ms;
+                    l.device_name = device_name.clone();
                     let l = l.clone();
-                    return Ok(cx.lease_of(pid, &l));
+                    let msg = format!(
+                        "lock of {} on {device_name} renewed for `{pname}` (the previous lease is void)",
+                        l.user
+                    );
+                    let out = cx.lease_of(pid, &l, &lease);
+                    cx.log(&team_id, LogLevel::Info, Some(pid), msg);
+                    return Ok(out);
                 }
                 let holder = l.holder();
                 cx.log(
@@ -310,16 +336,18 @@ impl State {
             takeover = Some(format!("{} on {}", l.user, l.device_name));
         }
 
+        let lease = new_lease();
         let rec = LockRec {
             user_id: cx.user.id.clone(),
             user: cx.user.name.clone(),
             device_id,
             device_name: device_name.clone(),
-            lease: new_lease(),
+            lease_hash: token_hash(&lease),
             since: cx.now(),
             expires_ms: now_ms + cx.ttl_ms,
+            ttl_ms: cx.ttl_ms,
         };
-        let out = cx.lease_of(pid, &rec);
+        let out = cx.lease_of(pid, &rec, &lease);
         self.locks.insert(pid.to_owned(), rec);
         let hp = self.profiles.get_mut(pid).expect("looked up above");
         hp.profile.last_open_time = cx.now();
@@ -335,16 +363,17 @@ impl State {
         Ok(out)
     }
 
-    /// Extend the lease; an expired or wrong lease is `lease_invalid`.
+    /// Extend the lease by the lock's TTL. Only the holder can; see [`State::check_lease`] for the refusals.
     pub fn heartbeat(&mut self, cx: &mut Cx, pid: &str, lease: Option<&str>) -> ApiResult<Lease> {
-        self.profile_role(&cx.user, pid)?;
+        self.profile_role_min(&cx.user, pid, TeamRole::Member)?;
         self.check_lease(&cx.user, pid, lease, cx.now_ms)?;
+        let given = lease.unwrap_or_default().to_owned();
         let l = self.locks.get_mut(pid).expect("checked above");
-        l.expires_ms = cx.now_ms + cx.ttl_ms;
+        l.expires_ms = cx.now_ms + l.ttl(cx.ttl_ms);
         cx.device_id = l.device_id.clone();
         cx.lazy = true;
         let l = l.clone();
-        Ok(cx.lease_of(pid, &l))
+        Ok(cx.lease_of(pid, &l, &given))
     }
 
     /// Release the lock; `closed` stamps `last_close_time` / `last_close_by`.
@@ -361,7 +390,12 @@ impl State {
             hp.last_close_by = cx.user.name.clone();
         }
         let how = if closed { "closed" } else { "released without closing" };
-        cx.log(&team_id, LogLevel::Info, Some(pid), format!("unlock by {} on {}: `{pname}` {how}", l.user, l.device_name));
+        cx.log(
+            &team_id,
+            LogLevel::Info,
+            Some(pid),
+            format!("unlock by {} on {}: `{pname}` {how}", l.user, l.device_name),
+        );
         Ok(())
     }
 
@@ -391,10 +425,11 @@ impl State {
         Ok(live.is_some())
     }
 
-    /// Everything a data transfer needs to know before touching the blob: the caller is a team member, holds the
-    /// live lease, and what is stored right now.
+    /// Everything a data transfer needs to know before touching the blob: the caller is a team member (not a
+    /// viewer), holds the live lock, and what is stored right now. Reading is as exclusive as writing: while
+    /// another device holds the profile its cookies are not served to anybody else.
     pub fn data_access(&self, user: &User, pid: &str, lease: Option<&str>, now_ms: i64) -> ApiResult<DataMeta> {
-        let (hp, _) = self.profile_role(user, pid)?;
+        let (hp, _) = self.profile_role_min(user, pid, TeamRole::Member)?;
         self.check_lease(user, pid, lease, now_ms)?;
         Ok(hp.data.clone())
     }
@@ -415,12 +450,22 @@ impl State {
         let hp = self.profiles.get_mut(pid).expect("data_commit_check succeeded");
         hp.data = DataMeta { version: hp.data.version + 1, size, sha256, updated_at: now };
         let (team_id, meta, pname) = (hp.team_id.clone(), hp.data.clone(), hp.profile.name.clone());
-        cx.log(&team_id, LogLevel::Info, Some(pid), format!("data pushed for `{pname}`: v{} ({size} bytes)", meta.version));
+        cx.log(
+            &team_id,
+            LogLevel::Info,
+            Some(pid),
+            format!("data pushed for `{pname}`: v{} ({size} bytes)", meta.version),
+        );
         meta
     }
 
     /// Delete several profiles; the ones that cannot be deleted are reported with their reason, not fatal.
-    pub fn bulk_delete(&mut self, cx: &mut Cx, team_id: &str, ids: &[String]) -> ApiResult<(Vec<String>, Vec<(String, String)>)> {
+    pub fn bulk_delete(
+        &mut self,
+        cx: &mut Cx,
+        team_id: &str,
+        ids: &[String],
+    ) -> ApiResult<(Vec<String>, Vec<(String, String)>)> {
         let role = self.require_role(&cx.user, team_id, TeamRole::Member)?;
         if role < TeamRole::Admin {
             return Err(ApiError::forbidden("this needs a team owner or admin"));
@@ -505,8 +550,9 @@ mod tests {
         assert!(dump(&held).contains("pw-secret") && dump(&held).contains("c00kie"));
         assert_eq!(held.lock.as_ref().unwrap().device_name, "Laptop");
         assert!(held.lock.as_ref().unwrap().device_id == "d1");
-        // somebody else's lease, a made-up lease and an outsider
-        assert_eq!(st.profile_detail(&ann.user, &pid, Some("ls_x"), 1_000_001).unwrap_err().code, "lease_invalid");
+        // a made-up lease is rejected loudly (and says who holds the profile), an outsider sees nothing
+        let e = st.profile_detail(&ann.user, &pid, Some("ls_x"), 1_000_001).unwrap_err();
+        assert_eq!((e.code, e.holder.map(|h| h.user)), ("lease_invalid", Some("ann".to_owned())));
         assert_eq!(st.profile_detail(&bob.user, &pid, None, 1_000_001).unwrap_err().code, "not_found");
         // lists never reveal
         let page = st.list_profiles(&admin.user, &tid, &ProfileQuery::default(), 1_000_001).unwrap();
@@ -521,9 +567,12 @@ mod tests {
         let l1 = st.lock_profile(&mut cx(&ann), &pid, "d1", "Laptop").unwrap();
         assert_eq!(st.profiles[&pid].profile.last_open_time, 1000);
         assert_eq!(st.profiles[&pid].last_open_by, "ann");
-        // same device: idempotent, same lease
+        // the same device asks again (a restarted client): it gets a fresh lease and the old one is void
         let again = st.lock_profile(&mut cx(&ann), &pid, "d1", "Laptop").unwrap();
-        assert_eq!(again.lease, l1.lease);
+        assert_ne!(again.lease, l1.lease);
+        assert_eq!(st.heartbeat(&mut cx(&ann), &pid, Some(&l1.lease)).unwrap_err().code, "lease_invalid");
+        st.heartbeat(&mut cx(&ann), &pid, Some(&again.lease)).unwrap();
+        let l1 = again;
         // other device of the same user, and another user (admin): denied with holder info
         for (user, dev) in [(&ann, "d2"), (&admin, "d1")] {
             let e = st.lock_profile(&mut cx(user), &pid, dev, "Other").unwrap_err();
@@ -537,7 +586,7 @@ mod tests {
         let hb = st.heartbeat(&mut late, &pid, Some(&l1.lease)).unwrap();
         assert!(hb.expires_at > l1.expires_at);
         assert_eq!(st.heartbeat(&mut cx(&ann), &pid, Some("ls_nope")).unwrap_err().code, "lease_invalid");
-        assert_eq!(st.heartbeat(&mut cx(&ann), &pid, None).unwrap_err().code, "lease_required");
+        assert_eq!(st.heartbeat(&mut cx(&ann), &pid, None).unwrap_err().code, "locked");
         // expiry: the lock stops counting and the next device takes over
         let mut after = cx(&admin);
         after.now_ms += 60_000 + 90_000;
@@ -590,9 +639,15 @@ mod tests {
         // the holder edits with the lease; a bogus lease is rejected loudly
         let out = st.patch_profile(&mut cx(&ann), &pid, &json!({"name": "mine"}), Some(&l.lease)).unwrap();
         assert_eq!(out.profile.name, "mine");
-        assert_eq!(st.patch_profile(&mut cx(&ann), &pid, &json!({"name": "y"}), Some("ls_bad")).unwrap_err().code, "lease_invalid");
+        assert_eq!(
+            st.patch_profile(&mut cx(&ann), &pid, &json!({"name": "y"}), Some("ls_bad")).unwrap_err().code,
+            "lease_invalid"
+        );
         st.unlock(&mut cx(&ann), &pid, Some(&l.lease), true).unwrap();
-        assert_eq!(st.patch_profile(&mut cx(&admin), &pid, &json!({"remark": "ok"}), None).unwrap().profile.remark, "ok");
+        assert_eq!(
+            st.patch_profile(&mut cx(&admin), &pid, &json!({"remark": "ok"}), None).unwrap().profile.remark,
+            "ok"
+        );
     }
 
     #[test]
@@ -611,7 +666,10 @@ mod tests {
             .unwrap();
         assert_eq!((out.profile.remark.as_str(), out.profile.group_id.as_str()), ("r", g.id.as_str()));
         let p = &st.profiles[&pid].profile;
-        assert_eq!((p.profile_id.as_str(), p.serial_number, p.created_time, p.last_open_time), (pid.as_str(), 1, 1000, 0));
+        assert_eq!(
+            (p.profile_id.as_str(), p.serial_number, p.created_time, p.last_open_time),
+            (pid.as_str(), 1, 1000, 0)
+        );
         assert_eq!(p.password, "pw-secret", "an echoed mask must not overwrite the secret");
         assert_eq!(p.user_proxy_config.proxy_host.as_deref(), Some("h2"));
         assert_eq!(p.user_proxy_config.proxy_password.as_deref(), Some("px-secret"), "merge keeps sibling keys");
@@ -621,8 +679,14 @@ mod tests {
         assert_eq!(full.profile.password, "pw-secret");
         // bad input
         assert_eq!(st.patch_profile(&mut cx(&ann), &pid, &json!([1]), None).unwrap_err().code, "invalid");
-        assert_eq!(st.patch_profile(&mut cx(&ann), &pid, &json!({"tabs": "not-a-list"}), None).unwrap_err().code, "invalid");
-        assert_eq!(st.patch_profile(&mut cx(&ann), &pid, &json!({"group_id": "ghost"}), None).unwrap_err().code, "invalid");
+        assert_eq!(
+            st.patch_profile(&mut cx(&ann), &pid, &json!({"tabs": "not-a-list"}), None).unwrap_err().code,
+            "invalid"
+        );
+        assert_eq!(
+            st.patch_profile(&mut cx(&ann), &pid, &json!({"group_id": "ghost"}), None).unwrap_err().code,
+            "invalid"
+        );
         // the failed patches changed nothing
         assert_eq!(st.profiles[&pid].profile.name, "n2");
         // null removes optional keys through the merge
@@ -656,11 +720,23 @@ mod tests {
         let ls = |st: &State, q: ProfileQuery| st.list_profiles(&ann.user, &tid, &q, 0).unwrap();
         let names = |p: &ProfilePage| p.profiles.iter().map(|x| x.profile.name.clone()).collect::<Vec<_>>();
         assert_eq!(ls(&st, ProfileQuery::default()).total, 3);
-        assert_eq!(names(&ls(&st, ProfileQuery { group: Some("shops".into()), ..Default::default() })), ["alpha shop", "Gamma SHOP"]);
+        assert_eq!(
+            names(&ls(&st, ProfileQuery { group: Some("shops".into()), ..Default::default() })),
+            ["alpha shop", "Gamma SHOP"]
+        );
         assert_eq!(names(&ls(&st, ProfileQuery { group: Some("0".into()), ..Default::default() })), ["beta"]);
         assert!(ls(&st, ProfileQuery { group: Some("ghost".into()), ..Default::default() }).profiles.is_empty());
-        assert_eq!(names(&ls(&st, ProfileQuery { q: Some("SHOP".into()), ..Default::default() })), ["alpha shop", "Gamma SHOP"]);
-        assert_eq!(names(&ls(&st, ProfileQuery { q: Some("2".into()), ..Default::default() })), ["beta"], "serial number match");
+        assert_eq!(
+            names(&ls(&st, ProfileQuery { q: Some("SHOP".into()), ..Default::default() })),
+            ["alpha shop", "Gamma SHOP"]
+        );
+        // the serial number matches exactly (random profile ids may contain a `2` too, so only check inclusion)
+        assert!(
+            names(&ls(&st, ProfileQuery { q: Some("2".into()), ..Default::default() })).contains(&"beta".to_string())
+        );
+        assert!(
+            !names(&ls(&st, ProfileQuery { q: Some("4".into()), ..Default::default() })).contains(&"beta".to_string())
+        );
         let page = ls(&st, ProfileQuery { limit: Some(1), offset: Some(1), ..Default::default() });
         assert_eq!((names(&page), page.total), (vec!["beta".to_string()], 3));
         assert_eq!(st.ungrouped(&tid), 1);

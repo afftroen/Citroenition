@@ -60,7 +60,11 @@ impl ApiError {
     }
 
     pub fn lease_required() -> ApiError {
-        ApiError::new(StatusCode::FORBIDDEN, "lease_required", "this needs the lease of the current lock holder (X-Citro-Lease)")
+        ApiError::new(
+            StatusCode::FORBIDDEN,
+            "lease_required",
+            "this needs the lease of the current lock holder (X-Citro-Lease)",
+        )
     }
 
     pub fn lease_invalid() -> ApiError {
@@ -75,6 +79,12 @@ impl ApiError {
     pub fn rate_limited(retry_after_secs: u64) -> ApiError {
         ApiError::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", "too many failed logins; try again later")
             .with_retry_after(retry_after_secs.max(1))
+    }
+
+    /// Name the current lock holder in the answer (lease errors carry it so a client can show who has the profile).
+    pub fn with_holder(mut self, holder: Holder) -> ApiError {
+        self.holder = Some(holder);
+        self
     }
 
     pub fn with_retry_after(mut self, secs: u64) -> ApiError {

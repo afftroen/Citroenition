@@ -30,9 +30,7 @@ fn check_name(name: &str) -> AdminResult<String> {
     if valid_user_name(name) {
         Ok(name.to_owned())
     } else {
-        Err(AdminError::Invalid(
-            "a user name has 1-64 characters out of letters, digits and . _ - @".to_owned(),
-        ))
+        Err(AdminError::Invalid("a user name has 1-64 characters out of letters, digits and . _ - @".to_owned()))
     }
 }
 
@@ -74,7 +72,9 @@ pub fn add_user(dir: &Path, name: &str, role: UserRole) -> AdminResult<(User, St
     let name = check_name(name)?;
     modify(dir, |st| {
         if st.user_by_name(&name).is_some() {
-            return Err(AdminError::Invalid(format!("user `{name}` already exists (use `user token {name}` to rotate its token)")));
+            return Err(AdminError::Invalid(format!(
+                "user `{name}` already exists (use `user token {name}` to rotate its token)"
+            )));
         }
         let token = new_token();
         let user = User { id: random_id("u", 8), name, role, disabled: false, created_at: now_secs() };

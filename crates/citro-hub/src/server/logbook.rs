@@ -95,7 +95,11 @@ mod tests {
     #[test]
     fn entries_are_stamped_with_the_user_and_the_profiles_team() {
         let (mut st, _admin, ann, bob, tid) = world();
-        let pid = st.create_profile(&mut cx(&ann), &tid, Profile { name: "a".into(), ..Default::default() }).unwrap().profile.profile_id;
+        let pid = st
+            .create_profile(&mut cx(&ann), &tid, Profile { name: "a".into(), ..Default::default() })
+            .unwrap()
+            .profile
+            .profile_id;
         let out = st.stamp_log_entries(&ann.user, "dev1", &[entry(Some(&pid), None, "crash")], 1000).unwrap();
         assert_eq!(out.len(), 1);
         let (team, rec) = &out[0];
@@ -106,12 +110,18 @@ mod tests {
             let e = st.stamp_log_entries(&who.user, "d", &[entry(Some("kzzzzzz"), None, "x")], 1000).unwrap_err();
             assert_eq!(e.code, "invalid");
         }
-        assert_eq!(st.stamp_log_entries(&bob.user, "d", &[entry(Some(&pid), None, "x")], 1000).unwrap_err().code, "invalid");
+        assert_eq!(
+            st.stamp_log_entries(&bob.user, "d", &[entry(Some(&pid), None, "x")], 1000).unwrap_err().code,
+            "invalid"
+        );
         // explicit team, implicit team (single membership), no team at all
         assert_eq!(st.stamp_log_entries(&ann.user, "d", &[entry(None, Some(&tid), "x")], 1000).unwrap()[0].0, tid);
         assert_eq!(st.stamp_log_entries(&ann.user, "d", &[entry(None, None, "x")], 1000).unwrap()[0].0, tid);
         assert_eq!(st.stamp_log_entries(&bob.user, "d", &[entry(None, None, "x")], 1000).unwrap_err().code, "invalid");
-        assert_eq!(st.stamp_log_entries(&bob.user, "d", &[entry(None, Some(&tid), "x")], 1000).unwrap_err().code, "invalid");
+        assert_eq!(
+            st.stamp_log_entries(&bob.user, "d", &[entry(None, Some(&tid), "x")], 1000).unwrap_err().code,
+            "invalid"
+        );
         // a mismatching explicit team
         let e = st.stamp_log_entries(&ann.user, "d", &[entry(Some(&pid), Some("tother"), "x")], 1000).unwrap_err();
         assert_eq!(e.code, "invalid");
