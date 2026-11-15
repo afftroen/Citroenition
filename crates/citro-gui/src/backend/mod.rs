@@ -1,0 +1,512 @@
+//! The seam between the GUI and whatever owns the data.
+//!
+//! The UI only ever talks to a `dyn Backend`. Every method is **blocking** (it may spawn a process, hit the
+//! network or the disk), so the UI calls it from a worker thread (see `tasks.rs`) and never from the frame loop.
+//!
+//! Implementations:
+//! * [`mock::MockBackend`]  - in-memory fake data (`--demo`, unit tests, screenshots).
+//! * [`local::LocalBackend`] - single-user subset over `citro-core` (Store / Home / launch / Kernel).
+//! * a hub-backed implementation will be added by the parent once `citro-hub` lands.
+
+use citro_core::profile::{Group, Profile, ProxyConfig};
+use std::fmt;
+
+pub mod local;
+pub mod mock;
+
+// ---------------------------------------------------------------------------------------------------------------
+// errors
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendError {
+    /// This backend does not implement the feature (yet). The UI renders a "not available in this build" state.
+    Unsupported(String),
+    NotFound(String),
+    Invalid(String),
+    Other(String),
+}
+
+impl fmt::Display for BackendError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BackendError::Unsupported(s) => write!(f, "not available in this build yet: {s}"),
+            BackendError::NotFound(s) => write!(f, "not found: {s}"),
+            BackendError::Invalid(s) | BackendError::Other(s) => f.write_str(s),
+        }
+    }
+}
+
+impl std::error::Error for BackendError {}
+
+impl From<citro_core::Error> for BackendError {
+    fn from(e: citro_core::Error) -> Self {
+        match e {
+            citro_core::Error::ProfileNotFound(id) => BackendError::NotFound(format!("profile {id}")),
+            citro_core::Error::Invalid(s) => BackendError::Invalid(s),
+            other => BackendError::Other(other.to_string()),
+        }
+    }
+}
+
+impl From<std::io::Error> for BackendError {
+    fn from(e: std::io::Error) -> Self {
+        BackendError::Other(e.to_string())
+    }
+}
+
+pub type BResult<T> = Result<T, BackendError>;
+
+// ---------------------------------------------------------------------------------------------------------------
+// profiles
+
+/// What the table shows in the status column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunState {
+    Closed,
+    /// Open on this device.
+    Open { pid: u32, since: i64 },
+    /// Open on another device (team lock). It cannot be opened here.
+    LockedElsewhere { user: String, device: String, since: i64 },
+    /// Transient: an open/close request is in flight (the UI tracks this itself, a backend may also report it).
+    Opening,
+    Closing,
+}
+
+impl RunState {
+    pub fn is_open(&self) -> bool {
+        matches!(self, RunState::Open { .. })
+    }
+    pub fn is_locked(&self) -> bool {
+        matches!(self, RunState::LockedElsewhere { .. })
+    }
+    pub fn is_busy(&self) -> bool {
+        matches!(self, RunState::Opening | RunState::Closing)
+    }
+}
+
+/// One line of the profile table. `profile` has its secrets redacted (see [`redact`]); use
+/// [`Backend::profile`] for the full record (edit dialog).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Row {
+    pub profile: Profile,
+    pub run: RunState,
+    /// Owning team id when the profile is shared through a hub.
+    pub team: Option<String>,
+}
+
+impl Row {
+    pub fn id(&self) -> &str {
+        &self.profile.profile_id
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StatusFilter {
+    #[default]
+    All,
+    Open,
+    Closed,
+    Locked,
+}
+
+impl StatusFilter {
+    pub const ALL: [StatusFilter; 4] = [StatusFilter::All, StatusFilter::Open, StatusFilter::Closed, StatusFilter::Locked];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            StatusFilter::All => "All",
+            StatusFilter::Open => "Open",
+            StatusFilter::Closed => "Closed",
+            StatusFilter::Locked => "Locked",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub enum SortKey {
+    #[default]
+    Serial,
+    Name,
+    Group,
+    Remark,
+    Proxy,
+    Os,
+    LastOpened,
+    LastClosed,
+    Status,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Query {
+    /// Group id; `"0"` = Ungrouped; `None` = every group.
+    pub group: Option<String>,
+    /// Free text: every whitespace separated token must match name / remark / proxy / id / serial / group.
+    pub q: String,
+    pub status: StatusFilter,
+    pub sort: SortKey,
+    pub desc: bool,
+    /// Only the profiles shared with this team.
+    pub team: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OpenOpts {
+    pub headless: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunInfo {
+    pub pid: u32,
+    pub since: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenError {
+    /// Somebody else has it open: the UI shows "Open on <device> by <user> since <time>" instead of opening.
+    LockedElsewhere { user: String, device: String, since: i64 },
+    Other(String),
+}
+
+impl fmt::Display for OpenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OpenError::LockedElsewhere { user, device, .. } => write!(f, "open on {device} by {user}"),
+            OpenError::Other(s) => f.write_str(s),
+        }
+    }
+}
+
+impl From<BackendError> for OpenError {
+    fn from(e: BackendError) -> Self {
+        OpenError::Other(e.to_string())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyCheck {
+    pub ok: bool,
+    pub ip: String,
+    /// ISO 3166-1 alpha-2, empty when unknown.
+    pub country: String,
+    pub latency_ms: u32,
+    pub message: String,
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// logs
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]
+pub enum Level {
+    Trace,
+    Debug,
+    #[default]
+    Info,
+    Warn,
+    Error,
+}
+
+impl Level {
+    pub const ALL: [Level; 5] = [Level::Trace, Level::Debug, Level::Info, Level::Warn, Level::Error];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Level::Trace => "TRACE",
+            Level::Debug => "DEBUG",
+            Level::Info => "INFO",
+            Level::Warn => "WARN",
+            Level::Error => "ERROR",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum LogKind {
+    /// Citroenition's own log.
+    #[default]
+    Citro,
+    /// The browser kernel's log.
+    Browser,
+}
+
+impl LogKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            LogKind::Citro => "Citroenition",
+            LogKind::Browser => "Browser",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LogQuery {
+    pub kind: LogKind,
+    pub profile_id: Option<String>,
+    pub level_min: Level,
+    pub text: String,
+    /// Newest `limit` lines that match, returned oldest first.
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogLine {
+    /// Unix seconds; `0` = unknown.
+    pub ts: i64,
+    pub level: Level,
+    pub profile_id: Option<String>,
+    pub message: String,
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// kernel
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KernelInfo {
+    pub version: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct KernelStatus {
+    pub installed: Option<KernelInfo>,
+    /// Newest version the installer knows about (`None` = not checked / offline).
+    pub latest: Option<String>,
+}
+
+impl KernelStatus {
+    pub fn update_available(&self) -> bool {
+        match (&self.installed, &self.latest) {
+            (Some(i), Some(l)) => i.version != *l,
+            (None, Some(_)) => true,
+            _ => false,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// teams / hub
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Role {
+    Owner,
+    Admin,
+    #[default]
+    Member,
+    Viewer,
+}
+
+impl Role {
+    pub fn label(self) -> &'static str {
+        match self {
+            Role::Owner => "Owner",
+            Role::Admin => "Admin",
+            Role::Member => "Member",
+            Role::Viewer => "Viewer",
+        }
+    }
+
+    /// Owners and admins may force-unlock a profile someone else holds.
+    pub fn can_force_unlock(self) -> bool {
+        matches!(self, Role::Owner | Role::Admin)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Member {
+    pub name: String,
+    pub role: Role,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TeamInfo {
+    pub id: String,
+    pub name: String,
+    /// *My* role in this team.
+    pub role: Role,
+    pub members: Vec<Member>,
+    pub profile_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HubStatus {
+    pub connected: bool,
+    pub url: String,
+    pub user: String,
+    pub device_name: String,
+    pub error: Option<String>,
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// backend description
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendKind {
+    Demo,
+    Local,
+    Hub,
+}
+
+/// Which optional features the backend implements; the UI shows an explanatory state for the missing ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Caps {
+    pub teams: bool,
+    pub kernel_install: bool,
+    pub proxy_check: bool,
+    pub group_edit: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendInfo {
+    pub kind: BackendKind,
+    pub data_dir: String,
+    pub caps: Caps,
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+
+pub trait Backend: Send + Sync {
+    fn info(&self) -> BackendInfo;
+
+    // profiles ---------------------------------------------------------------------------------------------
+    fn list_profiles(&self, q: &Query) -> BResult<Vec<Row>>;
+    /// The full record (secrets included) for the edit dialog.
+    fn profile(&self, id: &str) -> BResult<Profile>;
+    /// Creates the profile when `profile_id` is empty. Returns the stored record.
+    fn save_profile(&self, p: Profile) -> BResult<Profile>;
+    fn delete_profiles(&self, ids: &[String]) -> BResult<()>;
+    fn set_remark(&self, id: &str, text: &str) -> BResult<()>;
+    /// `group` is a group id; `"0"` = Ungrouped.
+    fn move_to_group(&self, ids: &[String], group: &str) -> BResult<()>;
+    fn duplicate_profile(&self, id: &str) -> BResult<Profile>;
+    fn clear_cache(&self, id: &str) -> BResult<()>;
+    fn check_proxy(&self, proxy: &ProxyConfig) -> BResult<ProxyCheck>;
+
+    // running ----------------------------------------------------------------------------------------------
+    fn open(&self, id: &str, opts: &OpenOpts) -> Result<RunInfo, OpenError>;
+    fn close(&self, id: &str) -> BResult<()>;
+
+    // groups -----------------------------------------------------------------------------------------------
+    fn groups(&self) -> BResult<Vec<Group>>;
+    /// Creates the group when `group_id` is empty, otherwise renames / updates the remark.
+    fn save_group(&self, g: Group) -> BResult<Group>;
+    /// The group's profiles move to Ungrouped.
+    fn delete_group(&self, id: &str) -> BResult<()>;
+
+    // export / logs ----------------------------------------------------------------------------------------
+    /// `ids` wins over `group`; both `None` = every profile. The text is UTF-8 (with a BOM when `bom`).
+    fn export_csv(&self, ids: Option<Vec<String>>, group: Option<String>, bom: bool) -> BResult<Vec<u8>>;
+    fn logs(&self, q: &LogQuery) -> BResult<Vec<LogLine>>;
+
+    // kernel -----------------------------------------------------------------------------------------------
+    fn kernel_status(&self) -> BResult<KernelStatus>;
+    /// Download + verify + install the newest kernel. `progress(done_bytes, total_bytes)` may be called often from
+    /// the worker thread; `total` is `0` while unknown.
+    fn install_kernel(&self, progress: &dyn Fn(u64, u64)) -> BResult<KernelStatus>;
+
+    // team -------------------------------------------------------------------------------------------------
+    fn teams(&self) -> BResult<Vec<TeamInfo>>;
+    fn hub_status(&self) -> HubStatus;
+    fn connect_hub(&self, url: &str, token: &str, device_name: &str) -> BResult<HubStatus>;
+    /// Admin only: releases a lock held by somebody else.
+    fn force_unlock(&self, profile_id: &str) -> BResult<()>;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// helpers shared by the backends
+
+pub const MASK: &str = "********";
+
+/// A copy of `p` that is safe to show in lists, logs and screenshots: passwords, 2FA keys and cookies are masked.
+pub fn redact(p: &Profile) -> Profile {
+    let mask = |s: &str| if s.is_empty() { String::new() } else { MASK.to_owned() };
+    let mut out = p.clone();
+    out.password = mask(&p.password);
+    out.fakey = mask(&p.fakey);
+    out.cookie = mask(&p.cookie);
+    out.user_proxy_config = p.user_proxy_config.redacted();
+    out
+}
+
+/// `type host:port` split for display; `None` = direct connection.
+pub fn proxy_parts(c: &ProxyConfig) -> Option<(String, String)> {
+    let hop = c.hop()?;
+    let host = if hop.host.contains(':') { format!("[{}]", hop.host) } else { hop.host };
+    Some((hop.scheme, format!("{host}:{}", hop.port)))
+}
+
+/// `"socks5 203.0.113.7:1080"` or `"direct"`. Never contains credentials.
+pub fn proxy_label(c: &ProxyConfig) -> String {
+    match proxy_parts(c) {
+        Some((scheme, addr)) => format!("{scheme} {addr}"),
+        None => "direct".to_owned(),
+    }
+}
+
+pub fn os_label(persona_os: &str) -> &'static str {
+    match persona_os {
+        "windows" => "Windows",
+        "macos" | "mac" => "macOS",
+        "linux" => "Linux",
+        _ => "Auto",
+    }
+}
+
+pub fn group_label(groups: &[Group], id: &str) -> String {
+    if id.is_empty() || id == "0" {
+        return "Ungrouped".to_owned();
+    }
+    groups.iter().find(|g| g.group_id == id).map(|g| g.group_name.clone()).unwrap_or_else(|| "Ungrouped".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redact_masks_every_secret() {
+        let p = Profile {
+            password: "hunter2".into(),
+            fakey: "JBSWY3DPEHPK3PXP".into(),
+            cookie: "sid=abc".into(),
+            user_proxy_config: ProxyConfig {
+                proxy_host: Some("203.0.113.5".into()),
+                proxy_port: Some("1080".into()),
+                proxy_password: Some("proxy-secret".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let r = redact(&p);
+        let dump = format!("{r:?}");
+        for secret in ["hunter2", "JBSWY3DPEHPK3PXP", "sid=abc", "proxy-secret"] {
+            assert!(!dump.contains(secret), "{secret} leaked");
+        }
+        assert_eq!(r.password, MASK);
+        assert_eq!(redact(&Profile::default()).password, "");
+    }
+
+    #[test]
+    fn proxy_label_never_has_credentials() {
+        let c = ProxyConfig::from_url("socks5://bob:s3cret@203.0.113.9:1081").unwrap();
+        assert_eq!(proxy_label(&c), "socks5 203.0.113.9:1081");
+        assert_eq!(proxy_label(&ProxyConfig::default()), "direct");
+        let v6 = ProxyConfig::from_url("http://[2001:db8::1]:8080").unwrap();
+        assert_eq!(proxy_label(&v6), "http [2001:db8::1]:8080");
+    }
+
+    #[test]
+    fn kernel_update_detection() {
+        let k = |v: &str| Some(KernelInfo { version: v.into(), path: String::new() });
+        assert!(KernelStatus { installed: k("157.0.1"), latest: Some("158.0.2".into()) }.update_available());
+        assert!(!KernelStatus { installed: k("157.0.1"), latest: Some("157.0.1".into()) }.update_available());
+        assert!(KernelStatus { installed: None, latest: Some("1".into()) }.update_available());
+        assert!(!KernelStatus { installed: None, latest: None }.update_available());
+    }
+
+    #[test]
+    fn group_labels() {
+        let g = vec![Group { group_id: "3".into(), group_name: "Vinted FR".into(), remark: String::new() }];
+        assert_eq!(group_label(&g, "3"), "Vinted FR");
+        assert_eq!(group_label(&g, "0"), "Ungrouped");
+        assert_eq!(group_label(&g, "99"), "Ungrouped");
+    }
+}
