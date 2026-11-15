@@ -1,0 +1,10 @@
+[package]
+name = "citro-gui"
+description = "Citroenition desktop app (egui): profile manager GUI in pure Rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+citro-core = { version = "0.1.0", path = "../citro-core" }

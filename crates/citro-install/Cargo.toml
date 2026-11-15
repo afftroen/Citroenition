@@ -1,0 +1,9 @@
+[package]
+name = "citro-install"
+description = "Downloads, verifies (SHA-256 + pinned GPG key) and unpacks the open-source Clearcote browser kernel for Citroenition"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

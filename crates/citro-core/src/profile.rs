@@ -159,8 +159,13 @@ pub struct Profile {
     pub fingerprint_config: FingerprintConfig,
     pub launch_args: Vec<String>,
     pub category_id: String,
+    /// The operating system the browser presents: `windows`, `macos`, `linux`, or empty = the host's own.
+    pub persona_os: String,
     pub created_time: i64,
+    /// Unix seconds; `0` = never.
     pub last_open_time: i64,
+    /// Unix seconds of the last time the browser was closed; `0` = never.
+    pub last_close_time: i64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
