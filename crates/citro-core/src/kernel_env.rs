@@ -161,73 +161,29 @@ pub fn x_display_available(display: Option<&str>) -> bool {
     }
 }
 
-/// Can Mesa render WebGL over EGL with no X display (`--use-angle=gl-egl`)? Needs the system `libEGL.so.1`,
-/// Mesa's EGL vendor library and a software rasteriser driver.
-pub fn mesa_egl_available() -> bool {
-    const DIRS: [&str; 8] = [
-        "/usr/lib/x86_64-linux-gnu",
-        "/usr/lib/aarch64-linux-gnu",
-        "/lib/x86_64-linux-gnu",
-        "/lib/aarch64-linux-gnu",
-        "/usr/lib64",
-        "/lib64",
-        "/usr/lib",
-        "/lib",
-    ];
-    let has = |name: &str| DIRS.iter().any(|d| Path::new(d).join(name).exists());
-    let gallium = || {
-        DIRS.iter().any(|d| {
-            fs::read_dir(d).is_ok_and(|e| {
-                e.flatten()
-                    .any(|f| f.file_name().to_str().is_some_and(|n| n.starts_with("libgallium-") && n.ends_with(".so")))
-            })
-        })
-    };
-    has("libEGL.so.1")
-        && has("libEGL_mesa.so.0")
-        && (has("dri/swrast_dri.so") || has("dri/kms_swrast_dri.so") || gallium())
-}
-
-/// The ANGLE backend whose WebGL surface matches the OS the page is told it runs on, on a Linux host.
+/// The WebGL backend flags for a Linux host, chosen from the OS the page is told it runs on.
 ///
+/// * every claim -> `--ignore-gpu-blocklist`: a GPU-less host (a VPS, a container, Xvfb) has no allow-listed
+///   GPU, and without the override the engine switches WebGL off entirely, which is itself a loud signal.
 /// * Windows claim -> SwiftShader: it reports the 4096 vertex-uniform limit real Direct3D11 machines report
 ///   (Mesa's OpenGL backend clamps to 1024), and the HLSL shader dialect makes its translations match.
-/// * Linux claim -> Mesa over EGL when the host has it (the `OpenGL ES 3.2` renderer form real Linux Chrome
-///   shows), else Mesa over X, else nothing. Needs `--ignore-gpu-blocklist` on a GPU-less host or WebGL is off.
-/// * macOS claim -> the engine's default.
+/// * Linux / macOS claim -> the engine's default backend. Measured on the real kernel: the default and
+///   `--use-angle=gl` give working WebGL, `--use-angle=gl-egl` gives none on a display-only host.
 ///
 /// A backend the caller chose in `user_args` is kept; only the blocklist override is added.
-pub fn gpu_backend_args(
-    claim: Os,
-    headed: bool,
-    user_args: &[String],
-    display: Option<&str>,
-    mesa_egl: bool,
-) -> Vec<String> {
+pub fn gpu_backend_args(claim: Os, user_args: &[String]) -> Vec<String> {
     if !cfg!(target_os = "linux") {
         return Vec::new();
     }
-    let mut blocklist = Vec::new();
-    if !headed && !user_args.iter().any(|a| a == "--ignore-gpu-blocklist") {
-        blocklist.push("--ignore-gpu-blocklist".to_owned());
+    let mut out = Vec::new();
+    if !user_args.iter().any(|a| a == "--ignore-gpu-blocklist") {
+        out.push("--ignore-gpu-blocklist".to_owned());
     }
-    if user_args.iter().any(|a| a.starts_with("--use-angle=") || a.starts_with("--use-gl=")) {
-        return blocklist;
+    let own_backend = user_args.iter().any(|a| a.starts_with("--use-angle=") || a.starts_with("--use-gl="));
+    if claim == Os::Windows && !own_backend {
+        out.push("--use-angle=swiftshader-webgl".to_owned());
     }
-    match claim {
-        Os::Windows => vec!["--use-angle=swiftshader-webgl".to_owned()],
-        Os::Linux => {
-            let backend = if mesa_egl {
-                "--use-angle=gl-egl"
-            } else if x_display_available(display) {
-                "--use-angle=gl"
-            } else {
-                return Vec::new();
-            };
-            [vec![backend.to_owned()], blocklist].concat()
-        }
-        Os::Mac => Vec::new(),
-    }
+    out
 }
 
 #[cfg(test)]
@@ -327,23 +283,16 @@ mod tests {
             return;
         }
         let none: Vec<String> = Vec::new();
-        assert_eq!(gpu_backend_args(Os::Windows, false, &none, None, true), s(&["--use-angle=swiftshader-webgl"]));
-        assert_eq!(gpu_backend_args(Os::Linux, true, &none, None, true), s(&["--use-angle=gl-egl"]));
-        assert_eq!(
-            gpu_backend_args(Os::Linux, false, &none, None, true),
-            s(&["--use-angle=gl-egl", "--ignore-gpu-blocklist"])
-        );
-        assert!(
-            gpu_backend_args(Os::Linux, true, &none, None, false).is_empty(),
-            "no EGL and no display: the engine default"
-        );
-        assert!(gpu_backend_args(Os::Mac, false, &none, None, true).is_empty());
-        // the caller's own backend is kept; headless still gets the blocklist override, once
+        let blocklist = "--ignore-gpu-blocklist";
+        assert_eq!(gpu_backend_args(Os::Windows, &none), s(&[blocklist, "--use-angle=swiftshader-webgl"]));
+        assert_eq!(gpu_backend_args(Os::Linux, &none), s(&[blocklist]), "the engine default measured to work");
+        assert_eq!(gpu_backend_args(Os::Mac, &none), s(&[blocklist]));
+        // the caller's own backend is kept, and the blocklist override is never doubled
         let own = s(&["--use-angle=gl"]);
-        assert_eq!(gpu_backend_args(Os::Windows, false, &own, None, true), s(&["--ignore-gpu-blocklist"]));
-        assert!(gpu_backend_args(Os::Windows, true, &own, None, true).is_empty());
-        let both = s(&["--use-gl=egl", "--ignore-gpu-blocklist"]);
-        assert!(gpu_backend_args(Os::Linux, false, &both, None, true).is_empty());
+        assert_eq!(gpu_backend_args(Os::Windows, &own), s(&[blocklist]));
+        let both = s(&["--use-gl=egl", blocklist]);
+        assert!(gpu_backend_args(Os::Windows, &both).is_empty());
+        assert!(gpu_backend_args(Os::Linux, &both).is_empty());
     }
 
     #[test]
