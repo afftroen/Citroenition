@@ -25,6 +25,7 @@ mod extract;
 mod http;
 mod install;
 mod platform;
+mod progress;
 mod release;
 mod verify;
 mod version;
@@ -32,6 +33,7 @@ mod version;
 pub use error::{Error, Result};
 pub use install::{DIR_PREFIX, InstallOptions, Installed, METADATA_FILE, Progress, install, list_installed};
 pub use platform::{ArchiveKind, Platform};
+pub use progress::ProgressLine;
 pub use release::{API_ROOT, Asset, REPO, Release, latest_release, release_by_tag};
 pub use verify::{
     ChecksumEntry, ChecksumList, ListedArchive, PINNED_KEY_ARMORED, pinned_key_fingerprint, verify_checksums,

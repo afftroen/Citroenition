@@ -398,6 +398,7 @@ dependencies = [
  "anyhow",
  "axum",
  "citro-core",
+ "citro-install",
  "clap",
  "serde",
  "serde_json",

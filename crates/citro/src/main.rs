@@ -97,6 +97,15 @@ enum KernelCmd {
     /// List the installed kernels, newest first
     #[command(visible_alias = "ls")]
     List,
+    /// Download the Clearcote kernel, verify it (pinned OpenPGP key + SHA-256) and install it
+    Install {
+        /// Chromium version (151.0.7922.108) or release tag (default: the latest release)
+        #[arg(long)]
+        version: Option<String>,
+        /// Reinstall even if that version is already installed
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -555,6 +564,16 @@ fn run(cli: Cli) -> Result<()> {
             for k in found {
                 println!("{:<18}  {}", k.version, k.binary.display());
             }
+        }
+        Cmd::Kernel { cmd: Some(KernelCmd::Install { version, force }) } => {
+            let opts = citro_install::InstallOptions { version, force, ..Default::default() };
+            let mut line = citro_install::ProgressLine::new();
+            let result =
+                citro_install::install(&citro_core::kernel::kernels_dir(&home), &opts, &mut |p| line.update(p));
+            line.finish();
+            let k = result?;
+            let what = if line.downloaded() { "installed" } else { "already installed (--force reinstalls)" };
+            println!("{what} {}: {}", k.version, k.binary.display());
         }
         Cmd::Serve(a) => {
             if !a.bind.ip().is_loopback() && a.api_key.as_deref().is_none_or(str::is_empty) {

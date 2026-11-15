@@ -1,13 +1,12 @@
 //! `citro-install`: command-line front end of the `citro_install` library.
 
 use citro_install::{
-    InstallOptions, Installed, Progress, Release, install, latest_release, list_installed, pinned_key_fingerprint,
+    InstallOptions, Installed, ProgressLine, Release, install, latest_release, list_installed, pinned_key_fingerprint,
     verify_checksums,
 };
 use clap::{Parser, Subcommand};
 use serde_json::json;
 use std::error::Error;
-use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -94,14 +93,10 @@ fn run(cli: &Cli) -> Result<(), Box<dyn Error>> {
         Cmd::Install { version, force, base_url } => {
             let root = kernels_dir(cli);
             let opts = options(version.clone(), base_url.clone(), *force);
-            let mut reporter = Reporter::new();
-            let mut downloaded = false;
-            let installed = install(&root, &opts, &mut |p| {
-                downloaded |= matches!(p, Progress::Downloading { .. });
-                reporter.report(p);
-            });
-            reporter.finish();
-            let installed = installed?;
+            let mut line = ProgressLine::new();
+            let installed = install(&root, &opts, &mut |p| line.update(p));
+            line.finish();
+            let (installed, downloaded) = (installed?, line.downloaded());
             if cli.json {
                 let mut out = serde_json::to_value(&installed)?;
                 out["downloaded"] = json!(downloaded);
@@ -172,58 +167,5 @@ fn print_release(r: &Release) {
     println!("signature  {}", r.sig_url);
     if let Some(url) = &r.page_url {
         println!("page       {url}");
-    }
-}
-
-/// Progress on stderr: one line that keeps updating on a terminal, plain lines (every 10 %) otherwise.
-struct Reporter {
-    tty: bool,
-    line_open: bool,
-    last_decile: Option<u64>,
-}
-
-impl Reporter {
-    fn new() -> Self {
-        Self { tty: std::io::stderr().is_terminal(), line_open: false, last_decile: None }
-    }
-
-    fn status(&mut self, text: &str) {
-        let mut err = std::io::stderr().lock();
-        if self.tty {
-            let _ = write!(err, "\r\x1b[K{text}");
-            self.line_open = true;
-        } else {
-            let _ = writeln!(err, "{text}");
-        }
-        let _ = err.flush();
-    }
-
-    fn report(&mut self, p: Progress) {
-        match p {
-            Progress::Resolving => self.status("resolving the release and checking the signature of SHA256SUMS.txt..."),
-            Progress::Downloading { done, total } => {
-                let mib = |b: u64| b as f64 / (1024.0 * 1024.0);
-                if total == 0 {
-                    return self.status(&format!("downloading {:.1} MiB", mib(done)));
-                }
-                let pct = done * 100 / total;
-                let decile = pct / 10;
-                if self.tty || self.last_decile != Some(decile) {
-                    self.last_decile = Some(decile);
-                    self.status(&format!("downloading {:.1} / {:.1} MiB ({pct}%)", mib(done), mib(total)));
-                }
-            }
-            Progress::Verifying => self.status("verifying the archive against the signed checksum..."),
-            Progress::Extracting => self.status("extracting..."),
-            Progress::Done => {}
-        }
-    }
-
-    /// Wipe the updating line so the next output starts on a clean one.
-    fn finish(&mut self) {
-        if self.line_open {
-            let _ = write!(std::io::stderr(), "\r\x1b[K");
-            self.line_open = false;
-        }
     }
 }
