@@ -194,6 +194,7 @@ name = "citro-core"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "memchr",
  "serde",
  "serde_json",
  "thiserror",
