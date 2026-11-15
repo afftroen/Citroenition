@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "citro_gui"
+path = "src/lib.rs"
+
 [[bin]]
 name = "citro-gui"
 path = "src/main.rs"

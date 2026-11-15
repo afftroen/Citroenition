@@ -132,9 +132,23 @@ mod tests {
     fn sample() -> Vec<Row> {
         vec![
             row(1, "Amélie Dubois", "1", "warm-up day 3", Some("socks5://203.0.113.10:1080"), RunState::Closed),
-            row(2, "lukas schneider", "2", "Versand ab Köln", Some("http://198.51.100.7:8080"), RunState::Open { pid: 7, since: 5 }),
+            row(
+                2,
+                "lukas schneider",
+                "2",
+                "Versand ab Köln",
+                Some("http://198.51.100.7:8080"),
+                RunState::Open { pid: 7, since: 5 },
+            ),
             row(3, "Oliver Hughes", "0", "", None, locked()),
-            row(4, "Chloé Martin", "1", "needs SMS", Some("socks5://203.0.113.11:1081"), RunState::Open { pid: 8, since: 6 }),
+            row(
+                4,
+                "Chloé Martin",
+                "1",
+                "needs SMS",
+                Some("socks5://203.0.113.11:1081"),
+                RunState::Open { pid: 8, since: 6 },
+            ),
             row(5, "Zoé", "", "last", None, RunState::Closed),
         ]
     }

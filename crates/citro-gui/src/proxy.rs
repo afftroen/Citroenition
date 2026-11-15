@@ -130,7 +130,8 @@ fn colon_form(s: &str) -> Option<ParsedProxy> {
     valid_host(&host).then_some(ParsedProxy { kind: None, host, port, user, password: pass })
 }
 
-const FORMAT_HELP: &str = "Unrecognised format. Use host:port, host:port:user:pass, user:pass@host:port or socks5://user:pass@host:port";
+const FORMAT_HELP: &str =
+    "Unrecognised format. Use host:port, host:port:user:pass, user:pass@host:port or socks5://user:pass@host:port";
 
 pub fn parse(input: &str) -> Result<ParsedProxy, String> {
     let s = input.trim().trim_matches(|c| c == '"' || c == '\'').trim();
@@ -244,7 +245,10 @@ mod tests {
     fn ipv6_hosts() {
         assert_eq!(p("[2001:db8::1]:1080"), t(None, "2001:db8::1", 1080, "", ""));
         assert_eq!(p("[2001:db8::1]:1080:bob:pw"), t(None, "2001:db8::1", 1080, "bob", "pw"));
-        assert_eq!(p("socks5://bob:pw@[2001:db8::1]:1080"), t(Some(ProxyKind::Socks5), "2001:db8::1", 1080, "bob", "pw"));
+        assert_eq!(
+            p("socks5://bob:pw@[2001:db8::1]:1080"),
+            t(Some(ProxyKind::Socks5), "2001:db8::1", 1080, "bob", "pw")
+        );
     }
 
     #[test]
@@ -255,7 +259,17 @@ mod tests {
 
     #[test]
     fn rejects_garbage_with_a_reason() {
-        for bad in ["", "   ", "hostonly", "h.example:0", "h.example:70000", "h.example:abc", ":1080", "a b:1", "2001:db8::1:1080"] {
+        for bad in [
+            "",
+            "   ",
+            "hostonly",
+            "h.example:0",
+            "h.example:70000",
+            "h.example:abc",
+            ":1080",
+            "a b:1",
+            "2001:db8::1:1080",
+        ] {
             assert!(parse(bad).is_err(), "{bad:?} should be rejected");
         }
         let e = parse("ftp://h.example:21").unwrap_err();

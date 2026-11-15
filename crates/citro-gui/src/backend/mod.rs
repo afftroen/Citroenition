@@ -5,14 +5,15 @@
 //!
 //! Implementations:
 //! * [`mock::MockBackend`]  - in-memory fake data (`--demo`, unit tests, screenshots).
-//! * [`local::LocalBackend`] - single-user subset over `citro-core` (Store / Home / launch / Kernel).
-//! * a hub-backed implementation will be added by the parent once `citro-hub` lands.
+//! * [`local::LocalBackend`] - single-user implementation over `citro-core` (Store / Home / launch / Kernel).
+//! * a hub-backed implementation is added later, once `citro-hub` lands; it only has to implement this trait.
 
 use citro_core::profile::{Group, Profile, ProxyConfig};
 use std::fmt;
 
 pub mod local;
 pub mod mock;
+pub mod proxycheck;
 
 // ---------------------------------------------------------------------------------------------------------------
 // errors
@@ -64,9 +65,16 @@ pub type BResult<T> = Result<T, BackendError>;
 pub enum RunState {
     Closed,
     /// Open on this device.
-    Open { pid: u32, since: i64 },
+    Open {
+        pid: u32,
+        since: i64,
+    },
     /// Open on another device (team lock). It cannot be opened here.
-    LockedElsewhere { user: String, device: String, since: i64 },
+    LockedElsewhere {
+        user: String,
+        device: String,
+        since: i64,
+    },
     /// Transient: an open/close request is in flight (the UI tracks this itself, a backend may also report it).
     Opening,
     Closing,
@@ -110,7 +118,8 @@ pub enum StatusFilter {
 }
 
 impl StatusFilter {
-    pub const ALL: [StatusFilter; 4] = [StatusFilter::All, StatusFilter::Open, StatusFilter::Closed, StatusFilter::Locked];
+    pub const ALL: [StatusFilter; 4] =
+        [StatusFilter::All, StatusFilter::Open, StatusFilter::Closed, StatusFilter::Locked];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -151,7 +160,10 @@ pub struct Query {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OpenOpts {
+    /// No window (`--headless=new`).
     pub headless: bool,
+    /// Keep Chromium's sandbox (needs unprivileged user namespaces; off by default as in AdsPower).
+    pub sandbox: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,7 +175,11 @@ pub struct RunInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpenError {
     /// Somebody else has it open: the UI shows "Open on <device> by <user> since <time>" instead of opening.
-    LockedElsewhere { user: String, device: String, since: i64 },
+    LockedElsewhere {
+        user: String,
+        device: String,
+        since: i64,
+    },
     Other(String),
 }
 
@@ -267,9 +283,16 @@ pub struct KernelInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct KernelStatus {
+    /// The kernel a launch would use right now.
     pub installed: Option<KernelInfo>,
     /// Newest version the installer knows about (`None` = not checked / offline).
     pub latest: Option<String>,
+    /// Every kernel installed under the data directory, newest first.
+    pub all: Vec<KernelInfo>,
+    /// Why `installed` was chosen: `settings override`, `$CITRO_KERNEL` or `newest installed`.
+    pub source: String,
+    /// Why there is no usable kernel (not found, not a file ...).
+    pub error: Option<String>,
 }
 
 impl KernelStatus {
@@ -408,6 +431,12 @@ pub trait Backend: Send + Sync {
     fn connect_hub(&self, url: &str, token: &str, device_name: &str) -> BResult<HubStatus>;
     /// Admin only: releases a lock held by somebody else.
     fn force_unlock(&self, profile_id: &str) -> BResult<()>;
+
+    // misc -------------------------------------------------------------------------------------------------
+    /// Adds a line to the Citroenition log (the UI reports what it did: exports, ...). Default: dropped.
+    fn record(&self, _level: Level, _profile_id: Option<&str>, _message: &str) {}
+    /// The kernel binary the user pinned in Settings (`None` = discover it). Default: ignored.
+    fn set_kernel_override(&self, _path: Option<String>) {}
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -496,10 +525,15 @@ mod tests {
     #[test]
     fn kernel_update_detection() {
         let k = |v: &str| Some(KernelInfo { version: v.into(), path: String::new() });
-        assert!(KernelStatus { installed: k("157.0.1"), latest: Some("158.0.2".into()) }.update_available());
-        assert!(!KernelStatus { installed: k("157.0.1"), latest: Some("157.0.1".into()) }.update_available());
-        assert!(KernelStatus { installed: None, latest: Some("1".into()) }.update_available());
-        assert!(!KernelStatus { installed: None, latest: None }.update_available());
+        let st = |installed, latest: Option<&str>| KernelStatus {
+            installed,
+            latest: latest.map(str::to_owned),
+            ..Default::default()
+        };
+        assert!(st(k("157.0.1"), Some("158.0.2")).update_available());
+        assert!(!st(k("157.0.1"), Some("157.0.1")).update_available());
+        assert!(st(None, Some("1")).update_available());
+        assert!(!st(None, None).update_available());
     }
 
     #[test]
