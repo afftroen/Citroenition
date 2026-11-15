@@ -163,10 +163,29 @@ name = "citro-core"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "memchr",
  "serde",
  "serde_json",
  "thiserror",
 ]
+
+[[package]]
+name = "citro-gui"
+version = "0.1.0"
+dependencies = [
+ "citro-core",
+]
+
+[[package]]
+name = "citro-hub"
+version = "0.1.0"
+dependencies = [
+ "citro-core",
+]
+
+[[package]]
+name = "citro-install"
+version = "0.1.0"
 
 [[package]]
 name = "clap"
