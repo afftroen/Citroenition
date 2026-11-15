@@ -1,0 +1,6 @@
+/target
+/re/
+*.log
+.env
+*.asar
+SunBrowser*

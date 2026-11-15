@@ -1,0 +1,18 @@
+[package]
+name = "citro"
+description = "Citroenition CLI and AdsPower-compatible Local API server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+axum = "0.8.9"
+citro-core = { version = "0.1.0", path = "../citro-core" }
+clap = { version = "4.6.7", features = ["derive", "env"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
