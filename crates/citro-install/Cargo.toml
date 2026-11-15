@@ -6,4 +6,27 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "citro-install"
+path = "src/main.rs"
+
 [dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
+# OpenPGP signature check of SHA256SUMS.txt (pure Rust; no bzip2 so no C build).
+pgp = { version = "0.21", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.10"
+tar = { version = "0.4.46", default-features = false }
+tempfile = "3.27"
+thiserror = "2.0.21"
+# Default features = rustls + ring + webpki-roots + gzip (no aws-lc, no OpenSSL). `socks-proxy` adds socks5:// proxies;
+# HTTP(S)_PROXY / ALL_PROXY / NO_PROXY are read from the environment by ureq's default config.
+ureq = { version = "3.5", features = ["socks-proxy"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[dev-dependencies]
+# Tests build small .tar.xz / .zip archives and sign checksum lists with a throw-away key.
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz", "encoder"] }
+rand = "0.8"
