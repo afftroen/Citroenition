@@ -1,1 +1,10 @@
-//! Team hub (placeholder; implemented on the `hub` branch).
+//! Citroenition team hub: a small self-hosted server that lets several people share browser profiles.
+//!
+//! * [`model`] — the wire/state types, shared by the server and the client.
+//! * [`server`] — the hub itself (state file, locks and leases, hosted profile data, logs, CSV export, HTTP API).
+//! * [`client`] — a blocking, typed client for the GUI / CLI (`ureq`), including a lease keep-alive helper.
+//!
+//! See `docs/HUB_API.md` for the HTTP contract and the operating notes.
+
+pub mod model;
+pub mod server;

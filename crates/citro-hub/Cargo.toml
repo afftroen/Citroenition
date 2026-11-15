@@ -6,5 +6,28 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "citro_hub"
+path = "src/lib.rs"
+
+[[bin]]
+name = "citro-hub"
+path = "src/main.rs"
+
 [dependencies]
+axum = "0.8.9"
 citro-core = { version = "0.1.0", path = "../citro-core" }
+clap = { version = "4.6.7", features = ["derive", "env"] }
+futures-util = "0.3.34"
+getrandom = "0.3.4"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+serde_urlencoded = "0.7.1"
+sha2 = "0.10.9"
+subtle = "2.6.1"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+# default features only (rustls + ring + webpki-roots): `aws-lc-sys` does not build on the dev box.
+ureq = "3.5.2"
