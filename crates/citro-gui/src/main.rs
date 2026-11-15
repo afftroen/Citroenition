@@ -1,1 +1,3 @@
-fn main() { println!("citro-gui: placeholder"); }
+fn main() {
+    println!("citro-gui: placeholder");
+}
