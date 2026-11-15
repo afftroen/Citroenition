@@ -15,10 +15,9 @@ use super::fsio::{
 use super::logs::{LogQuery, LogSink, SERVER_LOG};
 use super::state::{Cx, Event, State};
 use super::util::{now_ms, now_secs, scrub_secrets};
-use crate::model::{DataMeta, LogKind, LogLevel, LogRecord, User};
+use crate::model::{LogKind, LogLevel, LogRecord, User};
 use std::collections::BTreeMap;
-use std::fs;
-use std::io::{self, Read};
+use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -32,12 +31,16 @@ pub struct Config {
     pub lease_ttl: Duration,
     /// Upper bound of one hosted data blob.
     pub max_blob_bytes: u64,
+    /// How many versions of a profile's data are kept on disk (at least 1).
+    pub keep_versions: usize,
     /// Upper bound of a JSON request body.
     pub max_json_bytes: usize,
     /// Failed logins per IP within `auth_fail_window` before the IP is blocked for `auth_block`.
     pub auth_fail_limit: u32,
     pub auth_fail_window: Duration,
     pub auth_block: Duration,
+    /// Requests per minute and (address, user); `0` turns the limit off.
+    pub rate_limit_per_min: u32,
     /// Header that carries the real client IP behind a reverse proxy (`X-Forwarded-For`, `CF-Connecting-IP`).
     pub real_ip_header: Option<String>,
     pub log_max_bytes: u64,
@@ -52,10 +55,12 @@ impl Default for Config {
             bind: SocketAddr::from(([127, 0, 0, 1], 7878)),
             lease_ttl: Duration::from_secs(90),
             max_blob_bytes: 512 * 1024 * 1024,
+            keep_versions: super::blobs::DEFAULT_KEEP,
             max_json_bytes: 1024 * 1024,
             auth_fail_limit: 10,
             auth_fail_window: Duration::from_secs(60),
             auth_block: Duration::from_secs(60),
+            rate_limit_per_min: 600,
             real_ip_header: None,
             log_max_bytes: 20 * 1024 * 1024,
             log_files: 3,
@@ -92,66 +97,6 @@ fn safe_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 32 && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
 }
 
-fn hash_file(path: &Path) -> io::Result<(u64, String)> {
-    use sha2::{Digest, Sha256};
-    let mut f = fs::File::open(path)?;
-    let (mut h, mut n, mut buf) = (Sha256::new(), 0u64, vec![0u8; 256 * 1024]);
-    loop {
-        let k = f.read(&mut buf)?;
-        if k == 0 {
-            break;
-        }
-        h.update(&buf[..k]);
-        n += k as u64;
-    }
-    Ok((n, super::util::hex(&h.finalize())))
-}
-
-/// Repair what a crash can leave behind: half-written uploads, a missing `data.bin` (moved to `data.prev` just before
-/// the new file was put in place) and metadata that does not describe the file on disk. Returns whether the state
-/// changed.
-pub fn reconcile_blobs(dir: &Path, st: &mut State, now: i64) -> bool {
-    let mut changed = false;
-    for (pid, hp) in st.profiles.iter_mut() {
-        let bd = dir.join("blobs").join(pid);
-        let Ok(entries) = fs::read_dir(&bd) else {
-            if hp.data.version > 0 {
-                tracing::warn!("data of profile {pid} is missing on disk; resetting its metadata");
-                hp.data = DataMeta::default();
-                changed = true;
-            }
-            continue;
-        };
-        for e in entries.flatten() {
-            if e.file_name().to_string_lossy().starts_with("upload-") {
-                let _ = fs::remove_file(e.path());
-            }
-        }
-        let (bin, prev) = (bd.join("data.bin"), bd.join("data.prev"));
-        if !bin.exists() && prev.exists() && fs::rename(&prev, &bin).is_ok() {
-            tracing::warn!("restored the data of profile {pid} from its backup");
-        }
-        match fs::metadata(&bin) {
-            Ok(m) if m.len() != hp.data.size || hp.data.version == 0 => match hash_file(&bin) {
-                Ok((size, sha256)) => {
-                    tracing::warn!("data of profile {pid} did not match its metadata; re-read it ({size} bytes)");
-                    hp.data = DataMeta { version: hp.data.version + 1, size, sha256, updated_at: now };
-                    changed = true;
-                }
-                Err(e) => tracing::error!("cannot read the data of profile {pid}: {e}"),
-            },
-            Ok(_) => {}
-            Err(_) if hp.data.version > 0 => {
-                tracing::warn!("data of profile {pid} is missing on disk; resetting its metadata");
-                hp.data = DataMeta::default();
-                changed = true;
-            }
-            Err(_) => {}
-        }
-    }
-    changed
-}
-
 impl Store {
     /// Open an initialised data directory for serving. Fails when another server already holds it.
     pub fn open(dir: &Path, cfg: Config) -> io::Result<Store> {
@@ -179,7 +124,7 @@ impl Store {
         let mut state = read_state(dir)?;
         create_private_dir(&dir.join("blobs"))?;
         create_private_dir(&dir.join("logs"))?;
-        if reconcile_blobs(dir, &mut state, now_secs()) {
+        if super::blobs::reconcile(dir, &mut state, now_secs(), cfg.keep_versions) {
             write_state(dir, &state)?;
         }
         let stamp = stamp_of(&state_path(dir));

@@ -4,18 +4,19 @@
 //! Every state operation runs on a blocking thread (`App::run` / `App::read`): it takes the global store mutex and
 //! may write to disk. Request bodies are read by hand so that every failure is a JSON `{"error":{..}}` answer.
 
+use super::blobs;
 use super::csv::export_profiles;
 use super::error::{ApiError, ApiResult};
-use super::fsio::{create_private_dir, private_options, sync_dir};
-use super::limiter::AuthLimiter;
+use super::fsio::{create_private_dir, private_options};
+use super::limiter::{AuthLimiter, RateLimiter};
 use super::logs::{LogQuery, SERVER_LOG};
 use super::profiles::ProfileQuery;
 use super::state::{Cx, State as HubState};
 use super::store::Store;
 use super::util::{clean_text, hex, iso_utc, random_alnum};
 use crate::model::{
-    DATA_SHA256_HEADER, DATA_VERSION_HEADER, DEVICE_HEADER, DataMeta, HubGroup, HubProfile, LEASE_HEADER, Lease,
-    LogEntry, LogKind, LogLevel, LogRecord, Me, Member, ProfilePage, TeamEntry, TeamRole, User, UserRole,
+    DATA_SHA256_HEADER, DATA_VERSION_HEADER, DEVICE_HEADER, DataMeta, DataVersion, HubGroup, HubProfile, LEASE_HEADER,
+    Lease, LogEntry, LogKind, LogLevel, LogRecord, Me, Member, ProfilePage, TeamEntry, TeamRole, User, UserRole,
 };
 use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, Path, Request, State};
@@ -50,6 +51,7 @@ const MAX_LOG_LIMIT: usize = 5000;
 pub struct App {
     store: Arc<Store>,
     limiter: Arc<AuthLimiter>,
+    rate: Arc<RateLimiter>,
 }
 
 /// Who is calling: the authenticated user and the device they announced (`X-Citro-Device`, for log lines only).
@@ -184,6 +186,32 @@ fn header_name(s: &str) -> HeaderName {
 
 // ---- authentication ------------------------------------------------------------------------------------------------
 
+/// Set on the response of an authenticated request, so the access log can name the user.
+#[derive(Clone)]
+struct AuthedUser(String);
+
+/// One line per request: who (address and user name), what (method and path, never the query string or any header)
+/// and how it went. Tokens, leases and profile data never appear here.
+async fn access_log(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let started = Instant::now();
+    let ip = client_ip(app.store.config().real_ip_header.as_deref(), peer, req.headers());
+    let (method, path) = (req.method().clone(), req.uri().path().to_owned());
+    let resp = next.run(req).await;
+    let user = resp.extensions().get::<AuthedUser>().map_or("-", |u| u.0.as_str());
+    let (status, ms) = (resp.status().as_u16(), started.elapsed().as_millis());
+    if status >= 500 {
+        tracing::error!(target: "citro_hub::access", %ip, user, %method, path, status, ms, "request");
+    } else {
+        tracing::info!(target: "citro_hub::access", %ip, user, %method, path, status, ms, "request");
+    }
+    resp
+}
+
 async fn authenticate(
     State(app): State<App>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -211,6 +239,14 @@ async fn authenticate(
         let _ = blocking(move || store.log_server(level, Some(ip), &msg)).await;
         return ApiError::unauthorized("missing, unknown or revoked token").into_response();
     };
+    let authed = AuthedUser(user.name.clone());
+    if let Err(wait) = app.rate.check(ip, &user.id, Instant::now()) {
+        let mut resp = ApiError::rate_limited(wait)
+            .with_message(format!("too many requests from this user and address; retry in {wait} s"))
+            .into_response();
+        resp.extensions_mut().insert(authed);
+        return resp;
+    }
     let device = req
         .headers()
         .get(DEVICE_HEADER)
@@ -218,7 +254,9 @@ async fn authenticate(
         .and_then(|d| clean_text(d, 128))
         .unwrap_or_default();
     req.extensions_mut().insert(Caller { user, device });
-    next.run(req).await
+    let mut resp = next.run(req).await;
+    resp.extensions_mut().insert(authed);
+    resp
 }
 
 /// Nothing a hub says may be cached by a proxy in between.
@@ -526,10 +564,61 @@ async fn force_unlock(
 
 #[derive(Deserialize, Default)]
 struct DataQuery {
+    /// Push: the version the data is based on; refused (409) when somebody pushed in between.
     base_version: Option<u64>,
+    /// Pull: an older version that is still kept instead of the current one.
+    version: Option<u64>,
 }
 
-/// An upload's temp file; removed again unless the upload made it to `data.bin` (also when the client hangs up and
+/// The entity tags of an `If-Match` / `If-None-Match` header: lower-cased, without quotes or `W/`.
+fn etags(v: &str) -> Vec<String> {
+    v.split(',')
+        .map(|t| t.trim().trim_start_matches("W/").trim_matches('"').to_ascii_lowercase())
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+fn etag_header(headers: &HeaderMap, name: HeaderName) -> Option<Vec<String>> {
+    headers.get(name).and_then(|v| v.to_str().ok()).map(etags)
+}
+
+/// The conditions of a data push; all of them must hold, and they are checked twice: before the body is read and
+/// again under the state mutex right before the new version is put in place.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Precondition {
+    base_version: Option<u64>,
+    /// `If-Match`: the ETag (SHA-256) of the stored data, or `*` for "anything stored".
+    if_match: Option<Vec<String>>,
+    /// `If-None-Match: *`: only when nothing is stored yet.
+    if_none_match_any: bool,
+}
+
+impl Precondition {
+    fn from_request(headers: &HeaderMap, q: &DataQuery) -> Precondition {
+        Precondition {
+            base_version: q.base_version,
+            if_match: etag_header(headers, header::IF_MATCH),
+            if_none_match_any: etag_header(headers, header::IF_NONE_MATCH).is_some_and(|t| t.iter().any(|x| x == "*")),
+        }
+    }
+
+    fn check(&self, meta: &DataMeta) -> ApiResult<()> {
+        if self.base_version.is_some_and(|b| b != meta.version) {
+            return Err(ApiError::stale(meta.version));
+        }
+        if let Some(tags) = &self.if_match {
+            if meta.version == 0 || !tags.iter().any(|t| t == "*" || *t == meta.sha256) {
+                return Err(ApiError::precondition_failed(meta.version));
+            }
+        }
+        if self.if_none_match_any && meta.version > 0 {
+            return Err(ApiError::precondition_failed(meta.version));
+        }
+        Ok(())
+    }
+}
+
+/// An upload's temp file; removed again unless the upload made it into place (also when the client hangs up and
 /// the handler is dropped half way).
 struct TempFile {
     path: PathBuf,
@@ -579,23 +668,6 @@ async fn receive(body: Body, path: &FsPath, max: u64) -> ApiResult<(u64, String)
     Ok((size, hex(&hasher.finalize())))
 }
 
-/// Put the finished upload in place: `data.bin` becomes `data.prev` (one backup), the upload becomes `data.bin`.
-fn install_blob(dir: &FsPath, tmp: &FsPath) -> std::io::Result<()> {
-    let (bin, prev) = (dir.join("data.bin"), dir.join("data.prev"));
-    let had = bin.exists();
-    if had {
-        std::fs::rename(&bin, &prev)?;
-    }
-    if let Err(e) = std::fs::rename(tmp, &bin) {
-        if had {
-            let _ = std::fs::rename(&prev, &bin);
-        }
-        return Err(e);
-    }
-    sync_dir(dir);
-    Ok(())
-}
-
 async fn put_data(
     State(app): State<App>,
     Extension(c): Extension<Caller>,
@@ -605,23 +677,16 @@ async fn put_data(
     body: Body,
 ) -> ApiResult<Json<DataMeta>> {
     let lease = lease_of(&headers);
-    let base = parse_query::<DataQuery>(&uri)?.base_version;
+    let pre = Precondition::from_request(&headers, &parse_query::<DataQuery>(&uri)?);
     let declared = content_length(&headers)?;
-    let max = app.store.config().max_blob_bytes;
+    let (max, keep) = (app.store.config().max_blob_bytes, app.store.config().keep_versions);
     let dir = app.store.blob_dir(&pid).ok_or_else(|| ApiError::not_found("no such profile"))?;
 
-    // 1. Who may write, and is the base version still current? Answered before a single body byte is read, so a
-    //    client that sent `Expect: 100-continue` learns it without uploading anything.
+    // 1. Who may write, and do the conditions hold? Answered before a single body byte is read, so a client that
+    //    sent `Expect: 100-continue` learns it without uploading anything.
     {
-        let (p, l) = (pid.clone(), lease.clone());
-        app.read(&c, move |st, cx| {
-            let meta = st.data_access(&cx.user, &p, l.as_deref(), cx.now_ms)?;
-            match base {
-                Some(b) if b != meta.version => Err(ApiError::stale(meta.version)),
-                _ => Ok(()),
-            }
-        })
-        .await?;
+        let (p, l, pre) = (pid.clone(), lease.clone(), pre.clone());
+        app.read(&c, move |st, cx| pre.check(&st.data_access(&cx.user, &p, l.as_deref(), cx.now_ms)?)).await?;
     }
     if declared.is_some_and(|n| n > max) {
         return Err(ApiError::too_large(format!("the data is larger than the limit of {max} bytes")));
@@ -638,50 +703,116 @@ async fn put_data(
         return Err(ApiError::invalid("empty data is not accepted"));
     }
 
-    // 3. Commit under the state mutex: the lease must still be live and the base version current right now.
+    // 3. Commit under the state mutex: the lease must still be live and the conditions must hold right now. The
+    //    new version is `current + 1`, so the numbers only ever grow.
     let (p, l, tmp_path) = (pid.clone(), lease, tmp.path.clone());
     let meta = app
         .run(&c, move |st, cx| {
-            st.data_commit_check(cx, &p, l.as_deref(), base)?;
+            let current = st.data_access(&cx.user, &p, l.as_deref(), cx.now_ms)?;
+            pre.check(&current)?;
             if let Some(lock) = st.locks.get(&p) {
                 cx.device_id = lock.device_id.clone();
             }
-            install_blob(&dir, &tmp_path)?;
-            Ok(st.data_commit_apply(cx, &p, size, sha))
+            blobs::install(&dir, &tmp_path, current.version + 1)?;
+            let meta = st.data_commit_apply(cx, &p, size, sha);
+            blobs::prune(&dir, keep);
+            Ok(meta)
         })
         .await?;
     tmp.disarm();
     Ok(Json(meta))
 }
 
+/// What a data pull answers with.
+enum Pull {
+    /// Nothing is stored yet.
+    Empty,
+    /// `If-None-Match` named the stored data: the client has it already.
+    NotModified,
+    Current,
+    /// A kept older version (`?version=N`).
+    Old(u64),
+}
+
+fn data_headers(h: &mut HeaderMap, version: u64, sha256: &str) {
+    h.insert(header_name(DATA_VERSION_HEADER), HeaderValue::from(version));
+    if let Ok(v) = HeaderValue::from_str(sha256) {
+        h.insert(header_name(DATA_SHA256_HEADER), v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&format!("\"{sha256}\"")) {
+        h.insert(header::ETAG, v);
+    }
+}
+
 async fn get_data(
     State(app): State<App>,
     Extension(c): Extension<Caller>,
     Path(pid): Path<String>,
+    uri: Uri,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     let lease = lease_of(&headers);
+    let want = parse_query::<DataQuery>(&uri)?.version;
+    let none_match = etag_header(&headers, header::IF_NONE_MATCH);
     let dir = app.store.blob_dir(&pid).ok_or_else(|| ApiError::not_found("no such profile"))?;
     let p = pid.clone();
-    let meta = app
+    // Reading is as exclusive as writing: `data_access` refuses everybody but the holder of the live lock.
+    let (meta, pull) = app
         .read(&c, move |st, cx| {
             let meta = st.data_access(&cx.user, &p, lease.as_deref(), cx.now_ms)?;
             if let Some(lock) = st.locks.get(&p) {
                 cx.device_id = lock.device_id.clone();
             }
-            if meta.version > 0 {
-                let hp = &st.profiles[&p];
-                let msg = format!("data pulled for `{}`: v{} ({} bytes)", hp.profile.name, meta.version, meta.size);
-                cx.log(&hp.team_id, LogLevel::Info, Some(&p), msg);
+            let pull = match want {
+                _ if meta.version == 0 => Pull::Empty,
+                Some(v) if v == 0 || v > meta.version => {
+                    return Err(ApiError::not_found(format!("no version {v} (the current one is {})", meta.version)));
+                }
+                Some(v) if v != meta.version => Pull::Old(v),
+                _ if none_match.is_some_and(|t| t.iter().any(|x| x == "*" || *x == meta.sha256)) => Pull::NotModified,
+                _ => Pull::Current,
+            };
+            let hp = &st.profiles[&p];
+            let msg = match &pull {
+                Pull::Empty => None,
+                Pull::NotModified => Some(format!("data of `{}` is up to date at v{}", hp.profile.name, meta.version)),
+                Pull::Old(v) => Some(format!("data pulled for `{}`: older version v{v}", hp.profile.name)),
+                Pull::Current => {
+                    Some(format!("data pulled for `{}`: v{} ({} bytes)", hp.profile.name, meta.version, meta.size))
+                }
+            };
+            if let Some(m) = msg {
+                let team = hp.team_id.clone();
+                cx.log(&team, LogLevel::Info, Some(&p), m);
             }
-            Ok(meta)
+            Ok((meta, pull))
         })
         .await?;
-    if meta.version == 0 {
-        return Ok(StatusCode::NO_CONTENT.into_response());
-    }
-    let file = tokio::fs::File::open(dir.join("data.bin")).await.map_err(|e| {
-        tracing::error!("the data of profile {pid} is recorded but cannot be opened: {e}");
+    let (version, sha256, path) = match pull {
+        Pull::Empty => return Ok(StatusCode::NO_CONTENT.into_response()),
+        Pull::NotModified => {
+            let mut resp = StatusCode::NOT_MODIFIED.into_response();
+            data_headers(resp.headers_mut(), meta.version, &meta.sha256);
+            return Ok(resp);
+        }
+        Pull::Current => (meta.version, meta.sha256.clone(), blobs::file_path(&dir, meta.version)),
+        Pull::Old(v) => {
+            let path = blobs::file_path(&dir, v);
+            let hashed = {
+                let path = path.clone();
+                blocking(move || blobs::hash_file(&path)).await?
+            };
+            match hashed {
+                Ok((_, sha)) => (v, sha, path),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(ApiError::not_found(format!("version {v} is not kept any more")));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    };
+    let file = tokio::fs::File::open(&path).await.map_err(|e| {
+        tracing::error!("the data v{version} of profile {pid} is recorded but cannot be opened: {e}");
         ApiError::internal("the stored data is missing")
     })?;
     let len = file.metadata().await?.len();
@@ -702,11 +833,41 @@ async fn get_data(
     let h = resp.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
     h.insert(header::CONTENT_LENGTH, HeaderValue::from(len));
-    h.insert(header_name(DATA_VERSION_HEADER), HeaderValue::from(meta.version));
-    if let Ok(v) = HeaderValue::from_str(&meta.sha256) {
-        h.insert(header_name(DATA_SHA256_HEADER), v);
-    }
+    data_headers(h, version, &sha256);
     Ok(resp)
+}
+
+/// The versions of a profile's data that are still on disk, newest first. Metadata only, so any team member (the
+/// lease is not needed) may look; the content needs the lease like everything else.
+async fn data_versions(
+    State(app): State<App>,
+    Extension(c): Extension<Caller>,
+    Path(pid): Path<String>,
+) -> ApiResult<Json<Vec<DataVersion>>> {
+    let dir = app.store.blob_dir(&pid).ok_or_else(|| ApiError::not_found("no such profile"))?;
+    let cur = app
+        .read(&c, move |st, cx| {
+            let (hp, _) = st.profile_role_min(&cx.user, &pid, TeamRole::Member)?;
+            Ok(hp.data.clone())
+        })
+        .await?;
+    let files = blocking(move || blobs::list(&dir)).await?;
+    Ok(Json(
+        files
+            .into_iter()
+            .rev()
+            .map(|f| {
+                let current = f.version == cur.version;
+                DataVersion {
+                    version: f.version,
+                    size: f.size,
+                    modified_at: f.modified,
+                    current,
+                    sha256: current.then(|| cur.sha256.clone()),
+                }
+            })
+            .collect(),
+    ))
 }
 
 // ---- handlers: logs and CSV ----------------------------------------------------------------------------------------
@@ -734,7 +895,10 @@ async fn post_logs(
 
 #[derive(Deserialize, Default)]
 struct LogsQuery {
+    /// Only for `GET /v1/logs`: the team (id or exact name); optional when the caller is in just one team.
+    team: Option<String>,
     kind: Option<String>,
+    #[serde(alias = "profile")]
     profile_id: Option<String>,
     level: Option<String>,
     since: Option<i64>,
@@ -772,7 +936,32 @@ async fn team_logs(
 ) -> ApiResult<Json<Vec<LogRecord>>> {
     let q = log_query(parse_query(&uri)?)?;
     let t = tid.clone();
-    app.read(&c, move |st, cx| st.require_role(&cx.user, &t, TeamRole::Member).map(|_| ())).await?;
+    app.read(&c, move |st, cx| st.require_role(&cx.user, &t, TeamRole::Viewer).map(|_| ())).await?;
+    let store = app.store.clone();
+    Ok(Json(blocking(move || store.query_logs(&tid, &q)).await??))
+}
+
+/// `GET /v1/logs?team=&profile=&kind=&level=&since=&limit=`: the same as the team endpoint with the team as a
+/// query parameter (id or exact name; it may be left out when the caller is in exactly one team).
+async fn logs(State(app): State<App>, Extension(c): Extension<Caller>, uri: Uri) -> ApiResult<Json<Vec<LogRecord>>> {
+    let raw: LogsQuery = parse_query(&uri)?;
+    let team = raw.team.clone().filter(|t| !t.trim().is_empty());
+    let q = log_query(raw)?;
+    let tid = app
+        .read(&c, move |st, cx| {
+            let visible = st.teams_of(&cx.user);
+            let entry = match &team {
+                Some(t) => visible
+                    .iter()
+                    .find(|e| e.team.id == *t)
+                    .or_else(|| visible.iter().find(|e| e.team.name.eq_ignore_ascii_case(t.trim())))
+                    .ok_or_else(|| ApiError::not_found("no such team"))?,
+                None if visible.len() == 1 => &visible[0],
+                None => return Err(ApiError::invalid("pass ?team=ID (or the team name): you are in several teams")),
+            };
+            Ok(entry.team.id.clone())
+        })
+        .await?;
     let store = app.store.clone();
     Ok(Json(blocking(move || store.query_logs(&tid, &q)).await??))
 }
@@ -855,7 +1044,8 @@ async fn export_csv(
 pub fn router(store: Arc<Store>) -> Router {
     let cfg = store.config();
     let limiter = Arc::new(AuthLimiter::new(cfg.auth_fail_limit, cfg.auth_fail_window, cfg.auth_block));
-    let app = App { store, limiter };
+    let rate = Arc::new(RateLimiter::new(cfg.rate_limit_per_min));
+    let app = App { store, limiter, rate };
     let v1: Router<App> = Router::new()
         .route("/me", get(me))
         .route("/teams", get(list_teams).post(create_team))
@@ -865,6 +1055,7 @@ pub fn router(store: Arc<Store>) -> Router {
         .route("/groups/{gid}", patch(update_group).delete(delete_group))
         .route("/teams/{tid}/profiles", get(list_profiles).post(create_profile))
         .route("/teams/{tid}/profiles/bulk-delete", post(bulk_delete))
+        .route("/teams/{tid}/profiles.csv", get(export_csv))
         .route("/teams/{tid}/export/profiles.csv", get(export_csv))
         .route("/teams/{tid}/logs", get(team_logs))
         .route("/profiles/{pid}", get(get_profile).patch(patch_profile).delete(delete_profile))
@@ -873,7 +1064,8 @@ pub fn router(store: Arc<Store>) -> Router {
         .route("/profiles/{pid}/unlock", post(unlock))
         .route("/profiles/{pid}/force-unlock", post(force_unlock))
         .route("/profiles/{pid}/data", get(get_data).put(put_data))
-        .route("/logs", post(post_logs))
+        .route("/profiles/{pid}/data/versions", get(data_versions))
+        .route("/logs", get(logs).post(post_logs))
         .route("/admin/logs", get(admin_logs))
         .route("/admin/users", get(admin_users))
         .layer(middleware::from_fn_with_state(app.clone(), authenticate));
@@ -883,6 +1075,7 @@ pub fn router(store: Arc<Store>) -> Router {
         .fallback(not_found_fallback)
         .method_not_allowed_fallback(method_not_allowed)
         .layer(middleware::map_response(harden))
+        .layer(middleware::from_fn_with_state(app.clone(), access_log))
         .with_state(app)
 }
 
@@ -946,22 +1139,45 @@ mod tests {
         assert!(log_query(LogsQuery { level: Some("loud".into()), ..Default::default() }).is_err());
     }
 
-    #[test]
-    fn install_keeps_one_backup() {
-        let d = std::env::temp_dir().join(format!("citro-hub-install-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        for (i, content) in ["one", "two", "three"].iter().enumerate() {
-            let tmp = d.join(format!("upload-{i}"));
-            std::fs::write(&tmp, content).unwrap();
-            install_blob(&d, &tmp).unwrap();
-            assert_eq!(std::fs::read_to_string(d.join("data.bin")).unwrap(), *content);
-            assert!(!tmp.exists());
+    fn meta(version: u64, sha: &str) -> DataMeta {
+        DataMeta { version, size: 3, sha256: sha.into(), updated_at: 0 }
+    }
+
+    fn pre(headers: &[(&str, &str)], query: &str) -> Precondition {
+        let mut h = HeaderMap::new();
+        for (k, v) in headers {
+            h.insert(HeaderName::from_bytes(k.as_bytes()).unwrap(), HeaderValue::from_str(v).unwrap());
         }
-        assert_eq!(std::fs::read_to_string(d.join("data.prev")).unwrap(), "two", "only the previous version is kept");
-        // a failing second rename puts the old file back
-        assert!(install_blob(&d, &d.join("does-not-exist")).is_err());
-        assert_eq!(std::fs::read_to_string(d.join("data.bin")).unwrap(), "three");
-        let _ = std::fs::remove_dir_all(&d);
+        let q: DataQuery = serde_urlencoded::from_str(query).unwrap();
+        Precondition::from_request(&h, &q)
+    }
+
+    #[test]
+    fn entity_tags_are_normalised() {
+        assert_eq!(etags("\"ABC\", W/\"def\" ,*"), ["abc", "def", "*"]);
+        assert!(etags("  ").is_empty());
+    }
+
+    #[test]
+    fn preconditions_decide_whether_a_push_may_replace_the_data() {
+        let none = pre(&[], "");
+        assert!(none.check(&meta(0, "")).is_ok() && none.check(&meta(4, "aa")).is_ok(), "no condition: always");
+
+        let base = pre(&[], "base_version=4");
+        assert!(base.check(&meta(4, "aa")).is_ok());
+        let e = base.check(&meta(5, "bb")).unwrap_err();
+        assert_eq!((e.status.as_u16(), e.code, e.current_version), (409, "stale", Some(5)));
+
+        let m = pre(&[("if-match", "\"AA\"")], "");
+        assert!(m.check(&meta(4, "aa")).is_ok(), "tags compare case-insensitively");
+        assert_eq!(m.check(&meta(5, "bb")).unwrap_err().status.as_u16(), 412);
+        assert_eq!(m.check(&meta(0, "")).unwrap_err().status.as_u16(), 412, "nothing stored: nothing to match");
+        let star = pre(&[("if-match", "*")], "");
+        assert!(star.check(&meta(1, "aa")).is_ok() && star.check(&meta(0, "")).is_err());
+
+        let first = pre(&[("if-none-match", "*")], "");
+        assert!(first.check(&meta(0, "")).is_ok());
+        assert_eq!(first.check(&meta(1, "aa")).unwrap_err().status.as_u16(), 412);
+        assert!(pre(&[("if-none-match", "\"aa\"")], "").check(&meta(1, "aa")).is_ok(), "only `*` counts for a push");
     }
 }

@@ -84,6 +84,113 @@ impl AuthLimiter {
     }
 }
 
+/// The most `(address, user)` pairs tracked at once. Only authenticated requests are counted, so this is bounded by
+/// users x addresses in practice; the cap is a safety net.
+const MAX_BUCKETS: usize = 8192;
+
+#[derive(Debug)]
+struct Bucket {
+    tokens: f64,
+    last: Instant,
+}
+
+/// Request rate limit per `(address, user)`: a token bucket holding `per_min` tokens (so a burst of that many
+/// requests is fine) that refills at `per_min / 60` tokens per second. A rate of 0 turns it off.
+///
+/// It runs after authentication, so the key contains a *valid* user: a stolen or runaway client cannot starve the
+/// others (they have their own bucket), and an attacker guessing tokens is stopped by [`AuthLimiter`] instead.
+#[derive(Debug)]
+pub struct RateLimiter {
+    per_min: u32,
+    buckets: Mutex<HashMap<(IpAddr, String), Bucket>>,
+}
+
+impl RateLimiter {
+    pub fn new(per_min: u32) -> RateLimiter {
+        RateLimiter { per_min, buckets: Mutex::new(HashMap::new()) }
+    }
+
+    /// Take one token. `Err(seconds)` (rounded up, at least 1) says how long to wait for the next one.
+    pub fn check(&self, ip: IpAddr, user_id: &str, now: Instant) -> Result<(), u64> {
+        if self.per_min == 0 {
+            return Ok(());
+        }
+        let cap = f64::from(self.per_min);
+        let rate = cap / 60.0;
+        let mut map = self.buckets.lock().unwrap_or_else(|p| p.into_inner());
+        if map.len() >= MAX_BUCKETS {
+            // A bucket that is full again carries no information: forget it.
+            map.retain(|_, b| b.tokens + now.saturating_duration_since(b.last).as_secs_f64() * rate < cap);
+        }
+        let b = map.entry((ip, user_id.to_owned())).or_insert(Bucket { tokens: cap, last: now });
+        let elapsed = now.saturating_duration_since(b.last).as_secs_f64();
+        b.tokens = (b.tokens + elapsed * rate).min(cap);
+        b.last = now;
+        if b.tokens >= 1.0 {
+            b.tokens -= 1.0;
+            Ok(())
+        } else {
+            Err(((1.0 - b.tokens) / rate).ceil().max(1.0) as u64)
+        }
+    }
+
+    /// Number of pairs currently tracked (tests).
+    pub fn tracked(&self) -> usize {
+        self.buckets.lock().unwrap_or_else(|p| p.into_inner()).len()
+    }
+}
+
+#[cfg(test)]
+mod rate_tests {
+    use super::*;
+
+    fn ip(n: u8) -> IpAddr {
+        IpAddr::from([10, 0, 0, n])
+    }
+
+    #[test]
+    fn a_burst_up_to_the_rate_passes_then_it_waits() {
+        let l = RateLimiter::new(60);
+        let t0 = Instant::now();
+        for i in 0..60 {
+            assert!(l.check(ip(1), "u1", t0).is_ok(), "request {i}");
+        }
+        assert_eq!(l.check(ip(1), "u1", t0), Err(1), "the 61st within the same instant waits one second");
+        assert!(l.check(ip(1), "u1", t0 + Duration::from_millis(1100)).is_ok(), "one token came back");
+        assert!(l.check(ip(1), "u1", t0 + Duration::from_millis(1100)).is_err());
+        // an idle minute refills the bucket, but never beyond its capacity
+        let later = t0 + Duration::from_secs(3600);
+        for _ in 0..60 {
+            assert!(l.check(ip(1), "u1", later).is_ok());
+        }
+        assert!(l.check(ip(1), "u1", later).is_err());
+    }
+
+    #[test]
+    fn every_address_and_user_pair_has_its_own_bucket() {
+        let l = RateLimiter::new(2);
+        let t0 = Instant::now();
+        assert!(l.check(ip(1), "u1", t0).is_ok() && l.check(ip(1), "u1", t0).is_ok());
+        assert!(l.check(ip(1), "u1", t0).is_err());
+        assert!(l.check(ip(2), "u1", t0).is_ok(), "same user, other address");
+        assert!(l.check(ip(1), "u2", t0).is_ok(), "other user, same address");
+        assert_eq!(l.tracked(), 3);
+    }
+
+    #[test]
+    fn zero_turns_it_off_and_the_wait_is_never_zero() {
+        let off = RateLimiter::new(0);
+        let t0 = Instant::now();
+        for _ in 0..10_000 {
+            assert!(off.check(ip(1), "u1", t0).is_ok());
+        }
+        assert_eq!(off.tracked(), 0);
+        let slow = RateLimiter::new(1);
+        assert!(slow.check(ip(1), "u1", t0).is_ok());
+        assert_eq!(slow.check(ip(1), "u1", t0), Err(60), "one request per minute: wait the whole minute");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

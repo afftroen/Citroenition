@@ -147,6 +147,20 @@ pub struct DataMeta {
     pub updated_at: i64,
 }
 
+/// One kept version of a profile's data (`GET /v1/profiles/{pid}/data/versions`, newest first).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataVersion {
+    pub version: u64,
+    pub size: u64,
+    /// When the version was stored (file time, unix seconds).
+    pub modified_at: i64,
+    /// Whether this is the version a plain `GET .../data` returns.
+    pub current: bool,
+    /// Only known (without reading the file) for the current version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
 /// Who has a profile open (public view of a lock; the lease itself is never listed).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockInfo {

@@ -51,6 +51,19 @@ impl ApiError {
         e
     }
 
+    /// An `If-Match` / `If-None-Match` precondition of a data push failed: somebody else pushed first (or the
+    /// client believes there is no data while there is). Same `code` as [`ApiError::stale`], so clients treat the
+    /// two alike; the status is the one HTTP prescribes for it.
+    pub fn precondition_failed(current_version: u64) -> ApiError {
+        let mut e = ApiError::new(
+            StatusCode::PRECONDITION_FAILED,
+            "stale",
+            format!("the If-Match / If-None-Match precondition failed (current version is {current_version})"),
+        );
+        e.current_version = Some(current_version);
+        e
+    }
+
     pub fn invalid(message: impl Into<String>) -> ApiError {
         ApiError::new(StatusCode::BAD_REQUEST, "invalid", message)
     }
@@ -79,6 +92,11 @@ impl ApiError {
     pub fn rate_limited(retry_after_secs: u64) -> ApiError {
         ApiError::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", "too many failed logins; try again later")
             .with_retry_after(retry_after_secs.max(1))
+    }
+
+    pub fn with_message(mut self, message: impl Into<String>) -> ApiError {
+        self.message = message.into();
+        self
     }
 
     /// Name the current lock holder in the answer (lease errors carry it so a client can show who has the profile).
@@ -155,6 +173,7 @@ mod tests {
             (ApiError::forbidden("x"), 403, "forbidden"),
             (ApiError::not_found("x"), 404, "not_found"),
             (ApiError::stale(3), 409, "stale"),
+            (ApiError::precondition_failed(3), 412, "stale"),
             (ApiError::invalid("x"), 400, "invalid"),
             (ApiError::too_large("x"), 413, "too_large"),
             (ApiError::lease_required(), 403, "lease_required"),
