@@ -98,6 +98,7 @@ enum KernelCmd {
     #[command(visible_alias = "ls")]
     List,
     /// Download the Clearcote kernel, verify it (pinned OpenPGP key + SHA-256) and install it
+    #[command(disable_version_flag = true)] // `--version` here selects the kernel, not the citro version
     Install {
         /// Chromium version (151.0.7922.108) or release tag (default: the latest release)
         #[arg(long)]
