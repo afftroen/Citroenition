@@ -3,10 +3,10 @@
 mod api;
 
 use anyhow::{Result, anyhow, bail};
-use citro_core::codec;
 use citro_core::kernel::Kernel;
 use citro_core::launch::{self, LaunchOptions};
 use citro_core::profile::{Profile, ProxyConfig};
+use citro_core::redact;
 use citro_core::store::{self, Home, Store};
 use citro_core::{Error, Result as CoreResult};
 use clap::{Args, Parser, Subcommand};
@@ -22,7 +22,7 @@ struct Cli {
     /// State directory (env CITRO_HOME; default ~/.local/share/citroenition)
     #[arg(long, global = true, value_name = "DIR")]
     home: Option<PathBuf>,
-    /// SunBrowser kernel binary (env CITRO_KERNEL; default: the newest kernel of an AdsPower install)
+    /// Clearcote kernel binary (env CITRO_KERNEL; default: the newest one installed by `citro kernel install`)
     #[arg(long, global = true, value_name = "PATH")]
     kernel: Option<PathBuf>,
     #[command(subcommand)]
@@ -81,10 +81,22 @@ enum Cmd {
         #[command(subcommand)]
         cmd: GroupCmd,
     },
-    /// Show which kernel is used
-    Kernel,
+    /// The open-source browser kernel (Clearcote): which one is used, what is installed
+    Kernel {
+        #[command(subcommand)]
+        cmd: Option<KernelCmd>,
+    },
     /// Serve the AdsPower Local API
     Serve(ServeArgs),
+}
+
+#[derive(Subcommand)]
+enum KernelCmd {
+    /// Show the kernel that `citro open` would use (the default)
+    Status,
+    /// List the installed kernels, newest first
+    #[command(visible_alias = "ls")]
+    List,
 }
 
 #[derive(Subcommand)]
@@ -120,6 +132,9 @@ struct ProfileArgs {
     /// ISO country of the proxy exit: picks the default language and time zone
     #[arg(long, value_name = "CC")]
     country: Option<String>,
+    /// Operating system the profile claims: windows, macos or linux (default: this machine's)
+    #[arg(long, value_name = "OS")]
+    os: Option<String>,
     /// User agent (default: Chrome of the kernel's version)
     #[arg(long)]
     ua: Option<String>,
@@ -234,6 +249,13 @@ impl ProfileArgs {
         if let Some(v) = &self.country {
             p.country = v.trim().to_ascii_lowercase();
         }
+        if let Some(v) = &self.os {
+            let os = v.trim().to_ascii_lowercase();
+            if !matches!(os.as_str(), "windows" | "macos" | "linux" | "") {
+                return invalid(format!("--os: expected windows, macos or linux, got `{v}`"));
+            }
+            p.persona_os = os;
+        }
         let fp = &mut p.fingerprint_config.0;
         if let Some(v) = &self.ua {
             fp.insert("ua".into(), json!(v.trim()));
@@ -307,19 +329,12 @@ fn print_running(p: &Profile, r: &launch::Running, as_json: bool) -> Result<()> 
 }
 
 fn dry_run(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) -> Result<()> {
-    let prep = launch::prepare(home, kernel, p, opts, now_secs())?;
-    // --extended-parameters is shown decoded; it only references the generated config files (which hold
-    // the proxy credentials, 0600), never the credentials themselves
-    let args: Vec<Value> = prep
-        .args
-        .iter()
-        .map(|a| match a.strip_prefix("--extended-parameters=") {
-            Some(enc) => json!({"--extended-parameters": codec::decode_json(enc).unwrap_or(Value::Null)}),
-            None => json!(a),
-        })
-        .collect();
-    let env: serde_json::Map<String, Value> = prep.env.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
-    let out = json!({"kernel": kernel.binary, "env": env, "args": args});
+    let prep = launch::prepare(home, kernel, p, opts)?;
+    // credentials never reach the terminal: the proxy login is hidden, and the persona payload the engine
+    // reads from its environment is shown decoded
+    let (args, env) = redact::command_line(&prep);
+    let env: serde_json::Map<String, Value> = env.into_iter().map(|(k, v)| (k, json!(v))).collect();
+    let out = json!({"kernel": kernel.binary, "version": kernel.version, "env": env, "args": args});
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }
@@ -343,6 +358,7 @@ fn run(cli: Cli) -> Result<()> {
             );
         }
         Cmd::List { group, json } => {
+            let _ = launch::sync_closed(&home);
             let s = Store::open(&home)?;
             let gid = group.as_deref().map(|g| resolve_group(&s, g)).transpose()?;
             let rows: Vec<&Profile> =
@@ -426,14 +442,16 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         Cmd::Open(a) => {
+            let _ = launch::sync_closed(&home);
             let p = Store::open(&home)?.get(&a.profile)?.clone();
-            let kernel = Kernel::discover(cli.kernel.as_deref())?;
+            let kernel = Kernel::discover(&home, cli.kernel.as_deref())?;
             let opts = LaunchOptions {
                 headless: a.headless,
                 launch_args: a.launch_args.clone(),
                 last_opened_tabs: !a.fresh,
                 sandbox: a.sandbox,
                 startup_timeout: Duration::from_secs(a.timeout),
+                ..Default::default()
             };
             if a.dry_run {
                 return dry_run(&home, &kernel, &p, &opts);
@@ -459,11 +477,13 @@ fn run(cli: Cli) -> Result<()> {
                     None => missing.push(key.as_str()),
                 }
             }
+            let _ = launch::sync_closed(&home);
             if !missing.is_empty() {
                 bail!("no such profile: {}", missing.join(", "));
             }
         }
         Cmd::Ps { json } => {
+            let _ = launch::sync_closed(&home);
             let s = Store::open(&home)?;
             let live = launch::list_running(&home);
             if json {
@@ -520,11 +540,21 @@ fn run(cli: Cli) -> Result<()> {
                 .collect();
             table(&["ID", "NAME", "PROFILES", "REMARK"], &body);
         }
-        Cmd::Kernel => {
-            let k = Kernel::discover(cli.kernel.as_deref())?;
+        Cmd::Kernel { cmd: None | Some(KernelCmd::Status) } => {
+            let k = Kernel::discover(&home, cli.kernel.as_deref())?;
             println!("binary        {}", k.binary.display());
+            println!("version       {}", if k.version.is_empty() { "unknown" } else { &k.version });
             println!("chrome major  {}", k.major);
             println!("chromedriver  {}", k.chromedriver().map_or("-".to_owned(), |p| p.display().to_string()));
+        }
+        Cmd::Kernel { cmd: Some(KernelCmd::List) } => {
+            let found = Kernel::installed(&home);
+            if found.is_empty() {
+                eprintln!("no kernel installed in {}", citro_core::kernel::kernels_dir(&home).display());
+            }
+            for k in found {
+                println!("{:<18}  {}", k.version, k.binary.display());
+            }
         }
         Cmd::Serve(a) => {
             if !a.bind.ip().is_loopback() && a.api_key.as_deref().is_none_or(str::is_empty) {

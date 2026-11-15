@@ -229,7 +229,7 @@ pub(crate) fn endpoints(r: &Running) -> Value {
 fn do_start(st: &AppState, key: &str, opts: LaunchOptions) -> CoreResult<Value> {
     let _one_at_a_time = st.open_lock.lock().unwrap_or_else(PoisonError::into_inner);
     let profile = Store::open(&st.home)?.get(key)?.clone();
-    let kernel = Kernel::discover(st.kernel.as_deref())?;
+    let kernel = Kernel::discover(&st.home, st.kernel.as_deref())?;
     let r = launch::start(&st.home, &kernel, &profile, &opts)?;
     // a failed bookkeeping write must not fail an open that already succeeded
     let _ = store::locked(&st.home, |s| s.touch_opened(&profile.profile_id));
@@ -264,6 +264,7 @@ async fn stop_from(st: AppState, m: Map<String, Value>) -> Reply {
     run(move || {
         let id = resolve_id(&st.home, &key)?;
         launch::stop(&st.home, &id)?;
+        launch::sync_closed(&st.home)?;
         Ok(json!({}))
     })
     .await
@@ -495,6 +496,7 @@ fn row(s: &Store, p: &Profile) -> Value {
         "sys_app_cate_id": p.category_id,
         "created_time": p.created_time.to_string(),
         "last_open_time": p.last_open_time.to_string(),
+        "last_close_time": p.last_close_time.to_string(),
         "ip": p.ip,
         "ip_country": p.country,
         "user_proxy_config": p.user_proxy_config.redacted(),
@@ -515,6 +517,7 @@ fn sort_spec(m: &Map<String, Value>) -> (String, bool) {
 }
 
 fn list_profiles(st: &AppState, m: &Map<String, Value>, v2: bool) -> CoreResult<Value> {
+    launch::sync_closed(&st.home)?;
     let s = Store::open(&st.home)?;
     let wanted = |keys: &[&str]| -> Vec<String> { keys.iter().filter_map(|k| m.get(*k)).flat_map(str_list).collect() };
     let ids = wanted(&["profile_id", "user_id"]);
@@ -532,6 +535,7 @@ fn list_profiles(st: &AppState, m: &Map<String, Value>, v2: bool) -> CoreResult<
     let (key, desc) = sort_spec(m);
     rows.sort_by_key(|p| match key.as_str() {
         "last_open_time" => p.last_open_time,
+        "last_close_time" => p.last_close_time,
         "created_time" => p.created_time,
         _ => p.serial_number as i64,
     });

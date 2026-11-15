@@ -10,7 +10,9 @@ pub enum Error {
     Codec(String),
     #[error("profile not found: {0}")]
     ProfileNotFound(String),
-    #[error("no SunBrowser kernel found (searched: {0}); pass --kernel or set CITRO_KERNEL")]
+    #[error(
+        "no Clearcote kernel found (searched: {0}); install one with `citro kernel install`, or pass --kernel / set CITRO_KERNEL"
+    )]
     KernelNotFound(String),
     #[error("the kernel exited before opening its DevTools port (status {status:?}): {stderr}")]
     KernelExited { status: Option<i32>, stderr: String },

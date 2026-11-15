@@ -177,6 +177,12 @@ impl Store {
         self.update(key, |p| p.last_open_time = now()).map(|_| ())
     }
 
+    /// Record when the browser was closed. Never moves the time backwards: a close detected late carries
+    /// an estimate that must not overwrite a newer, exact one.
+    pub fn touch_closed(&mut self, key: &str, at: i64) -> Result<()> {
+        self.update(key, |p| p.last_close_time = p.last_close_time.max(at)).map(|_| ())
+    }
+
     pub fn groups(&self) -> &[Group] {
         &self.data.groups
     }
