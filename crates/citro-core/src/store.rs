@@ -47,6 +47,24 @@ impl Home {
         self.root.join("run")
     }
 
+    /// Everything about this device's team hub: the login, the sync bookkeeping, one marker per bound profile.
+    pub fn hub_dir(&self) -> PathBuf {
+        self.root.join("hub")
+    }
+
+    /// Is the profile bound to a team hub? A bound profile is not launched without the hub's lock:
+    /// [`crate::launch::start`] refuses unless the sync layer cleared it ([`crate::launch::LaunchOptions::hub_cleared`]).
+    pub fn hub_bound(&self, id: &str) -> bool {
+        valid_id(id) && self.hub_dir().join("bound").join(id).is_file()
+    }
+}
+
+/// A profile id that is safe to use as a file name (the hub makes `k` + 6 letters or digits).
+pub fn valid_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+impl Home {
     fn store_file(&self) -> PathBuf {
         self.root.join("store.json")
     }
@@ -152,6 +170,53 @@ impl Store {
         self.data.profiles.push(p.clone());
         self.save()?;
         Ok(p)
+    }
+
+    /// Insert or replace a profile that comes from a team hub, **keeping its id** (the id is the persona seed: it
+    /// must be the same on every device). A profile that exists already keeps its local serial number, creation
+    /// time and the newer of the two open/close times; a new one gets the next serial number.
+    pub fn upsert_synced(&mut self, mut p: Profile) -> Result<Profile> {
+        if p.profile_id.is_empty() {
+            return Err(Error::Invalid("a synced profile needs an id".into()));
+        }
+        if p.group_id.is_empty() {
+            p.group_id = "0".into();
+        }
+        if let Some(old) = self.data.profiles.iter_mut().find(|x| x.profile_id == p.profile_id) {
+            p.serial_number = old.serial_number;
+            p.created_time = old.created_time;
+            p.last_open_time = old.last_open_time.max(p.last_open_time);
+            p.last_close_time = old.last_close_time.max(p.last_close_time);
+            *old = p.clone();
+        } else {
+            p.serial_number = self.data.next_serial;
+            self.data.next_serial += 1;
+            self.data.profiles.push(p.clone());
+        }
+        self.save()?;
+        Ok(p)
+    }
+
+    /// The id of the group called `name` (case-insensitive), created when there is none.
+    pub fn group_id_for(&mut self, name: &str) -> Result<String> {
+        let name = name.trim();
+        if let Some(g) = self.data.groups.iter().find(|g| g.group_name.eq_ignore_ascii_case(name)) {
+            return Ok(g.group_id.clone());
+        }
+        Ok(self.create_group(name, "")?.group_id)
+    }
+
+    /// Give a profile another id (a hub assigns its own when a local profile is uploaded). `f` may adjust the
+    /// record in the same save. The caller moves the data directory.
+    pub fn rekey(&mut self, key: &str, new_id: &str, f: impl FnOnce(&mut Profile)) -> Result<Profile> {
+        if self.find(new_id).is_some() {
+            return Err(Error::Invalid(format!("a profile with id {new_id} exists already")));
+        }
+        let old = self.get(key)?.profile_id.clone();
+        self.update(&old, |p| {
+            p.profile_id = new_id.to_owned();
+            f(p);
+        })
     }
 
     pub fn update(&mut self, key: &str, f: impl FnOnce(&mut Profile)) -> Result<Profile> {

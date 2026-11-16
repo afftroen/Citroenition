@@ -20,6 +20,10 @@ pub enum Error {
     LaunchTimeout,
     #[error("{0}")]
     Invalid(String),
+    #[error(
+        "profile {0} belongs to a team hub and is not launched without the hub's lock: open it with `citro open` or in the app, which take the lock first"
+    )]
+    HubBound(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -1,6 +1,13 @@
 [workspace]
 resolver = "3"
-members = ["crates/citro-core", "crates/citro", "crates/citro-install", "crates/citro-hub", "crates/citro-gui"]
+members = [
+    "crates/citro-core",
+    "crates/citro",
+    "crates/citro-install",
+    "crates/citro-hub",
+    "crates/citro-gui",
+    "crates/citro-sync",
+]
 
 [workspace.package]
 version = "0.1.0"

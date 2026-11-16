@@ -38,6 +38,10 @@ pub struct LaunchOptions {
     /// Keep the persona and the proxy credentials on the command line even when the engine can take them
     /// from its environment (`ps` shows them to every local user; the environment is private).
     pub persona_on_argv: bool,
+    /// Set **only** by the sync layer, after it took the team hub's lock for the profile. Without it a hub-bound
+    /// profile is not launched ([`Error::HubBound`]): every way of opening one (CLI, Local API, app) has to go
+    /// through the lock.
+    pub hub_cleared: bool,
     pub startup_timeout: Duration,
 }
 
@@ -49,6 +53,7 @@ impl Default for LaunchOptions {
             last_opened_tabs: true,
             sandbox: false,
             persona_on_argv: false,
+            hub_cleared: false,
             startup_timeout: Duration::from_secs(30),
         }
     }
@@ -389,6 +394,9 @@ pub fn sync_closed(home: &Home) -> Result<usize> {
 pub fn start(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) -> Result<Running> {
     if let Some(r) = running(home, &p.profile_id) {
         return Ok(r);
+    }
+    if home.hub_bound(&p.profile_id) && !opts.hub_cleared {
+        return Err(Error::HubBound(p.profile_id.clone()));
     }
     let start_time = now();
     let prep = prepare(home, kernel, p, opts)?;
