@@ -826,7 +826,8 @@ fn the_csv_export_is_rfc_4180_and_python_can_read_it() {
         ("socks5", "1.2.3.4", "1080", "pu")
     );
     assert_eq!((row[col("language")].as_str(), row[col("timezone")].as_str()), ("de-DE,en-US", "Europe/Berlin"));
-    assert_eq!(row[col("tabs")], format!("https://a.example/ | https://u:{MASK}@b.example/x"));
+    // the spreadsheet format is the core's: `user:***@`, as documented
+    assert_eq!(row[col("tabs")], "https://a.example/ | https://u:***@b.example/x");
     assert_eq!(row[col("account_username")], "bob@example.com");
     assert_eq!(
         (row[col("created_by")].as_str(), row[col("last_open_by")].as_str(), row[col("last_close_by")].as_str()),
