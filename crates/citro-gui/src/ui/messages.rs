@@ -173,6 +173,18 @@ impl CitroApp {
                     Ok(h) => {
                         self.hub = h;
                         self.teams_ui.error = None;
+                        self.teams_ui.connected();
+                        // remember the address and device name (never the token); other unsaved edits stay unsaved
+                        let (url, device) = (self.hub.url.clone(), self.hub.device_name.clone());
+                        for s in [&mut self.settings, &mut self.saved_settings] {
+                            s.hub_url = url.clone();
+                            if !device.is_empty() {
+                                s.device_name = device.clone();
+                            }
+                        }
+                        if let Some(path) = &self.settings_path {
+                            let _ = self.saved_settings.save(path);
+                        }
                         self.toast(ToastKind::Ok, "Connected to the team hub");
                         self.refresh_teams();
                         self.refresh_rows();
