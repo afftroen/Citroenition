@@ -846,6 +846,26 @@ fn users_can_be_created_rotated_and_revoked_while_the_hub_runs() {
     assert!(log.iter().all(|r| !r.message.contains(&fresh[6..])));
 }
 
+#[test]
+fn memberships_are_not_written_offline_while_a_hub_serves() {
+    let w = World::new();
+    // Teams and members belong to the running server: an offline write would be lost at its next save, so the
+    // admin commands refuse instead of pretending (a plain user is fine, the server adopts users from disk).
+    for refused in [
+        admin::create_user(&w.data, "eve", UserRole::Member, Some(("Acme", TeamRole::Member))).map(|_| ()),
+        admin::create_team(&w.data, "Other", Some("anna")).map(|_| ()),
+        admin::add_member(&w.data, &w.team, "ben", TeamRole::Viewer).map(|_| ()),
+    ] {
+        let text = refused.expect_err("must be refused while a hub serves this directory").to_string();
+        assert!(text.contains("is serving") && text.contains("POST /v1/teams"), "{text}");
+    }
+    assert!(w.anna().admin_users().unwrap().iter().all(|u| u.name != "eve"), "a refused command changes nothing");
+    assert_eq!(w.ben().teams().unwrap()[0].role, TeamRole::Member, "ben's role is untouched");
+    // the API is the way while serving
+    admin::create_user(&w.data, "eve", UserRole::Member, None).unwrap();
+    w.anna().add_member(&w.team, "eve", TeamRole::Viewer).unwrap();
+}
+
 // ---- teams, groups, remarks -------------------------------------------------------------------------------------
 
 #[test]

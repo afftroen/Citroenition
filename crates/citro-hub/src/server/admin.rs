@@ -238,7 +238,10 @@ pub fn create_user(dir: &Path, name: &str, role: UserRole, team: Option<(&str, T
     }
     let name = check_name(name)?;
     let team = team.map(|(key, role)| (key.to_owned(), role));
-    let made = modify(dir, |st| {
+    // A user alone may be added while a server runs (it adopts users from disk); a membership belongs to the
+    // running server, so with `--team` the server must be stopped (otherwise its next write would drop it).
+    let with_team = team.is_some();
+    let work = |st: &mut State| {
         if st.user_by_name(&name).is_some() {
             return Err(AdminError::Invalid(format!(
                 "user `{name}` already exists (use `admin rotate-token --name {name}` for a new token)"
@@ -257,7 +260,8 @@ pub fn create_user(dir: &Path, name: &str, role: UserRole, team: Option<(&str, T
             _ => None,
         };
         Ok(Created { user, token, initialised: false, member })
-    })?;
+    };
+    let made = if with_team { modify_stopped(dir, work)? } else { modify(dir, work)? };
     let note = match &made.member {
         Some(m) => format!(
             "user `{}` created ({}); member of team {} as {}",

@@ -137,7 +137,7 @@ pub enum AdminCmd {
         /// owner / admin = hub operator; member / viewer = ordinary account (give it a team with `--team`).
         #[arg(long, value_enum, default_value = "member")]
         role: RoleArg,
-        /// Also add the user to this team (id or name) with the role given above.
+        /// Also add the user to this team (id or name) with the role given above (needs the server stopped; with a server running use `POST /v1/teams/ID/members`).
         #[arg(long, value_name = "TEAM")]
         team: Option<String>,
     },
