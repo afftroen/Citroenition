@@ -1,0 +1,72 @@
+# Builds the four programs, packages them (scripts/package-release.sh) and, for a version tag, publishes the GitHub
+# release with the archive, SHA256SUMS and the matching section of CHANGELOG.md as its notes:
+#
+#   git tag -a v0.1.0 -m "Citroenition 0.1.0" && git push origin v0.1.0
+#
+# A push to the branch `release-check` runs everything except the publishing, and keeps the archive as a workflow
+# artifact: a dry run for the packaging itself.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+    branches: ["release-check"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # the oldest glibc still on offer, so the programs run on Ubuntu 22.04 / Debian 12 and everything newer
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "the tag is $GITHUB_REF_NAME but Cargo.toml says v$version" >&2
+            exit 1
+          fi
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          awk -v v="$VERSION" '/^## /{ on = (index($0, "## " v) == 1) } on' CHANGELOG.md > notes.md
+          test -s notes.md || { echo "CHANGELOG.md has no section for $VERSION" >&2; exit 1; }
+          cat notes.md
+
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+
+      - name: Build
+        run: cargo build --release --locked -p citro -p citro-hub -p citro-gui -p citro-install
+
+      - name: Package
+        run: scripts/package-release.sh "$VERSION" target/release dist
+
+      - name: Run what is in the archive
+        run: |
+          (cd dist && sha256sum -c SHA256SUMS)
+          mkdir check && tar xzf dist/citroenition-v"$VERSION"-x86_64-linux.tar.gz -C check
+          for p in citro citro-gui citro-hub citro-install; do
+            check/citroenition-v"$VERSION"-x86_64-linux/$p --version
+          done
+          ls check/citroenition-v"$VERSION"-x86_64-linux check/citroenition-v"$VERSION"-x86_64-linux/docs
+
+      - name: Keep the archive (dry run)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: citroenition-dry-run
+          path: dist/*
+
+      - name: Publish
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/SHA256SUMS \
+            --verify-tag --title "Citroenition $GITHUB_REF_NAME" --notes-file notes.md

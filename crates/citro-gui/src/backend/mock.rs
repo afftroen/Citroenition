@@ -347,7 +347,7 @@ impl MockBackend {
         let teams = vec![TeamInfo {
             id: "t1".into(),
             name: "Vinted Ops".into(),
-            role: Role::Admin,
+            role: Role::Owner,
             members: vec![
                 Member { name: me.into(), role: Role::Owner },
                 Member { name: "jonas".into(), role: Role::Admin },

@@ -96,7 +96,15 @@ pub enum Error {
     #[error("network error: {0}")]
     Network(String),
     #[error("i/o error: {0}")]
-    Io(#[from] io::Error),
+    Io(io::Error),
+}
+
+// The message already contains the inner error, so the inner error must not also be the `source()`: `{:#}` would
+// print it twice.
+impl From<io::Error> for Error {
+    fn from(e: io::Error) -> Self {
+        Error::Io(e)
+    }
 }
 
 impl Error {

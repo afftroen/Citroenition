@@ -14,11 +14,12 @@ OPTIONS:
     --home DIR          data directory (default: $CITRO_HOME or ~/.local/share/citroenition)
     --kernel PATH       use this browser kernel binary for this run
     --demo              fake in-memory data: nothing is read from or written to disk
-    --screenshot OUT    render the window headlessly, write a PNG and exit (docs / QA harness)
+    --screenshot OUT    draw the window, write a PNG and exit (needs a display: xvfb-run on a server)
     --page PAGE         page for --screenshot: profiles groups logs logs-browser kernel teams settings
                         edit new export error (default: profiles)
     --size WxH          window size (default 1280x800, minimum 960x600)
     --theme dark|light  colour theme for this run (default: the saved setting)
+    -V, --version       print the version
     -h, --help          this text
 ";
 
@@ -72,6 +73,7 @@ pub struct Args {
     pub size: Option<(f32, f32)>,
     pub theme: Option<Theme>,
     pub help: bool,
+    pub version: bool,
 }
 
 fn parse_size(s: &str) -> Option<(f32, f32)> {
@@ -95,6 +97,7 @@ impl Args {
             };
             match flag.as_str() {
                 "-h" | "--help" => out.help = true,
+                "-V" | "--version" => out.version = true,
                 "--demo" => out.demo = true,
                 "--home" => out.home = Some(PathBuf::from(value("--home")?)),
                 "--kernel" => out.kernel = Some(value("--kernel")?),
@@ -143,6 +146,14 @@ mod tests {
         assert_eq!(a.page, StartPage::Groups);
         assert_eq!(a.size, Some((1000.0, 700.0)));
         assert_eq!(a.theme, Some(Theme::Light));
+    }
+
+    #[test]
+    fn version_and_help_are_flags() {
+        assert!(p(&["--version"]).unwrap().version);
+        assert!(p(&["-V"]).unwrap().version);
+        assert!(p(&["-h"]).unwrap().help);
+        assert!(!p(&[]).unwrap().version);
     }
 
     #[test]

@@ -1,0 +1,62 @@
+# Changelog
+
+## 0.1.0 (2026-11-17)
+
+The first release. Everything is Rust except the browser engine, which is the open-source Chromium build
+[Clearcote](https://github.com/clearcotelabs/clearcote-browser): Citroenition installs and verifies it, it does not
+bundle it.
+
+**What is in the archive**
+
+* `citro`: the command line, and `citro serve`, a Local API that is compatible with AdsPower's, so automation written
+  for AdsPower (Selenium, Puppeteer, Playwright) points at it unchanged.
+* `citro-gui`: the desktop app: profile table, groups, remarks, last-opened and last-closed times, logs, CSV export,
+  the kernel installer, and everything about teams.
+* `citro-hub`: the self-hosted team server.
+* `citro-install`: downloads, signature-checks and unpacks the Clearcote kernel (`citro kernel install` does the same).
+
+**What it does**
+
+* **Profiles** with their own proxy, cookies and a persona that agrees with itself and with its proxy: operating system,
+  hardware, language, time zone and location.
+* **Teams** on your own server: users, the roles owner, admin, member and viewer, groups, remarks, and the last-opened
+  and last-closed time of every profile.
+* **Locks the server enforces.** A profile that is open on one device cannot be opened on another, by anyone, through
+  any front end: the app, the command line and the Local API all ask the hub first. A lock is a short lease that the
+  opener keeps renewing; it expires when the device dies, and a team owner or admin can break it (audited).
+* **Cookies and browser data hosted on that server**, uploaded when a profile is closed and downloaded when it is
+  opened. Only the device that holds the lock can write the data, and only that device (and team admins) can read it.
+  A lost lock is never merged: what the losing device did is kept aside.
+* **Logs** for the browser and for Citroenition, per team, with secrets scrubbed on the device and again on the hub.
+* **CSV export** in one fixed 24-column format with a byte-order mark, so spreadsheets open it correctly. Passwords are
+  never written.
+* **A verified kernel install.** The checksum list must carry a valid OpenPGP signature from the key pinned in
+  `citro-install`, the archive must match it, and unpacking refuses unsafe paths.
+
+**Verified** with the real Clearcote kernel 151.0.7922.108, through a real SOCKS5 proxy that needs a login, on a server
+with no GPU, with the Linux persona ([docs.md §12](docs.md#12-verification-how-we-know-it-works)):
+
+* **iphey.com:** *Trustworthy*, MX score 100 in both runs; Hardware and Software "Everything is fine". Stock Chromium 157
+  on the same host and proxy scores 90.
+* **BrowserScan:** Bot Detection *No*, Proxy *No*, authenticity 95 % in one run and 85 % in the other. The 10 % is
+  BrowserScan's own IP database placing the exit IP in two different countries; the only deduction that comes from the
+  browser is 5 % for WebGL, because the host has no GPU.
+* **CreepJS:** 0 % headless, 0 % stealth, 38 % "like headless"; WebRTC blocked.
+* The browser's exit IP is the proxy's, `navigator.webdriver` is `false`, and language and time zone follow the proxy.
+* The test suites, including the ones that run a real hub and several devices against it, pass.
+
+The screenshots are in [docs/KERNEL.md](docs/KERNEL.md#verification).
+
+**Known limits**
+
+* Linux x86-64 only: process tracking uses `/proc` and POSIX signals. Other platforms build from source but are not
+  supported.
+* The desktop app needs an X11 session (XWayland on a Wayland desktop) and OpenGL.
+* iphey.com currently flags the *Windows* persona on a Linux host. Use `--os linux` or `--os macos`.
+* The 151 kernel does not carry the switch that passes proxy credentials through the environment, so the proxy
+  password is on the kernel's command line and visible to other local users through `ps`
+  ([docs.md §13](docs.md#13-security-notes) says how to live with that).
+* `citro-hub` speaks plain HTTP: run it behind a TLS reverse proxy ([how](docs/HUB.md#behind-a-tls-reverse-proxy)).
+  It does not encrypt the hosted cookies: protect the server like a password manager.
+
+Start with [docs.md](docs.md); the team server is explained in [docs/HUB.md](docs/HUB.md).

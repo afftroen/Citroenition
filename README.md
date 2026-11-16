@@ -19,10 +19,19 @@ does not bundle a browser, it installs and verifies one for you.
 
 Everything above is Rust. The only non-Rust part is the browser engine itself, which has to be a Chromium build.
 
+![Citroenition: the Profiles page](docs/screenshots/profiles.png)
+
 ## Quick start
 
+Download the archive of the [latest release](https://github.com/afftroen/Citroenition/releases/latest) (Linux x86-64),
+or build the programs yourself:
+
 ```sh
-cargo build --release                 # needs a recent stable Rust toolchain
+tar xzf citroenition-v0.1.0-x86_64-linux.tar.gz
+export PATH="$PWD/citroenition-v0.1.0-x86_64-linux:$PATH"
+
+# or, from a clone: needs a recent stable Rust toolchain and a C compiler
+cargo build --release
 export PATH="$PWD/target/release:$PATH"
 
 citro kernel install                  # download + verify (OpenPGP + SHA-256) + unpack Clearcote
@@ -32,7 +41,7 @@ citro ls
 citro close 1
 ```
 
-Full manual: **[docs.md](docs.md)**. More: [kernel & anti-detect model](docs/KERNEL.md), [Local API](docs/API.md),
+Full manual: **[docs.md](docs.md)**, what changed: [CHANGELOG.md](CHANGELOG.md). More: [kernel & anti-detect model](docs/KERNEL.md), [Local API](docs/API.md),
 [desktop app](docs/GUI.md), [team hub](docs/HUB.md), [how AdsPower was reverse engineered](docs/REVERSE_ENGINEERING.md).
 
 ## Status

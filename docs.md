@@ -68,11 +68,27 @@ store, under one lock.
 
 ## 2. Install
 
-Requirements: Linux x86-64, a recent stable Rust toolchain, and a display (or Xvfb) for headful browsers; headless
-works without one. Linux only for now: process tracking uses `/proc` and POSIX signals. Clearcote also publishes
-Windows (and in some releases macOS) builds, which Citroenition does not drive yet.
+Requirements: Linux x86-64, and a display (or Xvfb) for headful browsers; headless works without one. The desktop app
+needs an X11 session (XWayland on a Wayland desktop) and OpenGL. Linux only for now: process tracking uses `/proc`
+and POSIX signals. Clearcote also publishes Windows (and in some releases macOS) builds, which Citroenition does not
+drive yet.
 
-### 2.1 Build
+### 2.1 Get the programs
+
+**Download a release.** The [releases page](https://github.com/afftroen/Citroenition/releases/latest) has one archive
+with `citro`, `citro-gui`, `citro-hub` and `citro-install` (they need glibc 2.35 or newer: Ubuntu 22.04, Debian 12 or
+later) and a `SHA256SUMS` file:
+
+```sh
+V=0.1.0
+curl -LO https://github.com/afftroen/Citroenition/releases/download/v$V/citroenition-v$V-x86_64-linux.tar.gz
+curl -LO https://github.com/afftroen/Citroenition/releases/download/v$V/SHA256SUMS
+sha256sum -c SHA256SUMS                       # citroenition-v0.1.0-x86_64-linux.tar.gz: OK
+tar xzf citroenition-v$V-x86_64-linux.tar.gz
+export PATH="$PWD/citroenition-v$V-x86_64-linux:$PATH"
+```
+
+**Or build from source.** This needs a recent stable Rust toolchain and a C compiler (`gcc`, or `build-essential`):
 
 ```sh
 git clone https://github.com/afftroen/Citroenition
@@ -81,8 +97,8 @@ cargo build --release
 export PATH="$PWD/target/release:$PATH"      # citro, citro-install, citro-hub, citro-gui
 ```
 
-TLS in every crate is `rustls` with the `ring` provider. There is no OpenSSL and no C compiler involved in the
-build, so it also builds on minimal servers.
+TLS in every crate is `rustls` with the `ring` provider: there is no OpenSSL anywhere. `ring` compiles a little C and
+assembly, which is why the build wants a C compiler. The programs themselves link only the C library.
 
 ### 2.2 Install the browser kernel
 
@@ -476,7 +492,7 @@ the engine are verified together. More in [docs/KERNEL.md](docs/KERNEL.md#verifi
 | a page has **no WebGL** / BrowserScan shows `WebGL exception` | on a host without a GPU WebGL needs `--ignore-gpu-blocklist` (always passed). Do **not** add `--use-angle=gl-egl`: it disables WebGL on display-only hosts |
 | iphey's *Browser* tile is red | you are on a Linux host with `--os windows`; use `--os linux` (or `macos`) |
 | proxy login keeps being asked / pages do not load | check the scheme (`socks5` vs `http`), the credentials, and that the proxy allows your IP; `citro open --dry-run` shows the flags with the login hidden |
-| a hub operation answers `423 Locked` | the profile is open on another device; the answer names the holder. An admin can force-unlock |
+| a hub operation answers `409` with code `locked` (the CLI: *is open on another device: anna on anna-laptop*) | the profile is open on another device; the answer names the holder. Wait for them to close it, or a team owner or admin runs `citro hub unlock` ([HUB.md](docs/HUB.md#troubleshooting)) |
 | `address already in use` from `citro serve` | another Local API (or AdsPower itself!) owns `:50325`; use `--bind 127.0.0.1:50326` |
 | two edits seem to overwrite each other | they cannot: every write takes `store.lock`; reload the list |
 

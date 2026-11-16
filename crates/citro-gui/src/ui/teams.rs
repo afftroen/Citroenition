@@ -419,7 +419,7 @@ impl CitroApp {
                         }
                     });
                     ui.add_space(2.0);
-                    ui.label(small_dim(&p, "This app does not save the access token."));
+                    ui.label(small_dim(&p, "The token is kept in this computer's Citroenition folder, readable only by you."));
                 });
             });
         });

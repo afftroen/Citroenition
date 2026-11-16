@@ -3,9 +3,9 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(std::io::Error),
     #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
+    Json(serde_json::Error),
     #[error("bad config encoding: {0}")]
     Codec(String),
     #[error("profile not found: {0}")]
@@ -27,3 +27,16 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+// The message already contains the inner error: exposing it as `source()` too would make `{:#}` print it twice.
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        Error::Io(e)
+    }
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(e: serde_json::Error) -> Self {
+        Error::Json(e)
+    }
+}

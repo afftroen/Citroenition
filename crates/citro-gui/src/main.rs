@@ -24,6 +24,10 @@ fn main() -> eframe::Result {
         print!("{USAGE}");
         return Ok(());
     }
+    if args.version {
+        println!("citro-gui {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
 
     let shooting = args.screenshot.is_some();
     let (backend, mut settings, settings_path, demo_failing): (
@@ -36,7 +40,10 @@ fn main() -> eframe::Result {
         let latency = if shooting { Duration::from_millis(40) } else { Duration::from_millis(900) };
         let mock = MockBackend::demo().with_latency(latency);
         let failing = mock.failing_ids();
-        (Arc::new(mock), Settings::default(), None, failing)
+        // not `Settings::default()`: that reads this machine's hostname into the device name, and demo screenshots
+        // end up in the docs
+        let settings = Settings { device_name: "MIA-LAPTOP".into(), ..Settings::default() };
+        (Arc::new(mock), settings, None, failing)
     } else {
         let home = Home::discover(args.home.as_deref());
         let path = home.root.join("gui-settings.json");

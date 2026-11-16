@@ -36,7 +36,15 @@ pub enum AdminError {
     )]
     ServerRunning(String),
     #[error("i/o error: {0}")]
-    Io(#[from] io::Error),
+    Io(io::Error),
+}
+
+// The message already contains the inner error, so the inner error must not also be the `source()`: `{:#}` would
+// print it twice.
+impl From<io::Error> for AdminError {
+    fn from(e: io::Error) -> Self {
+        AdminError::Io(e)
+    }
 }
 
 pub type AdminResult<T> = Result<T, AdminError>;
