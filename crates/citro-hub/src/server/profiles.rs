@@ -17,6 +17,9 @@ pub const MAX_COOKIE_BYTES: usize = 256 * 1024;
 pub const DEFAULT_LIMIT: usize = 1000;
 pub const MAX_LIMIT: usize = 10_000;
 
+/// What `bulk_delete` did: the ids deleted and `(id, reason)` for the ones that were skipped.
+pub type BulkDeleted = (Vec<String>, Vec<(String, String)>);
+
 /// Server-side form of the profile list filters.
 #[derive(Debug, Clone, Default)]
 pub struct ProfileQuery {
@@ -98,11 +101,12 @@ impl State {
 
     pub fn list_profiles(&self, user: &User, team_id: &str, q: &ProfileQuery, now_ms: i64) -> ApiResult<ProfilePage> {
         self.require_role(user, team_id, TeamRole::Viewer)?;
-        let group = match q.group.as_deref().map(str::trim).filter(|g| !g.is_empty()) {
-            None => None,
-            // an unknown group matches nothing (it is a filter, not a reference)
-            Some(g) => Some(self.resolve_group(team_id, g).unwrap_or_else(|| "\u{0}".to_owned())),
-        };
+        let group = q
+            .group
+            .as_deref()
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+            .map(|g| self.resolve_group(team_id, g).unwrap_or_else(|| "\u{0}".to_owned()));
         let needle = q.q.as_deref().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
         let mut all: Vec<&HubProfile> = self
             .profiles
@@ -460,12 +464,7 @@ impl State {
     }
 
     /// Delete several profiles; the ones that cannot be deleted are reported with their reason, not fatal.
-    pub fn bulk_delete(
-        &mut self,
-        cx: &mut Cx,
-        team_id: &str,
-        ids: &[String],
-    ) -> ApiResult<(Vec<String>, Vec<(String, String)>)> {
+    pub fn bulk_delete(&mut self, cx: &mut Cx, team_id: &str, ids: &[String]) -> ApiResult<BulkDeleted> {
         let role = self.require_role(&cx.user, team_id, TeamRole::Member)?;
         if role < TeamRole::Admin {
             return Err(ApiError::forbidden("this needs a team owner or admin"));

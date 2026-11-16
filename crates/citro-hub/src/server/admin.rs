@@ -1,24 +1,40 @@
-//! Offline administration: `citro-hub init` and `citro-hub user ...` operate directly on the data directory.
+//! Offline administration: `citro-hub admin ...` operates directly on the data directory.
 //!
-//! They take `state.lock` for the read-modify-write, exactly like the running server does when it persists, so both
-//! can be used at the same time; a running server notices the new `state.json` on its next request and adopts the
-//! users (see `store.rs`). Tokens are shown once and only their SHA-256 is stored.
+//! Users (and their tokens) can be changed while a server is running: the commands take `state.lock` for the
+//! read-modify-write, exactly like the running server does when it persists, and the server adopts the users on its
+//! next request (see `store.rs`). Teams and members are owned by the server while it runs, so changing them offline
+//! needs the server to be stopped (they are held under `serve.lock` for the duration of the command); with a server
+//! up, use the HTTP API instead. Tokens are shown once and only their SHA-256 is stored; nothing here ever logs one.
 
-use super::fsio::{FileLock, create_private_dir, read_state, state_lock_path, state_path, write_state};
-use super::state::{State, UserRec};
-use super::util::{new_token, now_secs, random_id, token_hash, valid_user_name};
-use crate::model::{User, UserRole};
+use super::fsio::{
+    FileLock, create_private_dir, read_state, serve_lock_path, state_lock_path, state_path, write_state,
+};
+use super::logs::{LogSink, SERVER_LOG};
+use super::state::{Cx, Event, State, UserRec};
+use super::util::{new_token, now_ms, now_secs, random_id, token_hash, valid_user_name};
+use crate::model::{LogKind, LogLevel, LogRecord, Member, Team, TeamRole, User, UserRole};
 use std::io;
 use std::path::Path;
+
+/// The name offline changes are attributed to in the logs.
+pub const CLI_ACTOR: &str = "admin-cli";
 
 #[derive(Debug, thiserror::Error)]
 pub enum AdminError {
     #[error("{0}")]
     Invalid(String),
-    #[error("{0} is not an initialised hub data directory; run `citro-hub init --data DIR --admin NAME` first")]
+    #[error(
+        "{0} is not an initialised hub data directory; create its first user with \
+         `citro-hub admin create-user --data-dir {0} --name NAME --role owner`"
+    )]
     NotInitialised(String),
     #[error("{0} is already initialised")]
     AlreadyInitialised(String),
+    #[error(
+        "a citro-hub is serving {0}: teams and members belong to the running server while it is up. Stop it first, \
+         or use the HTTP API (POST /v1/teams, POST /v1/teams/ID/members; see docs/HUB.md)"
+    )]
+    ServerRunning(String),
     #[error("i/o error: {0}")]
     Io(#[from] io::Error),
 }
@@ -48,6 +64,10 @@ fn modify<T>(dir: &Path, f: impl FnOnce(&mut State) -> AdminResult<T>) -> AdminR
 
 /// Create the data directory with its first admin. Returns the admin's token — the only time it is ever shown.
 pub fn init(dir: &Path, admin_name: &str) -> AdminResult<String> {
+    init_with(dir, admin_name).map(|(_, token)| token)
+}
+
+fn init_with(dir: &Path, admin_name: &str) -> AdminResult<(User, String)> {
     let name = check_name(admin_name)?;
     create_private_dir(dir)?;
     create_private_dir(&dir.join("blobs"))?;
@@ -59,12 +79,10 @@ pub fn init(dir: &Path, admin_name: &str) -> AdminResult<String> {
     let token = new_token();
     let now = now_secs();
     let mut st = State { created_at: now, ..State::default() };
-    st.users.push(UserRec {
-        user: User { id: random_id("u", 8), name, role: UserRole::Admin, disabled: false, created_at: now },
-        token_hash: token_hash(&token),
-    });
+    let user = User { id: random_id("u", 8), name, role: UserRole::Admin, disabled: false, created_at: now };
+    st.users.push(UserRec { user: user.clone(), token_hash: token_hash(&token) });
     write_state(dir, &st)?;
-    Ok(token)
+    Ok((user, token))
 }
 
 /// Add a user; returns it with its token (shown once).
@@ -127,6 +145,178 @@ pub fn rotate_token(dir: &Path, name: &str) -> AdminResult<(User, String)> {
         rec.token_hash = token_hash(&token);
         Ok((rec.user.clone(), token))
     })
+}
+
+// ---- creating users, teams and memberships -------------------------------------------------------------------------
+
+/// What `create_user` made: the user, its token (shown once) and whether the data directory was new.
+#[derive(Debug, Clone)]
+pub struct Created {
+    pub user: User,
+    pub token: String,
+    pub initialised: bool,
+    /// The membership requested with `team`, when there was one.
+    pub member: Option<Member>,
+}
+
+/// Find a team by id or by exact (case-insensitive) name.
+fn find_team<'a>(st: &'a State, key: &str) -> AdminResult<&'a Team> {
+    let key = key.trim();
+    st.teams
+        .values()
+        .map(|t| &t.team)
+        .find(|t| t.id == key)
+        .or_else(|| st.teams.values().map(|t| &t.team).find(|t| t.name.eq_ignore_ascii_case(key)))
+        .ok_or_else(|| AdminError::Invalid(format!("no such team `{key}` (see `citro-hub admin list-teams`)")))
+}
+
+/// The pseudo user offline changes run as: a server admin that exists in no token table.
+fn operator() -> User {
+    User {
+        id: "u-offline".to_owned(),
+        name: CLI_ACTOR.to_owned(),
+        role: UserRole::Admin,
+        disabled: false,
+        created_at: 0,
+    }
+}
+
+fn cli_cx() -> Cx {
+    Cx::new(operator(), "offline", now_ms(), 90_000, 0)
+}
+
+/// File what the offline command did under the teams' logs (and `note` in the server log). Best effort: a log that
+/// cannot be written never fails an administration command.
+fn audit(dir: &Path, events: Vec<Event>, note: &str) {
+    let sink = LogSink::new(dir.join("logs"), 20 * 1024 * 1024, 3);
+    let rec = |team: &str, level: LogLevel, profile_id: Option<String>, message: String| LogRecord {
+        ts: now_secs(),
+        kind: LogKind::Citro,
+        level,
+        team_id: team.to_owned(),
+        user: CLI_ACTOR.to_owned(),
+        device_id: "offline".to_owned(),
+        profile_id,
+        message,
+    };
+    let _ = sink.append(SERVER_LOG, &[rec(SERVER_LOG, LogLevel::Info, None, note.to_owned())]);
+    for e in events {
+        let _ = sink.append(&e.team_id.clone(), &[rec(&e.team_id, e.level, e.profile_id, e.message)]);
+    }
+}
+
+/// Run `f` on the state while holding `state.lock` *and* `serve.lock`: nobody else is serving this directory, so
+/// nothing but this command changes teams and members. Refused with [`AdminError::ServerRunning`] otherwise.
+fn modify_stopped<T>(dir: &Path, f: impl FnOnce(&mut State) -> AdminResult<T>) -> AdminResult<T> {
+    if !state_path(dir).exists() {
+        return Err(AdminError::NotInitialised(dir.display().to_string()));
+    }
+    let _serve = FileLock::try_exclusive(&serve_lock_path(dir)).map_err(|e| match e.kind() {
+        io::ErrorKind::WouldBlock => AdminError::ServerRunning(dir.display().to_string()),
+        _ => AdminError::Io(e),
+    })?;
+    modify(dir, f)
+}
+
+/// `admin create-user`: add a user and give it a token (shown once). On a directory that does not exist yet, this
+/// creates the hub: its first user must be an admin (`owner`/`admin`), it is the one who creates teams.
+/// `team` (a team id or name and the role in it) adds the membership in the same step.
+pub fn create_user(dir: &Path, name: &str, role: UserRole, team: Option<(&str, TeamRole)>) -> AdminResult<Created> {
+    if !state_path(dir).exists() {
+        if role != UserRole::Admin {
+            return Err(AdminError::Invalid(
+                "the first user of a new hub must be an owner or admin (`--role owner`): it creates the teams"
+                    .to_owned(),
+            ));
+        }
+        if team.is_some() {
+            return Err(AdminError::Invalid("a new hub has no teams yet; create the user, then the team".to_owned()));
+        }
+        let (user, token) = init_with(dir, name)?;
+        audit(dir, Vec::new(), &format!("hub initialised; first user `{}` created", user.name));
+        return Ok(Created { user, token, initialised: true, member: None });
+    }
+    let name = check_name(name)?;
+    let team = team.map(|(key, role)| (key.to_owned(), role));
+    let made = modify(dir, |st| {
+        if st.user_by_name(&name).is_some() {
+            return Err(AdminError::Invalid(format!(
+                "user `{name}` already exists (use `admin rotate-token --name {name}` for a new token)"
+            )));
+        }
+        let team_id = team.as_ref().map(|(key, _)| find_team(st, key).map(|t| t.id.clone())).transpose()?;
+        let token = new_token();
+        let user = User { id: random_id("u", 8), name: name.clone(), role, disabled: false, created_at: now_secs() };
+        st.users.push(UserRec { user: user.clone(), token_hash: token_hash(&token) });
+        let member = match (team_id, team) {
+            (Some(team_id), Some((_, team_role))) => {
+                let m = Member { team_id, user_id: user.id.clone(), user_name: user.name.clone(), role: team_role };
+                st.members.push(m.clone());
+                Some(m)
+            }
+            _ => None,
+        };
+        Ok(Created { user, token, initialised: false, member })
+    })?;
+    let note = match &made.member {
+        Some(m) => format!(
+            "user `{}` created ({}); member of team {} as {}",
+            made.user.name,
+            made.user.role.as_str(),
+            m.team_id,
+            m.role.as_str()
+        ),
+        None => format!("user `{}` created ({})", made.user.name, made.user.role.as_str()),
+    };
+    audit(dir, Vec::new(), &note);
+    Ok(made)
+}
+
+/// `admin create-team`: a new team owned by `owner` (default: the first active admin). Needs the server stopped.
+pub fn create_team(dir: &Path, name: &str, owner: Option<&str>) -> AdminResult<(Team, User)> {
+    let (team, owner, events) = modify_stopped(dir, |st| {
+        let owner = match owner {
+            Some(n) => st
+                .user_by_name(n)
+                .map(|u| u.user.clone())
+                .ok_or_else(|| AdminError::Invalid(format!("no such user `{}`", n.trim())))?,
+            None => st
+                .users
+                .iter()
+                .find(|u| u.user.role == UserRole::Admin && !u.user.disabled)
+                .map(|u| u.user.clone())
+                .ok_or_else(|| AdminError::Invalid("the hub has no active admin to own the team".to_owned()))?,
+        };
+        if owner.disabled {
+            return Err(AdminError::Invalid(format!("user `{}` is revoked", owner.name)));
+        }
+        let mut cx = cli_cx();
+        let entry = st.insert_team(&mut cx, name, &owner).map_err(|e| AdminError::Invalid(e.message))?;
+        Ok((entry.team, owner, std::mem::take(&mut cx.events)))
+    })?;
+    audit(dir, events, &format!("team `{}` ({}) created; owner `{}`", team.name, team.id, owner.name));
+    Ok((team, owner))
+}
+
+/// `admin add-member`: put a user into a team (or change its role there). Needs the server stopped.
+pub fn add_member(dir: &Path, team: &str, user: &str, role: TeamRole) -> AdminResult<(Team, Member)> {
+    let (team, member, events) = modify_stopped(dir, |st| {
+        let team = find_team(st, team)?.clone();
+        let mut cx = cli_cx();
+        let member = st.add_member(&mut cx, &team.id, user, role).map_err(|e| AdminError::Invalid(e.message))?;
+        Ok((team, member, std::mem::take(&mut cx.events)))
+    })?;
+    audit(dir, events, &format!("`{}` is {} of team `{}`", member.user_name, member.role.as_str(), team.name));
+    Ok((team, member))
+}
+
+/// A copy of the state for the listing commands (taken under `state.lock`, so it is never half written).
+pub fn snapshot(dir: &Path) -> AdminResult<State> {
+    if !state_path(dir).exists() {
+        return Err(AdminError::NotInitialised(dir.display().to_string()));
+    }
+    let _lock = FileLock::exclusive(&state_lock_path(dir))?;
+    Ok(read_state(dir)?)
 }
 
 #[cfg(test)]

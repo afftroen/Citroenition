@@ -26,10 +26,10 @@
 //! # }
 //! ```
 
+pub use crate::model::Device;
 use crate::model::{
-    DATA_SHA256_HEADER, DATA_VERSION_HEADER, DEVICE_HEADER, DataMeta, DataVersion, Device, HubGroup, HubProfile,
-    LEASE_HEADER, Lease, LogEntry, LogFilter, LogRecord, Me, Member, ProfileFilter, ProfilePage, TeamEntry, TeamRole,
-    User,
+    DATA_SHA256_HEADER, DATA_VERSION_HEADER, DEVICE_HEADER, DataMeta, DataVersion, HubGroup, HubProfile, LEASE_HEADER,
+    Lease, LogEntry, LogFilter, LogRecord, Me, Member, ProfileFilter, ProfilePage, TeamEntry, TeamRole, User,
 };
 use crate::server::blobs::hash_file;
 use crate::server::util::{hex, random_bytes};
@@ -170,12 +170,11 @@ impl Device {
     /// A device whose id survives restarts: read from `path` (JSON `{"id","name"}`), or made up and written there
     /// on first use. `default_name` is what the hub shows as "which device" when a profile is locked.
     pub fn load_or_create(path: &Path, default_name: &str) -> io::Result<Device> {
-        if let Ok(text) = fs::read_to_string(path) {
-            if let Ok(d) = serde_json::from_str::<Device>(&text) {
-                if !d.id.is_empty() {
-                    return Ok(d);
-                }
-            }
+        if let Ok(text) = fs::read_to_string(path)
+            && let Ok(d) = serde_json::from_str::<Device>(&text)
+            && !d.id.is_empty()
+        {
+            return Ok(d);
         }
         let mut raw = [0u8; 12];
         random_bytes(&mut raw);
@@ -223,7 +222,9 @@ pub enum Pulled {
     /// The hub holds no data for this profile yet.
     Empty,
     /// The hub's data is the one the caller already has (same SHA-256); nothing was transferred.
-    Unchanged { version: u64 },
+    Unchanged {
+        version: u64,
+    },
     Data(Download),
 }
 
@@ -266,7 +267,11 @@ fn seg(s: &str) -> Result<&str> {
 }
 
 fn qs(pairs: &[(&str, String)]) -> String {
-    if pairs.is_empty() { String::new() } else { format!("?{}", serde_urlencoded::to_string(pairs).unwrap_or_default()) }
+    if pairs.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", serde_urlencoded::to_string(pairs).unwrap_or_default())
+    }
 }
 
 fn header_text(resp: &Response<ureq::Body>, name: &str) -> Option<String> {
@@ -402,7 +407,11 @@ impl Client {
 
     /// Add a user to the team, or change their role.
     pub fn add_member(&self, team_id: &str, user_name: &str, role: TeamRole) -> Result<Member> {
-        self.post_json(&format!("/v1/teams/{}/members", seg(team_id)?), &json!({ "user_name": user_name, "role": role }), None)
+        self.post_json(
+            &format!("/v1/teams/{}/members", seg(team_id)?),
+            &json!({ "user_name": user_name, "role": role }),
+            None,
+        )
     }
 
     pub fn remove_member(&self, team_id: &str, user_id: &str) -> Result<()> {
@@ -468,15 +477,23 @@ impl Client {
     }
 
     pub fn bulk_delete(&self, team_id: &str, ids: &[String]) -> Result<BulkDelete> {
-        let v: Value = self.post_json(&format!("/v1/teams/{}/profiles/bulk-delete", seg(team_id)?), &json!({ "ids": ids }), None)?;
+        let v: Value =
+            self.post_json(&format!("/v1/teams/{}/profiles/bulk-delete", seg(team_id)?), &json!({ "ids": ids }), None)?;
         let strings = |k: &str| -> Vec<String> {
-            v[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect()).unwrap_or_default()
+            v[k].as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect())
+                .unwrap_or_default()
         };
         let skipped = v["skipped"]
             .as_array()
             .map(|a| {
                 a.iter()
-                    .map(|x| (x["id"].as_str().unwrap_or_default().to_owned(), x["reason"].as_str().unwrap_or_default().to_owned()))
+                    .map(|x| {
+                        (
+                            x["id"].as_str().unwrap_or_default().to_owned(),
+                            x["reason"].as_str().unwrap_or_default().to_owned(),
+                        )
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -518,7 +535,11 @@ impl Client {
 
     /// Release the lock. `closed` stamps "last closed" (when the browser really was closed, not for an aborted open).
     pub fn unlock(&self, profile_id: &str, lease: &str, closed: bool) -> Result<()> {
-        let _: Value = self.post_json(&format!("/v1/profiles/{}/unlock", seg(profile_id)?), &json!({ "closed": closed }), Some(lease))?;
+        let _: Value = self.post_json(
+            &format!("/v1/profiles/{}/unlock", seg(profile_id)?),
+            &json!({ "closed": closed }),
+            Some(lease),
+        )?;
         Ok(())
     }
 
@@ -531,7 +552,13 @@ impl Client {
 
     // ---- hosted profile data -------------------------------------------------------------------------------------
 
-    fn upload_request(&self, profile_id: &str, lease: &str, sha256: &str, opts: &UploadOptions) -> Result<ureq::RequestBuilder<ureq::typestate::WithBody>> {
+    fn upload_request(
+        &self,
+        profile_id: &str,
+        lease: &str,
+        sha256: &str,
+        opts: &UploadOptions,
+    ) -> Result<ureq::RequestBuilder<ureq::typestate::WithBody>> {
         let q = qs(&opts.base_version.map(|v| ("base_version", v.to_string())).into_iter().collect::<Vec<_>>());
         let mut rb = self
             .auth(self.agent.put(self.url(&format!("/v1/profiles/{}/data{q}", seg(profile_id)?))))
@@ -567,7 +594,13 @@ impl Client {
     }
 
     /// [`Client::upload_data`] for an archive on disk (read twice, never held in memory).
-    pub fn upload_data_file(&self, profile_id: &str, lease: &str, path: &Path, opts: &UploadOptions) -> Result<DataMeta> {
+    pub fn upload_data_file(
+        &self,
+        profile_id: &str,
+        lease: &str,
+        path: &Path,
+        opts: &UploadOptions,
+    ) -> Result<DataMeta> {
         let (size, sha) = hash_file(path)?;
         let file = fs::File::open(path)?;
         let resp = self.check(self.upload_request(profile_id, lease, &sha, opts)?.send(&file))?;
@@ -576,7 +609,9 @@ impl Client {
 
     fn fetch(&self, profile_id: &str, lease: &str, version: Option<u64>, have: Option<&str>) -> Result<Fetch> {
         let q = qs(&version.map(|v| ("version", v.to_string())).into_iter().collect::<Vec<_>>());
-        let mut rb = self.auth(self.agent.get(self.url(&format!("/v1/profiles/{}/data{q}", seg(profile_id)?)))).header(LEASE_HEADER, lease);
+        let mut rb = self
+            .auth(self.agent.get(self.url(&format!("/v1/profiles/{}/data{q}", seg(profile_id)?))))
+            .header(LEASE_HEADER, lease);
         if let Some(h) = have {
             rb = rb.header("If-None-Match", format!("\"{}\"", h.trim_matches('"')));
         }
@@ -586,9 +621,10 @@ impl Client {
             204 => Ok(Fetch::Empty),
             304 => Ok(Fetch::Unchanged { version: hub_version }),
             status => {
-                let sha256 = header_text(&resp, DATA_SHA256_HEADER)
-                    .map(|s| s.to_ascii_lowercase())
-                    .ok_or_else(|| Error::Server { status, message: format!("the hub did not send {DATA_SHA256_HEADER}") })?;
+                let sha256 =
+                    header_text(&resp, DATA_SHA256_HEADER).map(|s| s.to_ascii_lowercase()).ok_or_else(|| {
+                        Error::Server { status, message: format!("the hub did not send {DATA_SHA256_HEADER}") }
+                    })?;
                 Ok(Fetch::Stream { resp, version: hub_version, sha256 })
             }
         }
@@ -692,7 +728,8 @@ impl Client {
     pub fn push_logs(&self, entries: &[LogEntry]) -> Result<usize> {
         let mut accepted = 0;
         for chunk in entries.chunks(MAX_LOG_BATCH) {
-            let v: Value = self.post_json("/v1/logs", &json!({ "device_id": self.device.id, "entries": chunk }), None)?;
+            let v: Value =
+                self.post_json("/v1/logs", &json!({ "device_id": self.device.id, "entries": chunk }), None)?;
             accepted += v["accepted"].as_u64().unwrap_or(0) as usize;
         }
         Ok(accepted)
@@ -743,14 +780,17 @@ impl Client {
     /// `group` is a group id or name; `None` exports every group.
     pub fn export_csv(&self, team_id: &str, group: Option<&str>) -> Result<Vec<u8>> {
         let q = qs(&group.map(|g| ("group", g.to_owned())).into_iter().collect::<Vec<_>>());
-        let mut resp = self.check(self.auth(self.agent.get(self.url(&format!("/v1/teams/{}/profiles.csv{q}", seg(team_id)?)))).call())?;
-        Ok(resp.body_mut().with_config().limit(MAX_JSON_ANSWER).read_to_vec().map_err(net)?)
+        let mut resp = self.check(
+            self.auth(self.agent.get(self.url(&format!("/v1/teams/{}/profiles.csv{q}", seg(team_id)?)))).call(),
+        )?;
+        resp.body_mut().with_config().limit(MAX_JSON_ANSWER).read_to_vec().map_err(net)
     }
 
     /// [`Client::export_csv`] into a file (written whole, then renamed into place).
     pub fn export_csv_to(&self, team_id: &str, group: Option<&str>, dest: &Path) -> Result<u64> {
         let bytes = self.export_csv(team_id, group)?;
-        let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "export.csv".to_owned());
+        let name =
+            dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "export.csv".to_owned());
         let tmp = dest.with_file_name(format!(".{name}.part"));
         fs::write(&tmp, &bytes)?;
         fs::rename(&tmp, dest)?;
@@ -807,7 +847,10 @@ pub struct LeaseKeeper {
 impl fmt::Debug for LeaseKeeper {
     /// The lease is a secret and stays out.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LeaseKeeper").field("profile_id", &self.profile_id).field("held", &self.is_held()).finish_non_exhaustive()
+        f.debug_struct("LeaseKeeper")
+            .field("profile_id", &self.profile_id)
+            .field("held", &self.is_held())
+            .finish_non_exhaustive()
     }
 }
 
@@ -843,7 +886,13 @@ impl LeaseKeeper {
             .name(format!("lease-{profile_id}"))
             .spawn(move || keep(&c, &pid, &token, ttl, &sh, on_lost))
             .ok();
-        LeaseKeeper { client: client.clone(), profile_id: profile_id.to_owned(), lease: lease.lease.clone(), shared, thread }
+        LeaseKeeper {
+            client: client.clone(),
+            profile_id: profile_id.to_owned(),
+            lease: lease.lease.clone(),
+            shared,
+            thread,
+        }
     }
 
     /// The lease token, for the requests that need it (data transfer, edits).
@@ -1012,10 +1061,22 @@ mod tests {
             Error::LeaseLost { holder, .. } => assert_eq!(holder.as_deref(), Some("ann on Laptop")),
             other => panic!("{other:?}"),
         }
-        assert!(matches!(map_error(403, None, None, &body("lease_required", "lock first", json!({}))), Error::LeaseLost { holder: None, .. }));
-        assert!(matches!(map_error(401, None, None, &body("unauthorized", "bad token", json!({}))), Error::Unauthorized(_)));
-        assert!(matches!(map_error(403, None, None, &body("forbidden", "viewers are read-only", json!({}))), Error::Forbidden(_)));
-        assert!(matches!(map_error(404, None, None, &body("not_found", "no such profile", json!({}))), Error::NotFound(_)));
+        assert!(matches!(
+            map_error(403, None, None, &body("lease_required", "lock first", json!({}))),
+            Error::LeaseLost { holder: None, .. }
+        ));
+        assert!(matches!(
+            map_error(401, None, None, &body("unauthorized", "bad token", json!({}))),
+            Error::Unauthorized(_)
+        ));
+        assert!(matches!(
+            map_error(403, None, None, &body("forbidden", "viewers are read-only", json!({}))),
+            Error::Forbidden(_)
+        ));
+        assert!(matches!(
+            map_error(404, None, None, &body("not_found", "no such profile", json!({}))),
+            Error::NotFound(_)
+        ));
         assert!(matches!(
             map_error(409, None, None, &body("stale", "x", json!({ "current_version": 4 }))),
             Error::Conflict { current_version: Some(4), .. }
@@ -1024,13 +1085,20 @@ mod tests {
             map_error(412, None, None, &body("stale", "x", json!({ "current_version": 7 }))),
             Error::Conflict { current_version: Some(7), .. }
         ));
-        assert!(matches!(map_error(429, Some(30), None, &body("rate_limited", "x", json!({}))), Error::RateLimited { retry_after: Some(d) } if d.as_secs() == 30));
+        assert!(
+            matches!(map_error(429, Some(30), None, &body("rate_limited", "x", json!({}))), Error::RateLimited { retry_after: Some(d) } if d.as_secs() == 30)
+        );
         assert!(matches!(map_error(413, None, None, &body("too_large", "x", json!({}))), Error::TooLarge(_)));
         assert!(matches!(map_error(400, None, None, &body("invalid", "x", json!({}))), Error::Invalid(_)));
-        assert!(matches!(map_error(500, None, None, &body("internal", "storage error", json!({}))), Error::Server { status: 500, .. }));
+        assert!(matches!(
+            map_error(500, None, None, &body("internal", "storage error", json!({}))),
+            Error::Server { status: 500, .. }
+        ));
         // not JSON at all (a proxy's error page) still yields something useful
         assert!(matches!(map_error(502, None, None, b"<html>Bad gateway</html>"), Error::Server { status: 502, .. }));
-        assert!(matches!(map_error(301, None, Some("https://hub.example/"), b""), Error::Server { status: 301, message } if message.contains("https://hub.example/")));
+        assert!(
+            matches!(map_error(301, None, Some("https://hub.example/"), b""), Error::Server { status: 301, message } if message.contains("https://hub.example/"))
+        );
     }
 
     #[test]
@@ -1041,7 +1109,9 @@ mod tests {
         assert!(!Error::Unauthorized(String::new()).is_transient());
         assert!(!Error::LeaseLost { message: String::new(), holder: None }.is_transient());
         assert!(Error::LeaseLost { message: String::new(), holder: None }.is_lease_loss());
-        assert!(Error::Locked { holder: String::new(), device: String::new(), since: 0, expires_at: 0 }.is_lease_loss());
+        assert!(
+            Error::Locked { holder: String::new(), device: String::new(), since: 0, expires_at: 0 }.is_lease_loss()
+        );
         assert!(!Error::Network("x".into()).is_lease_loss());
         assert!(!Error::Conflict { message: String::new(), current_version: None }.is_lease_loss());
     }

@@ -13,7 +13,8 @@ pub struct ApiError {
     pub status: StatusCode,
     pub code: &'static str,
     pub message: String,
-    pub holder: Option<Holder>,
+    /// Boxed: keeps `ApiError` (the `Err` of nearly every function here) small.
+    pub holder: Option<Box<Holder>>,
     pub current_version: Option<u64>,
     pub retry_after: Option<u64>,
 }
@@ -37,7 +38,7 @@ impl ApiError {
 
     pub fn locked(holder: Holder) -> ApiError {
         let mut e = ApiError::new(StatusCode::CONFLICT, "locked", format!("profile is open: {holder}"));
-        e.holder = Some(holder);
+        e.holder = Some(Box::new(holder));
         e
     }
 
@@ -101,7 +102,7 @@ impl ApiError {
 
     /// Name the current lock holder in the answer (lease errors carry it so a client can show who has the profile).
     pub fn with_holder(mut self, holder: Holder) -> ApiError {
-        self.holder = Some(holder);
+        self.holder = Some(Box::new(holder));
         self
     }
 
@@ -136,10 +137,10 @@ impl IntoResponse for ApiError {
         if self.status == StatusCode::UNAUTHORIZED {
             resp.headers_mut().insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
         }
-        if let Some(secs) = self.retry_after {
-            if let Ok(v) = HeaderValue::from_str(&secs.to_string()) {
-                resp.headers_mut().insert(header::RETRY_AFTER, v);
-            }
+        if let Some(secs) = self.retry_after
+            && let Ok(v) = HeaderValue::from_str(&secs.to_string())
+        {
+            resp.headers_mut().insert(header::RETRY_AFTER, v);
         }
         resp
     }

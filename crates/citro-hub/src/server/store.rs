@@ -3,7 +3,7 @@
 //! * Every operation runs under the mutex, so concurrent requests are strictly serialised (one lock winner).
 //! * State-changing operations are written to disk (tmp + fsync + rename) before the response is sent; lease
 //!   extensions are only marked dirty and flushed every `flush_interval` (a crash loses at most that much expiry).
-//! * `users` is the one part of the state that is owned by the offline admin commands (`citro-hub user ...`): they
+//! * `users` is the one part of the state that is owned by the offline admin commands (`citro-hub admin ...`): they
 //!   edit `state.json` under `state.lock`, and the server adopts the users whenever the file changed on disk.
 //! * Blob files live under `<data>/blobs/<profile_id>/`, logs under `<data>/logs/`.
 
@@ -107,8 +107,8 @@ impl Store {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!(
-                    "{} is not an initialised hub data directory; run `citro-hub init --data {} --admin NAME` first",
-                    dir.display(),
+                    "{0} is not an initialised hub data directory; create its first user with \
+                     `citro-hub admin create-user --data-dir {0} --name NAME --role owner`",
                     dir.display()
                 ),
             ));

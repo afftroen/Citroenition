@@ -139,10 +139,10 @@ impl LogSink {
         for generation in 0..self.files {
             let path = self.path(team_id, generation)?;
             for_each_line_rev(&path, |line| {
-                if let Ok(rec) = serde_json::from_slice::<LogRecord>(line) {
-                    if q.matches(&rec) {
-                        out.push(rec);
-                    }
+                if let Ok(rec) = serde_json::from_slice::<LogRecord>(line)
+                    && q.matches(&rec)
+                {
+                    out.push(rec);
                 }
                 out.len() < limit
             })?;

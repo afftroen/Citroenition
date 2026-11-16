@@ -6,6 +6,7 @@
 //!
 //! See `docs/HUB.md` for the concepts, the HTTP contract and the operating notes.
 
+pub mod cli;
 pub mod client;
 pub mod model;
 pub mod server;

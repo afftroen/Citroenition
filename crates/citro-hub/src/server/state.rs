@@ -291,6 +291,13 @@ impl State {
         if cx.user.role != UserRole::Admin {
             return Err(ApiError::forbidden("only server admins create teams"));
         }
+        let owner = cx.user.clone();
+        self.insert_team(cx, name, &owner)
+    }
+
+    /// The creation itself: `owner` becomes the first owner of the new team. The caller has checked who may create
+    /// teams (the HTTP API: server admins; the offline admin CLI: whoever has the data directory).
+    pub fn insert_team(&mut self, cx: &mut Cx, name: &str, owner: &User) -> ApiResult<TeamEntry> {
         let name = clean_text(name, 100).ok_or_else(|| ApiError::invalid("team name must be 1-100 characters"))?;
         if self.teams.values().any(|t| t.team.name.eq_ignore_ascii_case(&name)) {
             return Err(ApiError::invalid("a team with this name already exists"));
@@ -305,11 +312,11 @@ impl State {
         self.teams.insert(id.clone(), TeamRec { team: team.clone(), next_serial: 1 });
         self.members.push(Member {
             team_id: id.clone(),
-            user_id: cx.user.id.clone(),
-            user_name: cx.user.name.clone(),
+            user_id: owner.id.clone(),
+            user_name: owner.name.clone(),
             role: TeamRole::Owner,
         });
-        cx.log(&id, LogLevel::Info, None, format!("team `{name}` created"));
+        cx.log(&id, LogLevel::Info, None, format!("team `{name}` created (owner: {})", owner.name));
         Ok(TeamEntry { team, role: TeamRole::Owner })
     }
 

@@ -458,12 +458,11 @@ async fn patch_profile(
 
 /// Remove a profile's hosted data after the profile itself is gone.
 async fn remove_blobs(app: &App, pid: &str) {
-    if let Some(dir) = app.store.blob_dir(pid) {
-        if let Err(e) = tokio::fs::remove_dir_all(&dir).await {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!("cannot remove the data of deleted profile {pid}: {e}");
-            }
-        }
+    if let Some(dir) = app.store.blob_dir(pid)
+        && let Err(e) = tokio::fs::remove_dir_all(&dir).await
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!("cannot remove the data of deleted profile {pid}: {e}");
     }
 }
 
@@ -634,10 +633,10 @@ impl Precondition {
         if self.base_version.is_some_and(|b| b != meta.version) {
             return Err(ApiError::stale(meta.version));
         }
-        if let Some(tags) = &self.if_match {
-            if meta.version == 0 || !tags.iter().any(|t| t == "*" || *t == meta.sha256) {
-                return Err(ApiError::precondition_failed(meta.version));
-            }
+        if let Some(tags) = &self.if_match
+            && (meta.version == 0 || !tags.iter().any(|t| t == "*" || *t == meta.sha256))
+        {
+            return Err(ApiError::precondition_failed(meta.version));
         }
         if self.if_none_match_any && meta.version > 0 {
             return Err(ApiError::precondition_failed(meta.version));
