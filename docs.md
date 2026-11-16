@@ -98,7 +98,8 @@ export PATH="$PWD/target/release:$PATH"      # citro, citro-install, citro-hub, 
 ```
 
 TLS in every crate is `rustls` with the `ring` provider: there is no OpenSSL anywhere. `ring` compiles a little C and
-assembly, which is why the build wants a C compiler. The programs themselves link only the C library.
+assembly, which is why the build wants a C compiler. The programs themselves need only glibc (2.35 or newer) and
+`libgcc_s`, which every glibc Linux has.
 
 ### 2.2 Install the browser kernel
 
