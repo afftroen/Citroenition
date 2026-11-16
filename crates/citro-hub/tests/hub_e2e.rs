@@ -57,7 +57,10 @@ fn a_locked_profile_is_closed_to_every_other_device_and_user() {
 
     // everybody in the team sees who has it open, and where (never the lease)
     let lock = b.profile(&pid, None).unwrap().lock.expect("the lock is shown");
-    assert_eq!((lock.user.as_str(), lock.device_id.as_str(), lock.device_name.as_str()), ("ben", "dev-ben", "Ben's laptop"));
+    assert_eq!(
+        (lock.user.as_str(), lock.device_id.as_str(), lock.device_name.as_str()),
+        ("ben", "dev-ben", "Ben's laptop")
+    );
 
     for who in [&b, &a2, &owner] {
         let name = who.device().name.clone();
@@ -108,9 +111,8 @@ fn data_survives_a_handover_and_arrives_with_the_same_sha256() {
     assert!(a.download_data(&pid, &lease.lease).unwrap().is_none(), "nothing is stored yet");
     let v1 = blob(200_000, 1);
     let sha = sha256_hex(&v1);
-    let meta = a
-        .upload_data(&pid, &lease.lease, &v1, &UploadOptions { only_if_new: true, ..Default::default() })
-        .unwrap();
+    let meta =
+        a.upload_data(&pid, &lease.lease, &v1, &UploadOptions { only_if_new: true, ..Default::default() }).unwrap();
     assert_eq!((meta.version, meta.size, meta.sha256.as_str()), (1, 200_000, sha.as_str()));
     let beat = a.heartbeat(&pid, &lease.lease).unwrap();
     assert!(beat.expires_at >= lease.expires_at);
@@ -190,9 +192,14 @@ fn force_unlock_breaks_the_lease_and_leaves_an_audit_line() {
     other.lock(&pid).expect("the profile is free");
     let log =
         admin_client.logs(Some(&w.team), &LogFilter { profile_id: Some(pid.clone()), ..Default::default() }).unwrap();
-    let audit = log.iter().find(|r| r.message.contains("force-unlock by anna")).expect("an audit line");
+    let audit = log
+        .iter()
+        .find(|r| r.message.contains("force-unlock by anna") && r.message.contains("broken"))
+        .expect("an audit line");
     assert_eq!(audit.level, LogLevel::Warn);
     assert!(audit.message.contains("ben on Ben's laptop"), "{}", audit.message);
+    let noop = log.iter().find(|r| r.message.contains("was not locked")).expect("the second attempt is on record too");
+    assert_eq!(noop.level, LogLevel::Info, "breaking nothing is not worth a warning");
 }
 
 #[test]
@@ -274,9 +281,7 @@ fn locks_survive_a_restart_until_they_expire() {
     assert_eq!(again.data, data);
     b.unlock(&pid, &l2.lease, true).unwrap();
     w.restart();
-    a.lock(&w.profile("Other")).unwrap();
-    let a = w.ben();
-    a.lock(&pid).expect("the unlock was persisted too");
+    w.ben().lock(&pid).expect("the unlock was persisted too");
 }
 
 #[test]
@@ -350,8 +355,7 @@ fn the_lease_keeper_heartbeats_and_reports_a_lost_lease() {
     drop(keeper);
 
     let l3 = a.lock_with_ttl(&pid, Duration::from_millis(600)).unwrap();
-    let keeper = a.lock_and_keep(&pid).err().map(|e| matches!(e, Error::Locked { .. }));
-    assert_eq!(keeper, Some(true), "a second lock on the same profile by a keeper is refused too");
+    expect_locked(refused(b.lock_and_keep(&pid)), "ben", "Ben's laptop"); // no keeper for somebody else's lock
     let keeper = LeaseKeeper::start(&a, &pid, &l3);
     std::thread::sleep(Duration::from_millis(700));
     keeper.release(true).expect("released with the lease in hand");
@@ -380,7 +384,12 @@ fn data_versions_are_monotonic_conditional_capped_and_pruned() {
 
     // optimistic concurrency: every condition that does not hold refuses the push and stores nothing
     let cur = sha256_hex(&blobs[3]);
-    match refused(a.upload_data(&pid, &lease.lease, &blobs[4], &UploadOptions { base_version: Some(2), ..Default::default() })) {
+    match refused(a.upload_data(
+        &pid,
+        &lease.lease,
+        &blobs[4],
+        &UploadOptions { base_version: Some(2), ..Default::default() },
+    )) {
         Error::Conflict { current_version, .. } => assert_eq!(current_version, Some(4)),
         other => panic!("{other}"),
     }
@@ -401,7 +410,10 @@ fn data_versions_are_monotonic_conditional_capped_and_pruned() {
     assert_err!(a.download_data_version(&pid, &lease.lease, 9), Error::NotFound(_));
 
     // the size cap
-    assert_err!(a.upload_data(&pid, &lease.lease, &blob(64 * 1024 + 1, 9), &UploadOptions::default()), Error::TooLarge(_));
+    assert_err!(
+        a.upload_data(&pid, &lease.lease, &blob(64 * 1024 + 1, 9), &UploadOptions::default()),
+        Error::TooLarge(_)
+    );
     assert_eq!(a.profile(&pid, Some(&lease.lease)).unwrap().data.version, 5, "a refused push stores nothing");
     assert_eq!(a.upload_data(&pid, &lease.lease, &blob(64 * 1024, 9), &UploadOptions::default()).unwrap().version, 6);
 
@@ -414,7 +426,12 @@ fn data_versions_are_monotonic_conditional_capped_and_pruned() {
     let fetched = a.download_data_to_file(&pid, &lease.lease, &dst).unwrap().expect("data");
     assert_eq!((fetched.version, fetched.size, fetched.sha256.as_str()), (7, 30_000, meta.sha256.as_str()));
     assert_eq!(std::fs::read(&dst).unwrap(), std::fs::read(&src).unwrap());
-    assert!(std::fs::read_dir(dir).unwrap().filter_map(Result::ok).all(|e| !e.file_name().to_string_lossy().contains(".part")));
+    assert!(
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .all(|e| !e.file_name().to_string_lossy().contains(".part"))
+    );
 }
 
 #[test]
@@ -436,7 +453,10 @@ fn the_raw_http_contract_works_with_plain_curl_style_requests() {
     assert_eq!(r2.status, 409);
     let e = r2.json();
     assert_eq!(e["error"]["code"], "locked");
-    assert_eq!((e["error"]["holder"]["user"].as_str(), e["error"]["holder"]["device_name"].as_str()), (Some("ben"), Some("Ben's laptop")));
+    assert_eq!(
+        (e["error"]["holder"]["user"].as_str(), e["error"]["holder"]["device_name"].as_str()),
+        (Some("ben"), Some("Ben's laptop"))
+    );
     assert!(!r2.text().contains(&lease), "an error never carries the lease");
     assert!(e["error"]["holder"].get("device_id").is_none());
     assert_eq!(r2.header("cache-control"), Some("no-store"));
@@ -486,7 +506,13 @@ fn the_raw_http_contract_works_with_plain_curl_style_requests() {
     assert_eq!(raw("GET", &format!("{url}/v1/nothing-here"), Some(&w.ben), &[], None).status, 404);
     assert_eq!(raw("DELETE", &format!("{url}/v1/me"), Some(&w.ben), &[], None).status, 405);
     let body = json!({ "closed": true }).to_string();
-    let unlock = raw("POST", &format!("{url}/v1/profiles/{pid}/unlock"), Some(&w.ben), &[("X-Citro-Lease", &lease), json_h[0]], Some(body.as_bytes()));
+    let unlock = raw(
+        "POST",
+        &format!("{url}/v1/profiles/{pid}/unlock"),
+        Some(&w.ben),
+        &[("X-Citro-Lease", &lease), json_h[0]],
+        Some(body.as_bytes()),
+    );
     assert_eq!(unlock.status, 200);
     assert_eq!(lock(&w.ben, "dev-b", "Ben's phone").status, 200, "now the other device may have it");
 }
@@ -503,8 +529,18 @@ fn logs_are_scrubbed_filtered_and_rotated_on_disk() {
 
     let pushed = a
         .push_logs(&[
-            LogEntry::now(LogKind::Browser, LogLevel::Warn, Some(&pid), format!("renderer crashed after Authorization: Bearer {fake_token}")),
-            LogEntry::now(LogKind::Browser, LogLevel::Error, Some(&pid), "gpu process lost, password=hunter2 proxy=http://user:s3cret@10.0.0.1:8080/"),
+            LogEntry::now(
+                LogKind::Browser,
+                LogLevel::Warn,
+                Some(&pid),
+                format!("renderer crashed after Authorization: Bearer {fake_token}"),
+            ),
+            LogEntry::now(
+                LogKind::Browser,
+                LogLevel::Error,
+                Some(&pid),
+                "gpu process lost, password=hunter2 proxy=http://user:s3cret@10.0.0.1:8080/",
+            ),
             LogEntry::now(LogKind::Citro, LogLevel::Info, None, "profile list refreshed"),
             LogEntry::now(LogKind::Citro, LogLevel::Info, None, "x".repeat(100_000)),
         ])
@@ -516,31 +552,79 @@ fn logs_are_scrubbed_filtered_and_rotated_on_disk() {
     for secret in [&fake_token[6..], "hunter2", "s3cret"] {
         assert!(!text.contains(secret), "a secret survived scrubbing");
     }
-    assert!(text.contains("citro_****"));
     assert!(all.iter().all(|r| r.message.chars().count() <= 4001), "messages are capped");
     assert!(all.iter().all(|r| r.team_id == w.team));
     assert!(all.windows(2).all(|p| p[0].ts >= p[1].ts), "newest first");
 
+    // a client that does not scrub (plain curl): the hub does it
+    let body = json!({
+        "device_id": "dev-curl",
+        "entries": [{ "ts": now_secs(), "kind": "browser", "level": "info", "profile_id": pid,
+                      "message": "raw client: password=rawsecret, Bearer rawbearer, https://u:rawpw@h.example/" }]
+    })
+    .to_string();
+    let posted = raw(
+        "POST",
+        &format!("{}/v1/logs", w.url()),
+        Some(&w.ben),
+        &[("Content-Type", "application/json")],
+        Some(body.as_bytes()),
+    );
+    assert_eq!(posted.status, 200, "{}", posted.text());
+    let all = a.logs(Some("acme"), &LogFilter::default()).unwrap();
+    let curl_line = all.iter().find(|r| r.device_id == "dev-curl").expect("the raw line is stored");
+    assert_eq!(curl_line.message, "raw client: password=********, Bearer ********, https://u:********@h.example/");
+    let dump = serde_json::to_string(&all).unwrap();
+    assert!(["rawsecret", "rawbearer", "rawpw"].iter().all(|s| !dump.contains(s)), "the hub scrubs on its own");
+
     // filters: kind, level, profile, since, limit
     let kind = |k| LogFilter { kind: Some(k), ..Default::default() };
     let browser = a.logs(Some(&w.team), &kind(LogKind::Browser)).unwrap();
-    assert_eq!(browser.len(), 2);
-    assert!(browser.iter().all(|r| r.kind == LogKind::Browser && r.user == "ben" && r.device_id == "dev-ben"));
-    let errors = a.logs(Some(&w.team), &LogFilter { level: Some(LogLevel::Error), kind: Some(LogKind::Browser), ..Default::default() }).unwrap();
+    assert_eq!(browser.len(), 3);
+    let messages: Vec<&str> = browser.iter().map(|r| r.message.as_str()).collect();
+    assert!(messages.contains(&"renderer crashed after Authorization: Bearer ********"), "{messages:?}");
+    assert!(
+        messages.contains(&"gpu process lost, password=******** proxy=http://user:********@10.0.0.1:8080/"),
+        "{messages:?}"
+    );
+    assert!(browser.iter().all(|r| r.kind == LogKind::Browser && r.user == "ben"));
+    assert_eq!(browser.iter().filter(|r| r.device_id == "dev-ben").count(), 2, "lines carry the device they came from");
+    let errors = a
+        .logs(
+            Some(&w.team),
+            &LogFilter { level: Some(LogLevel::Error), kind: Some(LogKind::Browser), ..Default::default() },
+        )
+        .unwrap();
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0].profile_id.as_deref(), Some(pid.as_str()));
     let citro = a.logs(Some(&w.team), &kind(LogKind::Citro)).unwrap();
-    assert!(citro.iter().any(|r| r.message == "profile list refreshed") && citro.iter().any(|r| r.message.contains("created")));
+    assert!(
+        citro.iter().any(|r| r.message == "profile list refreshed")
+            && citro.iter().any(|r| r.message.contains("created"))
+    );
     let of_profile = a.logs(Some(&w.team), &LogFilter { profile_id: Some(pid.clone()), ..Default::default() }).unwrap();
     assert!(of_profile.len() >= 3 && of_profile.iter().all(|r| r.profile_id.as_deref() == Some(pid.as_str())));
-    assert!(a.logs(Some(&w.team), &LogFilter { since: Some(now_secs() + 3600), ..Default::default() }).unwrap().is_empty());
+    assert!(
+        a.logs(Some(&w.team), &LogFilter { since: Some(now_secs() + 3600), ..Default::default() }).unwrap().is_empty()
+    );
     assert_eq!(a.logs(Some(&w.team), &LogFilter { limit: Some(1), ..Default::default() }).unwrap().len(), 1);
     // only the team's own people read them
-    assert_err!(w.client(&admin::create_user(&w.data, "dan", UserRole::Member, None).unwrap().token, "d", "D").logs(Some(&w.team), &LogFilter::default()), Error::NotFound(_));
+    assert_err!(
+        w.client(&admin::create_user(&w.data, "dan", UserRole::Member, None).unwrap().token, "d", "D")
+            .logs(Some(&w.team), &LogFilter::default()),
+        Error::NotFound(_)
+    );
 
     // rotation: a flood of lines never grows the log beyond `log_files` files of about `log_max_bytes`
     let flood: Vec<LogEntry> = (0..300)
-        .map(|i| LogEntry::now(LogKind::Browser, LogLevel::Info, Some(&pid), format!("line {i}: tab navigated to https://example.test/page/{i}")))
+        .map(|i| {
+            LogEntry::now(
+                LogKind::Browser,
+                LogLevel::Info,
+                Some(&pid),
+                format!("line {i}: tab navigated to https://example.test/page/{i}"),
+            )
+        })
         .collect();
     a.push_logs(&flood).unwrap();
     let mut files: Vec<String> = std::fs::read_dir(w.data.join("logs"))
@@ -555,16 +639,39 @@ fn logs_are_scrubbed_filtered_and_rotated_on_disk() {
         let len = std::fs::metadata(w.data.join("logs").join(f)).unwrap().len();
         assert!(len < 4096 + 600, "{f} is {len} bytes");
     }
-    let newest = a.logs(Some(&w.team), &LogFilter { limit: Some(5), kind: Some(LogKind::Browser), ..Default::default() }).unwrap();
+    let newest = a
+        .logs(Some(&w.team), &LogFilter { limit: Some(5), kind: Some(LogKind::Browser), ..Default::default() })
+        .unwrap();
     assert!(newest.iter().all(|r| r.message.starts_with("line ")), "queries read the newest file first");
 }
 
 // ---- CSV --------------------------------------------------------------------------------------------------------
 
 const HEADER: [&str; 24] = [
-    "no", "id", "name", "group", "remark", "persona_os", "country", "proxy_type", "proxy_host", "proxy_port", "proxy_user",
-    "language", "timezone", "tabs", "account_username", "created_at", "created_by", "last_open_at", "last_open_by",
-    "last_close_at", "last_close_by", "status", "locked_by", "locked_device",
+    "no",
+    "id",
+    "name",
+    "group",
+    "remark",
+    "persona_os",
+    "country",
+    "proxy_type",
+    "proxy_host",
+    "proxy_port",
+    "proxy_user",
+    "language",
+    "timezone",
+    "tabs",
+    "account_username",
+    "created_at",
+    "created_by",
+    "last_open_at",
+    "last_open_by",
+    "last_close_at",
+    "last_close_by",
+    "status",
+    "locked_by",
+    "locked_device",
 ];
 
 #[test]
@@ -581,7 +688,11 @@ fn the_csv_export_is_rfc_4180_and_python_can_read_it() {
     }))
     .unwrap();
     let p1 = anna.create_profile(&w.team, &nasty).unwrap().profile.profile_id;
-    anna.create_profile(&w.team, &Profile { name: "Plain".into(), remark: "second, ungrouped".into(), ..Default::default() }).unwrap();
+    anna.create_profile(
+        &w.team,
+        &Profile { name: "Plain".into(), remark: "second, ungrouped".into(), ..Default::default() },
+    )
+    .unwrap();
     let lease = ben.lock(&p1).unwrap();
     ben.unlock(&p1, &lease.lease, true).unwrap();
     let lease = ben.lock(&p1).unwrap(); // open right now
@@ -590,7 +701,16 @@ fn the_csv_export_is_rfc_4180_and_python_can_read_it() {
     assert!(bytes.starts_with(&[0xEF, 0xBB, 0xBF]), "UTF-8 BOM, so that Excel opens it right");
     let text = String::from_utf8(bytes.clone()).expect("UTF-8");
     assert!(text.ends_with("\r\n") && !text.ends_with("\r\n\r\n"));
-    for secret in ["pw-secret", "2FA-SECRET", "COOKIE-SECRET", "px-secret", "tabsecret", lease.lease.as_str(), w.ben.as_str(), w.anna.as_str()] {
+    for secret in [
+        "pw-secret",
+        "2FA-SECRET",
+        "COOKIE-SECRET",
+        "px-secret",
+        "tabsecret",
+        lease.lease.as_str(),
+        w.ben.as_str(),
+        w.anna.as_str(),
+    ] {
         assert!(!text.contains(secret), "a secret leaked into the CSV");
     }
 
@@ -604,18 +724,35 @@ fn the_csv_export_is_rfc_4180_and_python_can_read_it() {
     assert_eq!(row[col("remark")], "'=HYPERLINK(\"http://evil.example\")", "formulas are neutralised");
     assert_eq!(row[col("group")], "Sales EU");
     assert_eq!((row[col("persona_os")].as_str(), row[col("country")].as_str()), ("windows", "DE"));
-    assert_eq!((row[col("proxy_type")].as_str(), row[col("proxy_host")].as_str(), row[col("proxy_port")].as_str(), row[col("proxy_user")].as_str()), ("socks5", "1.2.3.4", "1080", "pu"));
+    assert_eq!(
+        (
+            row[col("proxy_type")].as_str(),
+            row[col("proxy_host")].as_str(),
+            row[col("proxy_port")].as_str(),
+            row[col("proxy_user")].as_str()
+        ),
+        ("socks5", "1.2.3.4", "1080", "pu")
+    );
     assert_eq!((row[col("language")].as_str(), row[col("timezone")].as_str()), ("de-DE,en-US", "Europe/Berlin"));
     assert_eq!(row[col("tabs")], format!("https://a.example/ | https://u:{MASK}@b.example/x"));
     assert_eq!(row[col("account_username")], "bob@example.com");
-    assert_eq!((row[col("created_by")].as_str(), row[col("last_open_by")].as_str(), row[col("last_close_by")].as_str()), ("anna", "ben", "ben"));
-    assert_eq!((row[col("status")].as_str(), row[col("locked_by")].as_str(), row[col("locked_device")].as_str()), ("open", "ben", "Ben's laptop"));
+    assert_eq!(
+        (row[col("created_by")].as_str(), row[col("last_open_by")].as_str(), row[col("last_close_by")].as_str()),
+        ("anna", "ben", "ben")
+    );
+    assert_eq!(
+        (row[col("status")].as_str(), row[col("locked_by")].as_str(), row[col("locked_device")].as_str()),
+        ("open", "ben", "Ben's laptop")
+    );
     for name in ["created_at", "last_open_at", "last_close_at"] {
         let v = &row[col(name)];
         assert!(v.len() == 20 && v.ends_with('Z') && v.as_bytes()[10] == b'T', "{name} = {v:?} is ISO-8601 UTC");
     }
     let plain = rows.iter().find(|r| r[col("name")] == "Plain").unwrap();
-    assert_eq!((plain[col("status")].as_str(), plain[col("last_open_at")].as_str(), plain[col("locked_by")].as_str()), ("closed", "", ""));
+    assert_eq!(
+        (plain[col("status")].as_str(), plain[col("last_open_at")].as_str(), plain[col("locked_by")].as_str()),
+        ("closed", "", "")
+    );
 
     // one group, by name or by id; an unknown group is an error, not an empty file
     let by_name = python_csv_rows(w.tmp.path(), &vera.export_csv(&w.team, Some("Sales EU")).unwrap());
@@ -626,7 +763,10 @@ fn the_csv_export_is_rfc_4180_and_python_can_read_it() {
     // and over the wire: the file name and type
     let r = raw("GET", &format!("{}/v1/teams/{}/profiles.csv", w.url(), w.team), Some(&w.vera), &[], None);
     assert_eq!(r.header("content-type"), Some("text/csv; charset=utf-8"));
-    assert!(r.header("content-disposition").is_some_and(|d| d.contains("attachment") && d.contains("-profiles-") && d.contains(".csv")));
+    assert!(
+        r.header("content-disposition")
+            .is_some_and(|d| d.contains("attachment") && d.contains("-profiles-") && d.contains(".csv"))
+    );
     let to_file = w.tmp.path().join("team.csv");
     vera.export_csv_to(&w.team, None, &to_file).unwrap();
     assert_eq!(std::fs::read(to_file).unwrap(), bytes);
@@ -719,25 +859,44 @@ fn several_teams_groups_remarks_and_bookkeeping() {
     anna.add_member(&beta.team.id, "ben", TeamRole::Admin).unwrap();
     let mine = ben.me().unwrap().teams;
     let role_in = |name: &str| mine.iter().find(|t| t.team.name == name).map(|t| t.role);
-    assert_eq!((role_in("Acme"), role_in("Beta")), (Some(TeamRole::Member), Some(TeamRole::Admin)), "one user, two teams, two roles");
+    assert_eq!(
+        (role_in("Acme"), role_in("Beta")),
+        (Some(TeamRole::Member), Some(TeamRole::Admin)),
+        "one user, two teams, two roles"
+    );
     assert_eq!(cara.teams().unwrap().len(), 1);
 
     // groups and remarks in Beta
     let shops = ben.create_group(&beta.team.id, "Shops", "all the shops").unwrap();
     let p = ben
-        .create_profile(&beta.team.id, &Profile { name: "B1".into(), remark: "first remark".into(), group_id: shops.id.clone(), ..Default::default() })
+        .create_profile(
+            &beta.team.id,
+            &Profile {
+                name: "B1".into(),
+                remark: "first remark".into(),
+                group_id: shops.id.clone(),
+                ..Default::default()
+            },
+        )
         .unwrap();
     let pid = p.profile.profile_id.clone();
-    assert_eq!((p.created_by.as_str(), p.team_id.as_str(), p.profile.group_id.as_str()), ("ben", beta.team.id.as_str(), shops.id.as_str()));
+    assert_eq!(
+        (p.created_by.as_str(), p.team_id.as_str(), p.profile.group_id.as_str()),
+        ("ben", beta.team.id.as_str(), shops.id.as_str())
+    );
     ben.create_profile(&beta.team.id, &named("B2")).unwrap();
 
-    let by_group = ben.profiles(&beta.team.id, &ProfileFilter { group: Some("Shops".into()), ..Default::default() }).unwrap();
+    let by_group =
+        ben.profiles(&beta.team.id, &ProfileFilter { group: Some("Shops".into()), ..Default::default() }).unwrap();
     assert_eq!((by_group.total, by_group.profiles[0].profile.name.as_str()), (1, "B1"));
-    let ungrouped = ben.profiles(&beta.team.id, &ProfileFilter { group: Some("0".into()), ..Default::default() }).unwrap();
+    let ungrouped =
+        ben.profiles(&beta.team.id, &ProfileFilter { group: Some("0".into()), ..Default::default() }).unwrap();
     assert_eq!((ungrouped.total, ungrouped.profiles[0].profile.name.as_str()), (1, "B2"));
-    let by_remark = ben.profiles(&beta.team.id, &ProfileFilter { q: Some("FIRST".into()), ..Default::default() }).unwrap();
+    let by_remark =
+        ben.profiles(&beta.team.id, &ProfileFilter { q: Some("FIRST".into()), ..Default::default() }).unwrap();
     assert_eq!(by_remark.total, 1, "search is case-insensitive and covers remarks");
-    let paged = ben.profiles(&beta.team.id, &ProfileFilter { limit: Some(1), offset: Some(1), ..Default::default() }).unwrap();
+    let paged =
+        ben.profiles(&beta.team.id, &ProfileFilter { limit: Some(1), offset: Some(1), ..Default::default() }).unwrap();
     assert_eq!((paged.total, paged.profiles.len()), (2, 1));
 
     // remarks can be edited while nobody has the profile open; serial numbers count per team

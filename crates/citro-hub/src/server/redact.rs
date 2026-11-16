@@ -4,6 +4,7 @@
 //! few less obvious places a credential can hide: `user:pass@` inside URLs (`proxy_url`, `tabs`, `launch_args`) and
 //! free-form keys of the proxy / fingerprint config whose *name* says secret (`ProxyPassword`, `api_token`, ...).
 
+use super::util::scrub_secrets;
 use crate::model::MASK;
 use citro_core::profile::Profile;
 use serde_json::{Map, Value};
@@ -42,6 +43,116 @@ pub fn mask_url_credentials(s: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+// ---- free-text log lines --------------------------------------------------------------------------------------------
+
+/// Key fragments that mark a value in a *log line* as secret: everything profiles mask plus the HTTP / session words.
+fn is_secret_log_key(key: &str) -> bool {
+    const FRAGMENTS: [&str; 8] = ["auth", "bearer", "credential", "private", "csrf", "jwt", "session_id", "sessionid"];
+    let k = key.to_ascii_lowercase();
+    is_secret_key(&k) || FRAGMENTS.iter().any(|f| k.contains(f)) || matches!(k.as_str(), "sid" | "otp")
+}
+
+/// Bytes a word can be made of when it is the `key` of `key=value`.
+fn is_key_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')
+}
+
+/// Where an unquoted value stops.
+fn ends_value(b: u8) -> bool {
+    b.is_ascii_whitespace() || matches!(b, b',' | b';' | b'&' | b'}' | b']' | b')' | b'"' | b'\'')
+}
+
+/// The end of the run of value bytes that starts at `from`.
+fn run_end(b: &[u8], from: usize) -> usize {
+    b[from..].iter().position(|&c| ends_value(c)).map_or(b.len(), |p| from + p)
+}
+
+/// The span of the secret that starts at `at` (right behind the separator): the inside of a quoted string (escapes
+/// honoured), or the run up to the next delimiter. A scheme word in front (`Bearer x`, `Basic x`) is skipped; a cookie
+/// runs to the end of its line because its own `;` separate more secrets.
+fn value_span(s: &str, at: usize, cookie: bool) -> (usize, usize) {
+    let b = s.as_bytes();
+    if at >= b.len() {
+        return (at, at);
+    }
+    if matches!(b[at], b'"' | b'\'') {
+        let (quote, start) = (b[at], at + 1);
+        let mut end = start;
+        while end < b.len() && b[end] != quote {
+            end += if b[end] == b'\\' { 2 } else { 1 };
+        }
+        return (start, end.min(b.len()));
+    }
+    if cookie {
+        return (at, b[at..].iter().position(|&c| c == b'\n' || c == b'\r').map_or(b.len(), |p| at + p));
+    }
+    let first_end = run_end(b, at);
+    let first = &s[at..first_end];
+    if (first.eq_ignore_ascii_case("bearer") || first.eq_ignore_ascii_case("basic")) && b.get(first_end) == Some(&b' ')
+    {
+        return (first_end + 1, run_end(b, first_end + 1));
+    }
+    (at, first_end)
+}
+
+/// Mask the value of every `key=value`, `key: value` and `"key":"value"` whose key says secret (`password`,
+/// `proxy_password`, `api_token`, `Cookie`, `Authorization`, ...) and the credential behind a bare `Bearer`.
+fn mask_key_values(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < b.len() {
+        if !is_key_byte(b[i]) {
+            let Some(c) = s[i..].chars().next() else { break };
+            out.push(c);
+            i += c.len_utf8();
+            continue;
+        }
+        let start = i;
+        while i < b.len() && is_key_byte(b[i]) {
+            i += 1;
+        }
+        let word = &s[start..i];
+        out.push_str(word);
+        if word.eq_ignore_ascii_case("bearer") && b.get(i) == Some(&b' ') && run_end(b, i + 1) > i + 1 {
+            out.push(' ');
+            out.push_str(MASK);
+            i = run_end(b, i + 1);
+            continue;
+        }
+        if !is_secret_log_key(word) {
+            continue;
+        }
+        let mut j = i;
+        if j < b.len() && matches!(b[j], b'"' | b'\'') {
+            j += 1; // the closing quote of a JSON key
+        }
+        while j < b.len() && matches!(b[j], b' ' | b'\t') {
+            j += 1;
+        }
+        if j >= b.len() || !matches!(b[j], b'=' | b':') {
+            continue;
+        }
+        j += 1;
+        while j < b.len() && matches!(b[j], b' ' | b'\t') {
+            j += 1;
+        }
+        let (from, to) = value_span(s, j, word.to_ascii_lowercase().contains("cookie"));
+        if from < to {
+            out.push_str(&s[i..from]);
+            out.push_str(MASK);
+            i = to;
+        }
+    }
+    out
+}
+
+/// Scrub a free-text log line before it is stored (and before a client sends it): token look-alikes, `user:pass@` in
+/// URLs, `password=...` / `"token": "..."` style pairs, `Authorization: Bearer ...` and cookies. Idempotent.
+pub fn scrub_log_text(s: &str) -> String {
+    mask_key_values(&mask_url_credentials(&scrub_secrets(s)))
 }
 
 fn mask_if_set(s: &mut String) {
@@ -268,5 +379,34 @@ mod tests {
         changed.password = "brand-new".into();
         restore_masked(&old, &mut changed);
         assert_eq!(changed.password, "brand-new");
+    }
+
+    #[test]
+    fn log_lines_lose_every_kind_of_secret() {
+        let t = format!("citro_{}", "ab".repeat(32));
+        let m = MASK;
+        let cases: Vec<(String, String)> = vec![
+            (format!("Authorization: Bearer {t}"), format!("Authorization: Bearer {m}")),
+            ("password=hunter2 next".into(), format!("password={m} next")),
+            (r#"{"password":"a b\"c","x":1}"#.into(), format!(r#"{{"password":"{m}","x":1}}"#)),
+            ("proxy http://user:s3cret@10.0.0.1:8080/ ok".into(), format!("proxy http://user:{m}@10.0.0.1:8080/ ok")),
+            ("GET /v1/x?token=abc&y=1".into(), format!("GET /v1/x?token={m}&y=1")),
+            ("Cookie: sid=abc; other=1\nnext line".into(), format!("Cookie: {m}\nnext line")),
+            ("sent header Bearer abc123 ok".into(), format!("sent header Bearer {m} ok")),
+            ("proxy_password = 'p w' and API_KEY:k1".into(), format!("proxy_password = '{m}' and API_KEY:{m}")),
+            ("Passwort=geheim ünï".into(), format!("Passwort={m} ünï")),
+            (
+                "tab navigated to https://example.test/page/3 (200 ms); session restored: 3 tabs".into(),
+                "tab navigated to https://example.test/page/3 (200 ms); session restored: 3 tabs".into(),
+            ),
+            ("password= odd and token:".into(), format!("password= {m} and token:")),
+            ("ends with a key password".into(), "ends with a key password".into()),
+        ];
+        for (input, want) in cases {
+            let got = scrub_log_text(&input);
+            assert_eq!(got, want, "input: {input}");
+            assert_eq!(scrub_log_text(&got), got, "scrubbing twice changes nothing: {input}");
+        }
+        assert!(!scrub_log_text(&format!("login with {t} failed")).contains(&t[6..]));
     }
 }

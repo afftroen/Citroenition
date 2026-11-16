@@ -733,9 +733,9 @@ mod tests {
         assert!(
             names(&ls(&st, ProfileQuery { q: Some("2".into()), ..Default::default() })).contains(&"beta".to_string())
         );
-        assert!(
-            !names(&ls(&st, ProfileQuery { q: Some("4".into()), ..Default::default() })).contains(&"beta".to_string())
-        );
+        // a query with a blank can never match a random id or a serial number: only names and remarks decide
+        assert_eq!(names(&ls(&st, ProfileQuery { q: Some("remark of BETA".into()), ..Default::default() })), ["beta"]);
+        assert!(ls(&st, ProfileQuery { q: Some("remark of delta".into()), ..Default::default() }).profiles.is_empty());
         let page = ls(&st, ProfileQuery { limit: Some(1), offset: Some(1), ..Default::default() });
         assert_eq!((names(&page), page.total), (vec!["beta".to_string()], 3));
         assert_eq!(st.ungrouped(&tid), 1);

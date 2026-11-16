@@ -32,6 +32,7 @@ use crate::model::{
     Lease, LogEntry, LogFilter, LogRecord, Me, Member, ProfileFilter, ProfilePage, TeamEntry, TeamRole, User,
 };
 use crate::server::blobs::hash_file;
+use crate::server::redact::scrub_log_text;
 use crate::server::util::{hex, random_bytes};
 use citro_core::profile::Profile;
 use serde::Serialize;
@@ -728,8 +729,11 @@ impl Client {
     pub fn push_logs(&self, entries: &[LogEntry]) -> Result<usize> {
         let mut accepted = 0;
         for chunk in entries.chunks(MAX_LOG_BATCH) {
+            // The hub scrubs again; doing it here means a secret never even leaves this machine.
+            let clean: Vec<LogEntry> =
+                chunk.iter().map(|e| LogEntry { message: scrub_log_text(&e.message), ..e.clone() }).collect();
             let v: Value =
-                self.post_json("/v1/logs", &json!({ "device_id": self.device.id, "entries": chunk }), None)?;
+                self.post_json("/v1/logs", &json!({ "device_id": self.device.id, "entries": clean }), None)?;
             accepted += v["accepted"].as_u64().unwrap_or(0) as usize;
         }
         Ok(accepted)

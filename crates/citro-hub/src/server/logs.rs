@@ -110,25 +110,34 @@ impl LogSink {
         Ok(())
     }
 
-    /// Append records to a team's log, rotating first when the file would grow past the cap.
+    /// Append records to a team's log. The file is rotated before the line that would grow it past the cap, so the
+    /// cap holds per line, not per batch (a single line longer than the cap still gets a file of its own).
     pub fn append(&self, team_id: &str, records: &[LogRecord]) -> io::Result<()> {
         if records.is_empty() {
             return Ok(());
         }
-        let mut chunk = String::new();
+        let mut lines = Vec::with_capacity(records.len());
         for r in records {
-            chunk.push_str(&serde_json::to_string(r).map_err(|e| io::Error::other(e.to_string()))?);
-            chunk.push('\n');
+            let mut line = serde_json::to_string(r).map_err(|e| io::Error::other(e.to_string()))?;
+            line.push('\n');
+            lines.push(line);
         }
         let _guard = self.write.lock().unwrap_or_else(|p| p.into_inner());
         create_private_dir(&self.dir)?;
         let path = self.path(team_id, 0)?;
-        let len = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        if len > 0 && len + chunk.len() as u64 > self.max_bytes {
-            self.rotate(team_id)?;
+        let mut len = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let mut chunk = String::new();
+        for line in &lines {
+            if len > 0 && len + line.len() as u64 > self.max_bytes {
+                write_chunk(&path, &chunk)?;
+                chunk.clear();
+                self.rotate(team_id)?;
+                len = 0;
+            }
+            chunk.push_str(line);
+            len += line.len() as u64;
         }
-        let mut f = private_options().create(true).append(true).open(&path)?;
-        f.write_all(chunk.as_bytes())
+        write_chunk(&path, &chunk)
     }
 
     /// Newest first (by event time; arrival order breaks ties), at most `q.limit` records.
@@ -153,6 +162,14 @@ impl LogSink {
         out.sort_by_key(|r| std::cmp::Reverse(r.ts));
         Ok(out)
     }
+}
+
+/// Append `chunk` (whole lines) to `path`, creating it private (0600) when new.
+fn write_chunk(path: &std::path::Path, chunk: &str) -> io::Result<()> {
+    if chunk.is_empty() {
+        return Ok(());
+    }
+    private_options().create(true).append(true).open(path)?.write_all(chunk.as_bytes())
 }
 
 #[cfg(test)]

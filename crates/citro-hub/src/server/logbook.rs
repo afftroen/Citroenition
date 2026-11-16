@@ -1,8 +1,9 @@
 //! Validation and stamping of client-posted log entries (`POST /v1/logs`).
 
 use super::error::{ApiError, ApiResult};
+use super::redact::scrub_log_text;
 use super::state::State;
-use super::util::{clean_text, scrub_secrets};
+use super::util::clean_text;
 use crate::model::{LogEntry, LogRecord, User};
 
 pub const MAX_ENTRIES: usize = 500;
@@ -51,7 +52,7 @@ impl State {
                     .clone()
                     .ok_or_else(|| ApiError::invalid(format!("entry {i}: needs a profile_id or a team_id")))?,
             };
-            let mut message = scrub_secrets(&e.message);
+            let mut message = scrub_log_text(&e.message);
             if message.chars().count() > MAX_MESSAGE_CHARS {
                 message = message.chars().take(MAX_MESSAGE_CHARS).collect::<String>() + "…";
             }
