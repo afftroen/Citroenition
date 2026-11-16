@@ -1,7 +1,7 @@
 //! What this device remembers about its hub: the login, the device identity, one marker per hub profile and
 //! one note per live supervisor. All of it lives under `<home>/hub/` and is private to the user (mode 0600).
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use citro_core::store::{Home, valid_id};
 use citro_hub::client::Device;
 use serde::{Deserialize, Serialize};
@@ -184,13 +184,33 @@ fn session_file(home: &Home, id: &str) -> Option<PathBuf> {
     valid_id(id).then(|| home.hub_dir().join("sessions").join(id))
 }
 
-/// A supervisor (this process or another one) writes its pid here while it keeps the lock of `id` alive and waits
-/// for the browser; `citro close` in another terminal waits for the file to go away.
-pub fn write_session(home: &Home, id: &str) -> Result<()> {
-    if let Some(path) = session_file(home, id) {
-        write_private(&path, std::process::id().to_string().as_bytes())?;
+/// Claim the right to supervise `id` on this device: while a process holds it, it keeps the lock of the profile
+/// alive and waits for the browser, and nobody else on this device opens, adopts or recovers the profile (`citro
+/// close` in another terminal waits for the note to go away). Exactly one process, and one thread of it, can hold a
+/// claim: the note is created atomically with its content, and the note of a process that is gone is taken over.
+pub fn claim_session(home: &Home, id: &str) -> Result<()> {
+    let path = session_file(home, id).ok_or_else(|| Error::Invalid(format!("not a profile id: {id}")))?;
+    for _ in 0..4 {
+        let tmp = path.with_extension(format!("claim-{}", uniq()));
+        write_private(&tmp, std::process::id().to_string().as_bytes())?;
+        let linked = fs::hard_link(&tmp, &path); // fails when a note exists, and never shows a half-written one
+        let _ = fs::remove_file(&tmp);
+        match linked {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                if session_alive(home, id) {
+                    let pid = fs::read_to_string(&path).unwrap_or_default();
+                    return Err(Error::Invalid(format!(
+                        "{id} is being opened or closed by another Citroenition process (pid {})",
+                        pid.trim()
+                    )));
+                }
+                let _ = fs::remove_file(&path); // left by a process that is gone
+            }
+            Err(e) => return Err(e.into()),
+        }
     }
-    Ok(())
+    Err(Error::Invalid(format!("could not claim {id}: other processes keep taking it")))
 }
 
 pub fn clear_session(home: &Home, id: &str) {
@@ -278,11 +298,18 @@ mod tests {
     fn a_session_note_of_a_dead_process_is_not_alive() {
         let home = temp_home("sess");
         assert!(!session_alive(&home, "kabc123"));
-        write_session(&home, "kabc123").unwrap();
+        claim_session(&home, "kabc123").unwrap();
         assert!(session_alive(&home, "kabc123"), "our own pid");
+        let again = claim_session(&home, "kabc123").unwrap_err().to_string();
+        assert!(again.contains("another Citroenition process"), "one supervisor at a time: {again}");
+        // the note of a process that is gone is not a claim
         write_private(&session_file(&home, "kabc123").unwrap(), b"4000000").unwrap();
         assert!(!session_alive(&home, "kabc123"));
+        claim_session(&home, "kabc123").unwrap();
+        assert!(session_alive(&home, "kabc123"), "taken over by us");
         clear_session(&home, "kabc123");
+        assert!(!session_alive(&home, "kabc123"));
+        assert!(claim_session(&home, "../x").is_err());
         let _ = fs::remove_dir_all(&home.root);
     }
 }

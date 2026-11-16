@@ -370,7 +370,7 @@ impl Hub {
 /// the hub's copy any more (nothing is uploaded or deleted there).
 pub fn unbind(home: &Home, key: &str) -> Result<Profile> {
     let p = store::Store::open(home)?.get(key)?.clone();
-    if launch::running(home, &p.profile_id).is_some() || session::is_syncing(&p.profile_id) {
+    if launch::running(home, &p.profile_id).is_some() || session::is_syncing(home, &p.profile_id) {
         return Err(Error::Invalid(format!("{} is open: close it first", p.profile_id)));
     }
     if Bound::remove(home, &p.profile_id)? {

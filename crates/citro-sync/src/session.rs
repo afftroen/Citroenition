@@ -35,11 +35,18 @@ use std::time::{Duration, Instant};
 const UPLOAD_PATIENCE: Duration = Duration::from_secs(600);
 const POLL: Duration = Duration::from_millis(250);
 
-static LIVE: Mutex<BTreeMap<String, JoinHandle<Outcome>>> = Mutex::new(BTreeMap::new());
+/// The supervisors of this process, by (home, profile): one process can look after several homes (the tests do).
+type Key = (PathBuf, String);
+
+static LIVE: Mutex<BTreeMap<Key, JoinHandle<Outcome>>> = Mutex::new(BTreeMap::new());
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
-fn live() -> MutexGuard<'static, BTreeMap<String, JoinHandle<Outcome>>> {
+fn live() -> MutexGuard<'static, BTreeMap<Key, JoinHandle<Outcome>>> {
     LIVE.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+fn key(home: &Home, id: &str) -> Key {
+    (home.root.clone(), id.to_owned())
 }
 
 /// What a finished session did.
@@ -280,7 +287,17 @@ fn finish(s: &mut Session, lost: Option<LeaseLoss>) -> Outcome {
     out
 }
 
+/// Gives the supervisor's claim back however the thread ends (a panic included).
+struct Claim(Home, String);
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        state::clear_session(&self.0, &self.1);
+    }
+}
+
 fn supervise(mut s: Session) -> Outcome {
+    let _claim = Claim(s.home.clone(), s.id.clone());
     let mut lost = None;
     loop {
         if launch::running(&s.home, &s.id).is_none() {
@@ -298,22 +315,30 @@ fn supervise(mut s: Session) -> Outcome {
         thread::sleep(POLL);
     }
     let _ = launch::sync_closed(&s.home);
-    let out = finish(&mut s, lost);
-    state::clear_session(&s.home, &s.id);
-    out
+    finish(&mut s, lost)
 }
 
 fn file_len(p: &Path) -> u64 {
     fs::metadata(p).map_or(0, |m| m.len())
 }
 
-/// Start the supervisor thread of an opened (or adopted) browser.
+/// Start the supervisor thread of an opened (or adopted) browser. The caller holds the claim on the profile; the
+/// thread gives it back when it is done. When no thread can be had, nothing would keep the lock alive: the
+/// browser is stopped and the claim given back.
 fn spawn(session: Session) -> Result<()> {
-    state::write_session(&session.home, &session.id)?;
-    let id = session.id.clone();
-    let handle = thread::Builder::new().name(format!("sync-{id}")).spawn(move || supervise(session))?;
-    live().insert(id, handle);
-    Ok(())
+    let (home, id) = (session.home.clone(), session.id.clone());
+    let started = thread::Builder::new().name(format!("sync-{id}")).spawn(move || supervise(session));
+    match started {
+        Ok(handle) => {
+            live().insert(key(&home, &id), handle);
+            Ok(())
+        }
+        Err(e) => {
+            let _ = launch::stop(&home, &id);
+            state::clear_session(&home, &id);
+            Err(e.into())
+        }
+    }
 }
 
 impl Hub {
@@ -322,7 +347,7 @@ impl Hub {
     pub fn open(&self, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) -> Result<Running> {
         let id = p.profile_id.clone();
         if let Some(r) = launch::running(&self.home, &id) {
-            if !is_syncing(&id) && !state::session_alive(&self.home, &id) {
+            if !is_syncing(&self.home, &id) && !state::session_alive(&self.home, &id) {
                 // its session ended without it (the process that opened it died): back under the lock first
                 if let Some(bad) = self.adopt().into_iter().find(|o| o.profile_id == id) {
                     return Err(Error::Invalid(bad.summary()));
@@ -332,21 +357,28 @@ impl Hub {
         }
         {
             let mut l = live();
-            match l.get(&id) {
+            match l.get(&key(&self.home, &id)) {
                 Some(h) if !h.is_finished() => {
                     return Err(Error::Invalid(format!("{id} is still being closed: its data is going up to the hub")));
                 }
-                Some(_) => drop(l.remove(&id)),
+                Some(_) => drop(l.remove(&key(&self.home, &id))),
                 None => {}
             }
         }
-        if state::session_alive(&self.home, &id) {
-            return Err(Error::Invalid(format!("{id} is being closed by another Citroenition process")));
+        // from here on nobody else on this device opens, adopts or recovers the profile
+        state::claim_session(&self.home, &id)?;
+        let opened = self.open_claimed(kernel, &id, opts);
+        if opened.is_err() {
+            state::clear_session(&self.home, &id);
         }
-        let lease = self.client.lock(&id)?; // refused with the holder named when somebody else has it
-        let keeper = LeaseKeeper::start(&self.client, &id, &lease);
-        let mut bound = Bound::load(&self.home, &id).unwrap_or_else(|| Bound::new(&self.login.team_id));
-        let started = self.prepare_and_launch(kernel, &id, opts, &keeper, &mut bound);
+        opened
+    }
+
+    fn open_claimed(&self, kernel: &Kernel, id: &str, opts: &LaunchOptions) -> Result<Running> {
+        let lease = self.client.lock(id)?; // refused with the holder named when somebody else has it
+        let keeper = LeaseKeeper::start(&self.client, id, &lease);
+        let mut bound = Bound::load(&self.home, id).unwrap_or_else(|| Bound::new(&self.login.team_id));
+        let started = self.prepare_and_launch(kernel, id, opts, &keeper, &mut bound);
         let (running, log_from) = match started {
             Ok(v) => v,
             Err(e) => {
@@ -354,12 +386,12 @@ impl Hub {
                 return Err(e);
             }
         };
-        let _ = store::locked(&self.home, |s| s.touch_opened(&id));
+        let _ = store::locked(&self.home, |s| s.touch_opened(id));
         let session = Session {
             home: self.home.clone(),
             client: self.client.clone(),
             team_id: self.login.team_id.clone(),
-            id: id.clone(),
+            id: id.to_owned(),
             device: self.device_name().to_owned(),
             keeper: Some(keeper),
             bound,
@@ -376,12 +408,16 @@ impl Hub {
     pub fn adopt(&self) -> Vec<Outcome> {
         let mut problems = Vec::new();
         for id in state::bound_ids(&self.home) {
-            if launch::running(&self.home, &id).is_none() || is_syncing(&id) || state::session_alive(&self.home, &id) {
+            if launch::running(&self.home, &id).is_none() || is_syncing(&self.home, &id) {
                 continue;
             }
             let Some(bound) = Bound::load(&self.home, &id).filter(|b| b.team_id == self.login.team_id) else {
                 continue;
             };
+            // a live process that has the claim is already looking after it (it may be in the middle of opening it)
+            if state::claim_session(&self.home, &id).is_err() {
+                continue;
+            }
             let mut s = Session {
                 home: self.home.clone(),
                 client: self.client.clone(),
@@ -412,6 +448,7 @@ impl Hub {
                         ),
                     );
                     let kept = s.keep_aside();
+                    state::clear_session(&self.home, &id);
                     problems.push(Outcome {
                         profile_id: id,
                         error: Some(format!(
@@ -421,7 +458,7 @@ impl Hub {
                         ..Outcome::default()
                     });
                 }
-                Err(_) => {} // the hub cannot be reached: the next call tries again
+                Err(_) => state::clear_session(&self.home, &id), // the hub cannot be reached: the next call tries again
             }
         }
         problems
@@ -524,6 +561,8 @@ impl Hub {
 
 /// Lock a profile that has no browser, upload its data directory, unlock (what a first push or a recovery does).
 pub(crate) fn publish(hub: &Hub, id: &str) -> Result<Outcome> {
+    state::claim_session(&hub.home, id)?;
+    let _claim = Claim(hub.home.clone(), id.to_owned());
     let lease = hub.client.lock(id)?;
     let keeper = LeaseKeeper::start(&hub.client, id, &lease);
     let mut s = Session {
@@ -536,13 +575,9 @@ pub(crate) fn publish(hub: &Hub, id: &str) -> Result<Outcome> {
         bound: Bound::load(&hub.home, id).unwrap_or_else(|| Bound::new(&hub.login.team_id)),
         log_from: u64::MAX,
     };
-    // the hub's current numbers decide what "based on" means for this upload
-    if let Ok(hp) = hub.client.profile(id, Some(s.keeper.as_ref().map_or("", |k| k.lease()))) {
-        s.bound.data_version = hp.data.version;
-        if hp.data.version == 0 {
-            s.bound.data_sha256.clear();
-        }
-    }
+    // The upload is based on what this device last agreed on with the hub (`bound`), never on the hub's current
+    // version: a recovery that runs late must not overwrite what the team did in the meantime. When the hub moved
+    // on, the upload is refused and what this device has is kept aside.
     Ok(finish(&mut s, None))
 }
 
@@ -551,7 +586,7 @@ pub fn recover(home: &Home, key: &str) -> Result<Outcome> {
     let hub = Hub::connect(home)?.ok_or(Error::NotLoggedIn)?;
     let id = hub.resolve(key)?;
     let bound = Bound::load(home, &id).ok_or_else(|| Error::Invalid(format!("{id} is not a hub profile")))?;
-    if launch::running(home, &id).is_some() || is_syncing(&id) {
+    if launch::running(home, &id).is_some() || is_syncing(home, &id) {
         return Err(Error::Invalid(format!("{id} is open: close it first")));
     }
     if !bound.dirty {
@@ -590,8 +625,8 @@ pub fn close(home: &Home, id: &str, patience: Duration) -> Result<CloseReport> {
     if !home.hub_bound(id) {
         return Ok(CloseReport { stopped, outcome: None });
     }
-    if live().contains_key(id) {
-        return Ok(CloseReport { stopped, outcome: wait(id, patience) });
+    if live().contains_key(&key(home, id)) {
+        return Ok(CloseReport { stopped, outcome: wait(home, id, patience) });
     }
     let deadline = Instant::now() + patience;
     while state::session_alive(home, id) && Instant::now() < deadline {
@@ -604,15 +639,14 @@ pub fn close(home: &Home, id: &str, patience: Duration) -> Result<CloseReport> {
 }
 
 /// Is a supervisor of this process still working on the profile?
-pub fn is_syncing(id: &str) -> bool {
-    live().get(id).is_some_and(|h| !h.is_finished())
+pub fn is_syncing(home: &Home, id: &str) -> bool {
+    live().get(&key(home, id)).is_some_and(|h| !h.is_finished())
 }
 
-/// Wait until this process's supervisor of `id` is done: browser closed, data uploaded, lock released.
-pub fn wait(id: &str, patience: Duration) -> Option<Outcome> {
+fn wait_for(k: &Key, patience: Duration) -> Option<Outcome> {
     let deadline = Instant::now() + patience;
     loop {
-        match live().get(id) {
+        match live().get(k) {
             None => return None,
             Some(h) if h.is_finished() => break,
             Some(_) => {}
@@ -622,7 +656,13 @@ pub fn wait(id: &str, patience: Duration) -> Option<Outcome> {
         }
         thread::sleep(Duration::from_millis(100));
     }
-    live().remove(id)?.join().ok()
+    live().remove(k)?.join().ok()
+}
+
+/// Wait until this process's supervisor of `id` is done: browser closed, data uploaded, lock released. `None`
+/// when there is none, or when it is still busy after `patience`.
+pub fn wait(home: &Home, id: &str, patience: Duration) -> Option<Outcome> {
+    wait_for(&key(home, id), patience)
 }
 
 /// Close the browsers of the hub profiles this process supervises, upload their data and hand the locks back. The
@@ -630,15 +670,15 @@ pub fn wait(id: &str, patience: Duration) -> Option<Outcome> {
 /// under a running browser is how two devices end up with one profile.
 pub fn shutdown(patience: Duration) -> Vec<Outcome> {
     SHUTDOWN.store(true, Ordering::SeqCst);
-    let ids: Vec<String> = live().keys().cloned().collect();
-    ids.into_iter().filter_map(|id| wait(&id, patience)).collect()
+    let keys: Vec<Key> = live().keys().cloned().collect();
+    keys.iter().filter_map(|k| wait_for(k, patience)).collect()
 }
 
 /// The outcomes of the supervisors that finished since the last call (the app shows them as notices).
 pub fn take_finished() -> Vec<Outcome> {
     let mut l = live();
-    let done: Vec<String> = l.iter().filter(|(_, h)| h.is_finished()).map(|(id, _)| id.clone()).collect();
-    done.into_iter().filter_map(|id| l.remove(&id)).filter_map(|h| h.join().ok()).collect()
+    let done: Vec<Key> = l.iter().filter(|(_, h)| h.is_finished()).map(|(k, _)| k.clone()).collect();
+    done.into_iter().filter_map(|k| l.remove(&k)).filter_map(|h| h.join().ok()).collect()
 }
 
 extern "C" fn on_signal(_: libc::c_int) {
