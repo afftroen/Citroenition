@@ -485,11 +485,11 @@ impl CitroApp {
                             });
                             cell(&mut row, |ui| {
                                 avatar(ui, &p, &id, &pr.name);
-                                ui.add(egui::Label::new(RichText::new(&pr.name).strong()).truncate());
                                 if r.team.is_some() {
-                                    widgets::badge(ui, "Team", p.accent)
+                                    widgets::team_mark(ui, p.accent)
                                         .on_hover_text("Shared through the team hub: it opens on one device at a time");
                                 }
+                                ui.add(egui::Label::new(RichText::new(&pr.name).strong()).truncate());
                             });
                             cell(&mut row, |ui| {
                                 let label = group_label(groups, &pr.group_id);

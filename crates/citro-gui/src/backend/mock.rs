@@ -11,7 +11,7 @@ use crate::query;
 use crate::timefmt::now_ts;
 use citro_core::csv::{self, CsvRow};
 use citro_core::profile::{Group, Profile, ProxyConfig};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -40,6 +40,8 @@ struct State {
     kernel: KernelStatus,
     hub: HubStatus,
     teams: Vec<TeamInfo>,
+    /// The profiles that belong to the team hub (the others are private to this device).
+    shared: HashSet<String>,
 }
 
 pub struct MockBackend {
@@ -336,6 +338,11 @@ impl MockBackend {
             ev(7 * MIN, Level::Warn, None, "proxy check 203.0.113.62:1080: timed out"),
             ev(3 * MIN, Level::Info, Some(0), "opened Vinted FR - Camille (pid 46218)"),
         ];
+        let shared: HashSet<String> = profiles
+            .iter()
+            .filter(|p| p.group_id == "1" || locks.contains_key(&p.profile_id))
+            .map(|p| p.profile_id.clone())
+            .collect();
         let me = "mia";
         let teams = vec![TeamInfo {
             id: "t1".into(),
@@ -348,7 +355,7 @@ impl MockBackend {
                 Member { name: "omar".into(), role: Role::Member },
                 Member { name: "sofia".into(), role: Role::Viewer },
             ],
-            profile_count: 9,
+            profile_count: shared.len(),
         }];
         let kernel = KernelStatus {
             installed: Some(KernelInfo {
@@ -384,11 +391,12 @@ impl MockBackend {
                     connected: true,
                     url: "https://hub.example.net".into(),
                     user: me.into(),
-                    team: "Atelier".into(),
+                    team: "Vinted Ops".into(),
                     device_name: "MIA-LAPTOP".into(),
                     error: None,
                 },
                 teams,
+                shared,
             }),
             latency: Duration::from_millis(900),
             kind: BackendKind::Demo,
@@ -464,7 +472,7 @@ impl Backend for MockBackend {
             .iter()
             .map(|p| Row {
                 run: run_state(&st, &p.profile_id),
-                team: st.locks.contains_key(&p.profile_id).then(|| "t1".to_owned()),
+                team: st.shared.contains(&p.profile_id).then(|| "t1".to_owned()),
                 profile: redact(p),
             })
             .collect();
@@ -509,6 +517,20 @@ impl Backend for MockBackend {
 
     fn delete_profiles(&self, ids: &[String]) -> BResult<()> {
         let mut st = self.lock();
+        let team: Vec<String> = st
+            .profiles
+            .iter()
+            .filter(|p| ids.contains(&p.profile_id) && st.shared.contains(&p.profile_id))
+            .map(|p| p.name.clone())
+            .collect();
+        if !team.is_empty() {
+            return Err(BackendError::Invalid(format!(
+                "{} belong{} to the team hub: deleting removes {} for the whole team, not only here",
+                team.join(", "),
+                if team.len() == 1 { "s" } else { "" },
+                if team.len() == 1 { "it" } else { "them" },
+            )));
+        }
         let before = st.profiles.len();
         let names: Vec<String> =
             st.profiles.iter().filter(|p| ids.contains(&p.profile_id)).map(|p| p.name.clone()).collect();
@@ -786,25 +808,89 @@ impl Backend for MockBackend {
     }
 
     fn teams(&self) -> BResult<Vec<TeamInfo>> {
-        Ok(self.lock().teams.clone())
+        let st = self.lock();
+        let mut teams = st.teams.clone();
+        for t in &mut teams {
+            t.profile_count = st.shared.len();
+        }
+        Ok(if st.hub.connected { teams } else { Vec::new() })
     }
 
     fn hub_status(&self) -> HubStatus {
         self.lock().hub.clone()
     }
 
-    fn connect_hub(&self, url: &str, _token: &str, device_name: &str, _team: &str) -> BResult<HubStatus> {
+    fn connect_hub(&self, url: &str, _token: &str, device_name: &str, team: &str) -> BResult<HubStatus> {
         self.nap(0.5);
         let mut st = self.lock();
+        let team = if team.trim().is_empty() { st.teams[0].name.clone() } else { team.trim().to_owned() };
         st.hub = HubStatus {
             connected: true,
             url: url.into(),
             user: "mia".into(),
-            team: "Atelier".into(),
+            team,
             device_name: device_name.into(),
             error: None,
         };
         Ok(st.hub.clone())
+    }
+
+    fn disconnect_hub(&self) -> BResult<HubStatus> {
+        self.nap(0.3);
+        let mut st = self.lock();
+        if st.hub.connected {
+            Self::log(&mut st, Level::Info, None, "disconnected from the team hub".into());
+        }
+        st.hub = HubStatus::default();
+        Ok(st.hub.clone())
+    }
+
+    fn pull_team(&self) -> BResult<String> {
+        self.nap(0.6);
+        let mut st = self.lock();
+        if !st.hub.connected {
+            return Err(BackendError::Invalid("this device is not connected to a team hub: connect first".into()));
+        }
+        Self::log(&mut st, Level::Info, None, "team: the team's profiles are up to date".into());
+        Ok("the team's profiles are up to date".into())
+    }
+
+    fn share_profiles(&self, ids: &[String]) -> BResult<String> {
+        self.nap(0.8);
+        let mut st = self.lock();
+        if !st.hub.connected {
+            return Err(BackendError::Invalid("this device is not connected to a team hub: connect first".into()));
+        }
+        let mut done = 0usize;
+        for id in ids {
+            let name = find(&st, id)?.name.clone();
+            if st.shared.insert(id.clone()) {
+                done += 1;
+                Self::log(&mut st, Level::Info, Some(id), format!("shared {name} with the team"));
+            }
+        }
+        let team = st.hub.team.clone();
+        Ok(format!("Shared {done} profile{} with {team}", if done == 1 { "" } else { "s" }))
+    }
+
+    fn delete_profiles_everywhere(&self, ids: &[String]) -> BResult<()> {
+        self.nap(0.5);
+        let mut st = self.lock();
+        let names: Vec<String> =
+            st.profiles.iter().filter(|p| ids.contains(&p.profile_id)).map(|p| p.name.clone()).collect();
+        if names.is_empty() {
+            return Err(BackendError::NotFound("none of the selected profiles exists any more".into()));
+        }
+        st.profiles.retain(|p| !ids.contains(&p.profile_id));
+        for id in ids {
+            st.running.remove(id);
+            st.locks.remove(id);
+            st.shared.remove(id);
+        }
+        for n in names {
+            Self::log(&mut st, Level::Info, None, format!("deleted profile {n} (for everybody it was shared with)"));
+        }
+        Ok(())
     }
 
     fn force_unlock(&self, profile_id: &str) -> BResult<()> {
@@ -962,5 +1048,29 @@ mod tests {
         assert!(b.hub_status().connected);
         assert_eq!(b.teams().unwrap()[0].members.len(), 5);
         assert_eq!(b.info().kind, BackendKind::Demo);
+    }
+
+    #[test]
+    fn team_profiles_are_shared_pulled_and_deleted_for_everyone() {
+        let b = demo();
+        let team_of = |b: &MockBackend| rows(b).into_iter().filter(|r| r.team.is_some()).count();
+        let before = team_of(&b);
+        assert!(before > 0 && b.teams().unwrap()[0].profile_count == before, "the demo has a team to look at");
+        // a private profile can be shared, once
+        let private = rows(&b).into_iter().find(|r| r.team.is_none()).unwrap();
+        assert!(b.share_profiles(&[private.id().to_owned()]).unwrap().starts_with("Shared 1 profile with Vinted Ops"));
+        assert_eq!(team_of(&b), before + 1);
+        assert!(b.share_profiles(&[private.id().to_owned()]).unwrap().starts_with("Shared 0 profiles"));
+        // a team profile is not deleted by accident, only for everybody on purpose
+        let err = b.delete_profiles(&[private.id().to_owned()]).unwrap_err();
+        assert!(matches!(&err, BackendError::Invalid(m) if m.contains("team hub")), "{err:?}");
+        b.delete_profiles_everywhere(&[private.id().to_owned()]).unwrap();
+        assert!(rows(&b).iter().all(|r| r.id() != private.id()));
+        // pulling works while connected; after disconnecting there is no team and nothing to pull
+        assert!(b.pull_team().unwrap().contains("up to date"));
+        assert!(!b.disconnect_hub().unwrap().connected);
+        assert!(b.teams().unwrap().is_empty() && b.pull_team().is_err() && b.share_profiles(&[]).is_err());
+        let again = b.connect_hub("https://hub.example.net", "tok", "MIA-LAPTOP", "Atelier").unwrap();
+        assert!(again.connected && again.team == "Atelier");
     }
 }

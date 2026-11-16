@@ -75,6 +75,17 @@ pub fn badge(ui: &mut Ui, text: &str, color: Color32) -> Response {
         .response
 }
 
+/// A fixed-size "shared with the team" mark for table rows: the Teams glyph in a tinted pill. Unlike a text badge
+/// it cannot be squeezed to "T..." when the name column is narrow, so the name is what gives way.
+pub fn team_mark(ui: &mut Ui, color: Color32) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(24.0, 16.0), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        ui.painter().rect_filled(rect, CornerRadius::same(8), color.gamma_multiply(0.18));
+        paint_icon(ui.painter(), rect.center(), Icon::Teams, color);
+    }
+    resp
+}
+
 /// A filled status dot (and a faint ring when `ring`).
 pub fn dot(ui: &mut Ui, color: Color32, ring: bool) {
     let (rect, _) = ui.allocate_exact_size(vec2(12.0, 14.0), Sense::hover());
