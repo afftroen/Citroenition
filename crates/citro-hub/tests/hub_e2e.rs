@@ -6,7 +6,7 @@ mod common;
 use citro_core::profile::Profile;
 use citro_hub::client::{Client, Device, Error, LeaseKeeper, Pulled, UploadOptions};
 use citro_hub::model::{
-    DEVICE_HEADER, LEASE_HEADER, LogEntry, LogFilter, LogKind, LogLevel, MASK, ProfileFilter, TeamRole, UserRole,
+    DEVICE_HEADER, LEASE_HEADER, LogEntry, LogFilter, LogKind, LogLevel, ProfileFilter, TeamRole, UserRole,
 };
 use citro_hub::server::admin;
 use citro_hub::server::store::Config;
