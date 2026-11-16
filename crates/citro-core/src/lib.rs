@@ -5,6 +5,7 @@
 //! `docs/REVERSE_ENGINEERING.md` in the repository root. The browser itself is Clearcote, see `docs/KERNEL.md`.
 
 pub mod codec;
+pub mod csv;
 pub mod error;
 pub mod fingerprint;
 pub mod kernel;
