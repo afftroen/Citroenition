@@ -3,6 +3,7 @@
 mod api;
 
 use anyhow::{Result, anyhow, bail};
+use citro_core::csv::{self, CsvRow};
 use citro_core::kernel::Kernel;
 use citro_core::launch::{self, LaunchOptions};
 use citro_core::profile::{Profile, ProxyConfig};
@@ -11,6 +12,7 @@ use citro_core::store::{self, Home, Store};
 use citro_core::{Error, Result as CoreResult};
 use clap::{Args, Parser, Subcommand};
 use serde_json::{Value, json};
+use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -49,6 +51,18 @@ enum Cmd {
     },
     /// Show a profile (secrets hidden)
     Show { profile: String },
+    /// Export profiles as a CSV file every spreadsheet opens (never contains passwords, cookies or proxy passwords)
+    Export {
+        /// Write to FILE instead of standard output
+        #[arg(long, short, value_name = "FILE")]
+        out: Option<PathBuf>,
+        /// Only this group (id or name)
+        #[arg(long)]
+        group: Option<String>,
+        /// Leave out the UTF-8 byte order mark (Excel then guesses a legacy code page for non-ASCII text)
+        #[arg(long)]
+        no_bom: bool,
+    },
     /// Change a profile (applies the next time it is opened)
     Edit {
         profile: String,
@@ -97,6 +111,16 @@ enum KernelCmd {
     /// List the installed kernels, newest first
     #[command(visible_alias = "ls")]
     List,
+    /// Download the Clearcote kernel, verify it (pinned OpenPGP key + SHA-256) and install it
+    #[command(disable_version_flag = true)] // `--version` here selects the kernel, not the citro version
+    Install {
+        /// Chromium version (151.0.7922.108) or release tag (default: the latest release)
+        #[arg(long)]
+        version: Option<String>,
+        /// Reinstall even if that version is already installed
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -397,6 +421,29 @@ fn run(cli: Cli) -> Result<()> {
                 table(&["NO", "ID", "NAME", "GROUP", "PROXY", "STATUS"], &body);
             }
         }
+        Cmd::Export { out, group, no_bom } => {
+            let _ = launch::sync_closed(&home);
+            let s = Store::open(&home)?;
+            let gid = group.as_deref().map(|g| resolve_group(&s, g)).transpose()?;
+            let rows: Vec<CsvRow> = s
+                .profiles()
+                .iter()
+                .filter(|p| gid.as_ref().is_none_or(|g| &p.group_id == g))
+                .map(|p| {
+                    let ungrouped = p.group_id.is_empty() || p.group_id == "0";
+                    let group_name = if ungrouped { String::new() } else { s.group_name(&p.group_id) };
+                    CsvRow::from_profile(p, &group_name, launch::running(&home, &p.profile_id).is_some())
+                })
+                .collect();
+            let bytes = csv::write(&rows, !no_bom);
+            match out {
+                Some(path) => {
+                    std::fs::write(&path, &bytes).map_err(|e| anyhow!("cannot write {}: {e}", path.display()))?;
+                    eprintln!("exported {} profile(s) to {}", rows.len(), path.display());
+                }
+                None => std::io::stdout().lock().write_all(&bytes)?,
+            }
+        }
         Cmd::Show { profile } => {
             let s = Store::open(&home)?;
             let p = s.get(&profile)?;
@@ -555,6 +602,16 @@ fn run(cli: Cli) -> Result<()> {
             for k in found {
                 println!("{:<18}  {}", k.version, k.binary.display());
             }
+        }
+        Cmd::Kernel { cmd: Some(KernelCmd::Install { version, force }) } => {
+            let opts = citro_install::InstallOptions { version, force, ..Default::default() };
+            let mut line = citro_install::ProgressLine::new();
+            let result =
+                citro_install::install(&citro_core::kernel::kernels_dir(&home), &opts, &mut |p| line.update(p));
+            line.finish();
+            let k = result?;
+            let what = if line.downloaded() { "installed" } else { "already installed (--force reinstalls)" };
+            println!("{what} {}: {}", k.version, k.binary.display());
         }
         Cmd::Serve(a) => {
             if !a.bind.ip().is_loopback() && a.api_key.as_deref().is_none_or(str::is_empty) {

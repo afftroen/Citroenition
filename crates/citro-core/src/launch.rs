@@ -8,7 +8,7 @@
 //! alive *and* its command line still carries the profile's `--user-data-dir`, so a recycled pid is never
 //! mistaken for a browser.
 
-use crate::fingerprint::{Ident, Os, Resolved};
+use crate::fingerprint::{Ident, Resolved};
 use crate::kernel::Kernel;
 use crate::kernel_env;
 use crate::profile::Profile;
@@ -209,9 +209,7 @@ pub fn prepare(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) 
             args.push("--test-type".into());
         }
     }
-    let display = std::env::var("DISPLAY").ok();
-    let mesa = resolved.os == Os::Linux && kernel_env::mesa_egl_available();
-    args.extend(kernel_env::gpu_backend_args(resolved.os, !opts.headless, &user_args, display.as_deref(), mesa));
+    args.extend(kernel_env::gpu_backend_args(resolved.os, &user_args));
     args.extend(user_args);
     let mut args = merge_list_flags(args);
 

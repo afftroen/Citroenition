@@ -11,3 +11,12 @@ repository = "https://github.com/afftroen/Citroenition"
 [profile.release]
 lto = "thin"
 strip = true
+
+# Debug builds of the installer must not crawl: unpacking a 120 MB .tar.xz and hashing it are CPU-bound, and an
+# unoptimised decoder needs ~90 s for what takes a few seconds optimised.
+[profile.dev.package.lzma-rust2]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.sha1]
+opt-level = 3
