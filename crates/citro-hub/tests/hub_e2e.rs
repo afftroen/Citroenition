@@ -5,7 +5,9 @@ mod common;
 
 use citro_core::profile::Profile;
 use citro_hub::client::{Client, Device, Error, LeaseKeeper, Pulled, UploadOptions};
-use citro_hub::model::{LogEntry, LogFilter, LogKind, LogLevel, MASK, ProfileFilter, TeamRole, UserRole};
+use citro_hub::model::{
+    DEVICE_HEADER, LEASE_HEADER, LogEntry, LogFilter, LogKind, LogLevel, MASK, ProfileFilter, TeamRole, UserRole,
+};
 use citro_hub::server::admin;
 use citro_hub::server::store::Config;
 use common::*;
@@ -85,7 +87,97 @@ fn a_locked_profile_is_closed_to_every_other_device_and_user() {
     let seen = a.profile(&pid, Some(&lease.lease)).unwrap();
     assert_eq!((seen.data.version, seen.profile.remark.as_str()), (0, ""));
     a.heartbeat(&pid, &lease.lease).expect("A keeps its lease");
-    assert_eq!(a.lock(&pid).map(|l| l.profile_id).unwrap_or_default(), pid, "the same device may re-lock");
+    assert_eq!(a.lock(&pid).expect("the same device may re-lock").profile_id, pid);
+}
+
+// ---- connections: a refusal never costs the connection ---------------------------------------------------------------
+
+/// A request head the way `curl` writes it; the body is sent separately by the test.
+fn head(method: &str, path: &str, token: &str, extra: &str, body_len: usize) -> Vec<u8> {
+    format!(
+        "{method} {path} HTTP/1.1\r\nHost: hub.test\r\nAuthorization: Bearer {token}\r\n{DEVICE_HEADER}: dev-cara\r\n\
+         {extra}Content-Length: {body_len}\r\n\r\n"
+    )
+    .into_bytes()
+}
+
+#[test]
+fn every_refusal_is_answered_on_a_connection_that_stays_usable() {
+    // The answer to a refused request is ready long before its body has arrived (here: 120 ms later). A hub that
+    // answers at once and then gives up on the unread body has to close the connection, and a pooled client finds
+    // that out on its *next* request: "Peer disconnected" instead of the refusal it was owed.
+    let w = World::new();
+    let pid = w.profile("Shop");
+    let _held = w.ben().lock(&pid).unwrap();
+    let mut wire = Wire::connect(&w.url());
+
+    let (heartbeat, force, lock) = (
+        format!("/v1/profiles/{pid}/heartbeat"),
+        format!("/v1/profiles/{pid}/force-unlock"),
+        format!("/v1/profiles/{pid}/lock"),
+    );
+    let lease = format!("{LEASE_HEADER}: ls_made_up\r\nContent-Type: application/json\r\n");
+    let cara_lock = r#"{"device_id":"dev-cara","device_name":"Cara's desktop"}"#;
+    let cases = [
+        ("heartbeat with a made-up lease", w.cara.as_str(), &heartbeat, "{}", 403),
+        ("heartbeat with an unknown token", "citro_not_a_token", &heartbeat, "{}", 401),
+        ("force-unlock by a plain member", w.cara.as_str(), &force, "{}", 403),
+        ("lock of a profile somebody else holds", w.cara.as_str(), &lock, cara_lock, 409),
+        ("an endpoint that does not exist", w.cara.as_str(), &"/v1/nothing/here".to_owned(), "{}", 404),
+        ("a method the endpoint does not have", w.cara.as_str(), &"/v1/me".to_owned(), "{}", 405),
+    ];
+    for (what, token, path, body, status) in cases {
+        wire.send(&head("POST", path, token, &lease, body.len()));
+        std::thread::sleep(Duration::from_millis(120)); // the body is late
+        wire.send(body.as_bytes());
+        let answer = wire.answer().unwrap_or_else(|e| panic!("{what}: {e}"));
+        assert_eq!(answer.status, status, "{what}: {}", answer.text());
+        assert_ne!(answer.header("connection"), Some("close"), "{what}: the hub must not end the connection");
+
+        // the same connection is good for the next request
+        wire.send(&head("GET", "/v1/me", &w.cara, "", 0));
+        let me = wire.answer().unwrap_or_else(|e| panic!("after \"{what}\": {e}"));
+        assert_eq!(me.status, 200, "after \"{what}\"");
+    }
+}
+
+#[test]
+fn a_refused_upload_is_answered_and_then_the_connection_ends() {
+    let w = World::new();
+    let pid = w.profile("Shop");
+    let _held = w.ben().lock(&pid).unwrap();
+    let path = format!("/v1/profiles/{pid}/data");
+    let lease = format!("{LEASE_HEADER}: ls_made_up\r\nContent-Type: application/octet-stream\r\n");
+
+    // The client waits for `100 Continue`: it learns the refusal without sending a single byte of the archive.
+    let mut wire = Wire::connect(&w.url());
+    wire.send(&head("PUT", &path, &w.cara, &format!("{lease}Expect: 100-continue\r\n"), 50_000_000));
+    let answer = wire.answer().expect("the refusal arrives although no body was sent");
+    assert_eq!(answer.status, 403, "{}", answer.text());
+    assert_eq!(answer.header("connection"), Some("close"));
+    assert!(wire.is_closed_by_hub());
+
+    // The client sends the archive anyway: it is read and dropped, so the refusal is not lost to a reset.
+    let archive = blob(3 * 1024 * 1024, 7);
+    let mut wire = Wire::connect(&w.url());
+    wire.send(&head("PUT", &path, &w.cara, &lease, archive.len()));
+    wire.send(&archive);
+    let answer = wire.answer().expect("the refusal arrives although the whole archive was sent");
+    assert_eq!(answer.status, 403, "{}", answer.text());
+    assert_eq!(answer.header("connection"), Some("close"));
+    assert!(wire.is_closed_by_hub());
+
+    // Same for a token the hub does not know (the refusal comes before any handler).
+    let mut wire = Wire::connect(&w.url());
+    wire.send(&head("PUT", &path, "citro_not_a_token", &lease, archive.len()));
+    wire.send(&archive);
+    let answer = wire.answer().expect("the 401 arrives although the whole archive was sent");
+    assert_eq!(answer.status, 401, "{}", answer.text());
+    assert_eq!(answer.header("connection"), Some("close"));
+
+    // Nothing of it was stored.
+    let seen = w.anna().profile(&pid, None).unwrap();
+    assert_eq!(seen.data.version, 0);
 }
 
 #[test]

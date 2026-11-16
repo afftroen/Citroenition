@@ -36,6 +36,11 @@ impl ApiError {
         ApiError::new(StatusCode::NOT_FOUND, "not_found", message)
     }
 
+    /// The client took too long to send what it announced (408).
+    pub fn timeout(message: impl Into<String>) -> ApiError {
+        ApiError::new(StatusCode::REQUEST_TIMEOUT, "timeout", message)
+    }
+
     pub fn locked(holder: Holder) -> ApiError {
         let mut e = ApiError::new(StatusCode::CONFLICT, "locked", format!("profile is open: {holder}"));
         e.holder = Some(Box::new(holder));
@@ -173,6 +178,7 @@ mod tests {
             (ApiError::unauthorized("x"), 401, "unauthorized"),
             (ApiError::forbidden("x"), 403, "forbidden"),
             (ApiError::not_found("x"), 404, "not_found"),
+            (ApiError::timeout("x"), 408, "timeout"),
             (ApiError::stale(3), 409, "stale"),
             (ApiError::precondition_failed(3), 412, "stale"),
             (ApiError::invalid("x"), 400, "invalid"),

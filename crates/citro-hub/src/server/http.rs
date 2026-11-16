@@ -18,9 +18,9 @@ use crate::model::{
     DATA_SHA256_HEADER, DATA_VERSION_HEADER, DEVICE_HEADER, DataMeta, DataVersion, HubGroup, HubProfile, LEASE_HEADER,
     Lease, LogEntry, LogKind, LogLevel, LogRecord, Me, Member, ProfilePage, TeamEntry, TeamRole, User, UserRole,
 };
-use axum::body::{Body, Bytes};
+use axum::body::{Body, Bytes, HttpBody};
 use axum::extract::{ConnectInfo, Path, Request, State};
-use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post};
@@ -39,6 +39,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// How much of a refused request body is read and thrown away so the client can still see our answer.
 const DRAIN_CAP: usize = 16 * 1024 * 1024;
+/// How long a refused upload is given to finish sending what is already on its way.
+const DRAIN_TIME: Duration = Duration::from_secs(15);
+/// A JSON body that has not arrived completely after this long is dropped (408).
+const BODY_TIMEOUT: Duration = Duration::from_secs(30);
 /// A data upload that sends nothing for this long is dropped (and its temp file removed).
 const UPLOAD_IDLE: Duration = Duration::from_secs(60);
 /// Chunk size of a data download.
@@ -180,6 +184,78 @@ async fn read_json_or_default<T: DeserializeOwned + Default>(
     serde_json::from_slice(&bytes).map_err(|e| ApiError::invalid(format!("invalid JSON body: {e}")))
 }
 
+// ---- request bodies and connections --------------------------------------------------------------------------------
+
+/// The one request whose body is streamed to disk instead of buffered: the data upload.
+fn streams_body(method: &Method, path: &str) -> bool {
+    method == Method::PUT
+        && path
+            .strip_prefix("/v1/profiles/")
+            .and_then(|rest| rest.strip_suffix("/data"))
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
+/// Set by [`buffer_body`] on a request whose body is streamed (the data upload) and so has not been read when the
+/// request reaches a refusal. (Inside the nested `/v1` router the path no longer says so: the prefix is stripped.)
+#[derive(Clone, Copy)]
+struct Streamed;
+
+/// Mark an answer as the last one on its connection.
+fn closing(mut resp: Response) -> Response {
+    resp.headers_mut().insert(header::CONNECTION, HeaderValue::from_static("close"));
+    resp
+}
+
+/// Read every small request body completely, **before** anything is decided about the request.
+///
+/// A server that answers while the client is still sending (a refusal for a bad token, a lease that is not the
+/// caller's, an unknown path, a handler with no use for its body) cannot know where the next request on that
+/// connection begins, so hyper closes it. An HTTP/1.1 client keeps such a connection in its pool and finds it dead on
+/// the next request: "Peer disconnected" or "Broken pipe" instead of the 403 or 409 the hub had given. Buffering first
+/// (bounded by `max_json_bytes` and [`BODY_TIMEOUT`]) makes every answer, refusals included, a clean one on a
+/// connection that stays usable. The data upload is the exception: it is streamed, and a refusal of it ends its
+/// connection on purpose (see [`refuse_unread`]).
+async fn buffer_body(State(app): State<App>, mut req: Request, next: Next) -> Response {
+    if streams_body(req.method(), req.uri().path()) {
+        req.extensions_mut().insert(Streamed);
+        let resp = next.run(req).await;
+        // Whatever refused an upload may have left (part of) its body unread: this connection ends here.
+        return if resp.status().is_success() { resp } else { closing(resp) };
+    }
+    if req.body().is_end_stream() {
+        return next.run(req).await;
+    }
+    let (parts, body) = req.into_parts();
+    let limit = app.store.config().max_json_bytes;
+    match tokio::time::timeout(BODY_TIMEOUT, read_limited(&parts.headers, body, limit)).await {
+        Ok(Ok(bytes)) => next.run(Request::from_parts(parts, Body::from(bytes))).await,
+        Ok(Err(e)) => e.into_response(),
+        Err(_) => closing(ApiError::timeout("the request body did not arrive in time").into_response()),
+    }
+}
+
+/// Answer a refusal to a request whose body has not been read (the streamed upload). What the client sends anyway is
+/// read and dropped, bounded in size and time, so it sees the answer instead of a reset connection. A client that
+/// waits for `100 Continue` has sent nothing, and polling its body would only invite it (hyper sends the `100` when
+/// the body is first read): it learns the refusal for free.
+async fn refuse_unread(headers: &HeaderMap, body: Body, err: ApiError) -> Response {
+    if !headers.contains_key(header::EXPECT) {
+        let mut stream = body.into_data_stream();
+        let _ = tokio::time::timeout(DRAIN_TIME, drain(&mut stream, DRAIN_CAP)).await;
+    }
+    closing(err.into_response())
+}
+
+/// A refusal that comes before any handler (blocked address, bad token, rate limit).
+async fn refuse(req: Request, err: ApiError) -> Response {
+    if req.extensions().get::<Streamed>().is_some() {
+        let (parts, body) = req.into_parts();
+        refuse_unread(&parts.headers, body, err).await
+    } else {
+        err.into_response() // every other body was read by `buffer_body` already
+    }
+}
+
 fn header_name(s: &str) -> HeaderName {
     HeaderName::from_bytes(s.as_bytes()).expect("a valid header name")
 }
@@ -220,7 +296,7 @@ async fn authenticate(
 ) -> Response {
     let ip = client_ip(app.store.config().real_ip_header.as_deref(), peer, req.headers());
     if let Some(wait) = app.limiter.blocked(ip, Instant::now()) {
-        return ApiError::rate_limited(wait).into_response();
+        return refuse(req, ApiError::rate_limited(wait)).await;
     }
     let token = bearer_token(req.headers()).map(str::to_owned);
     let user = match token {
@@ -237,13 +313,13 @@ async fn authenticate(
         let msg = format!("authentication failed from {ip}{note}");
         let level = if blocked { LogLevel::Error } else { LogLevel::Warn };
         let _ = blocking(move || store.log_server(level, Some(ip), &msg)).await;
-        return ApiError::unauthorized("missing, unknown or revoked token").into_response();
+        return refuse(req, ApiError::unauthorized("missing, unknown or revoked token")).await;
     };
     let authed = AuthedUser(user.name.clone());
     if let Err(wait) = app.rate.check(ip, &user.id, Instant::now()) {
-        let mut resp = ApiError::rate_limited(wait)
-            .with_message(format!("too many requests from this user and address; retry in {wait} s"))
-            .into_response();
+        let err = ApiError::rate_limited(wait)
+            .with_message(format!("too many requests from this user and address; retry in {wait} s"));
+        let mut resp = refuse(req, err).await;
         resp.extensions_mut().insert(authed);
         return resp;
     }
@@ -695,26 +771,28 @@ async fn receive(body: Body, path: &FsPath, max: u64) -> ApiResult<(u64, String)
     Ok((size, hex(&hasher.finalize())))
 }
 
-async fn put_data(
-    State(app): State<App>,
-    Extension(c): Extension<Caller>,
-    Path(pid): Path<String>,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Body,
-) -> ApiResult<Json<DataMeta>> {
-    let lease = lease_of(&headers);
-    let pre = Precondition::from_request(&headers, &parse_query::<DataQuery>(&uri)?);
-    let declared = content_length(&headers)?;
-    let declared_sha = declared_sha256(&headers)?;
-    let (max, keep) = (app.store.config().max_blob_bytes, app.store.config().keep_versions);
-    let dir = app.store.blob_dir(&pid).ok_or_else(|| ApiError::not_found("no such profile"))?;
+/// What an upload has to satisfy before its body is worth reading.
+struct Admitted {
+    lease: Option<String>,
+    pre: Precondition,
+    declared_sha: Option<String>,
+    max: u64,
+    keep: usize,
+    dir: PathBuf,
+}
 
-    // 1. Who may write, and do the conditions hold? Answered before a single body byte is read, so a client that
-    //    sent `Expect: 100-continue` learns it without uploading anything.
+/// Who may write, and do the conditions hold? Decided before a single body byte is read, so a client that sent
+/// `Expect: 100-continue` learns a refusal without uploading anything.
+async fn admit_upload(app: &App, c: &Caller, pid: &str, uri: &Uri, headers: &HeaderMap) -> ApiResult<Admitted> {
+    let lease = lease_of(headers);
+    let pre = Precondition::from_request(headers, &parse_query::<DataQuery>(uri)?);
+    let declared = content_length(headers)?;
+    let declared_sha = declared_sha256(headers)?;
+    let (max, keep) = (app.store.config().max_blob_bytes, app.store.config().keep_versions);
+    let dir = app.store.blob_dir(pid).ok_or_else(|| ApiError::not_found("no such profile"))?;
     {
-        let (p, l, pre) = (pid.clone(), lease.clone(), pre.clone());
-        app.read(&c, move |st, cx| pre.check(&st.data_access(&cx.user, &p, l.as_deref(), cx.now_ms)?)).await?;
+        let (p, l, pre) = (pid.to_owned(), lease.clone(), pre.clone());
+        app.read(c, move |st, cx| pre.check(&st.data_access(&cx.user, &p, l.as_deref(), cx.now_ms)?)).await?;
     }
     if declared.is_some_and(|n| n > max) {
         return Err(ApiError::too_large(format!("the data is larger than the limit of {max} bytes")));
@@ -722,8 +800,30 @@ async fn put_data(
     if declared == Some(0) {
         return Err(ApiError::invalid("empty data is not accepted"));
     }
+    Ok(Admitted { lease, pre, declared_sha, max, keep, dir })
+}
 
-    // 2. Stream the body into a temp file next to the final place.
+async fn put_data(
+    State(app): State<App>,
+    Extension(c): Extension<Caller>,
+    Path(pid): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let admitted = match admit_upload(&app, &c, &pid, &uri, &headers).await {
+        Ok(a) => a,
+        Err(refusal) => return refuse_unread(&headers, body, refusal).await,
+    };
+    match store_upload(&app, &c, &pid, admitted, body).await {
+        Ok(meta) => Json(meta).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// Stream the body into a temp file next to the final place, then commit it as the next version.
+async fn store_upload(app: &App, c: &Caller, pid: &str, up: Admitted, body: Body) -> ApiResult<DataMeta> {
+    let Admitted { lease, pre, declared_sha, max, keep, dir } = up;
     create_private_dir(&dir)?;
     let tmp = TempFile::new(dir.join(format!("upload-{}", random_alnum(12))));
     let (size, sha) = receive(body, &tmp.path, max).await?;
@@ -736,11 +836,11 @@ async fn put_data(
         ));
     }
 
-    // 3. Commit under the state mutex: the lease must still be live and the conditions must hold right now. The
-    //    new version is `current + 1`, so the numbers only ever grow.
-    let (p, l, tmp_path) = (pid.clone(), lease, tmp.path.clone());
+    // Commit under the state mutex: the lease must still be live and the conditions must hold right now. The new
+    // version is `current + 1`, so the numbers only ever grow.
+    let (p, l, tmp_path) = (pid.to_owned(), lease, tmp.path.clone());
     let meta = app
-        .run(&c, move |st, cx| {
+        .run(c, move |st, cx| {
             let current = st.data_access(&cx.user, &p, l.as_deref(), cx.now_ms)?;
             pre.check(&current)?;
             if let Some(lock) = st.locks.get(&p) {
@@ -753,7 +853,7 @@ async fn put_data(
         })
         .await?;
     tmp.disarm();
-    Ok(Json(meta))
+    Ok(meta)
 }
 
 /// The SHA-256 a client declares for the data it pushes (`X-Citro-Data-Sha256`, or the usual `X-Content-SHA256`):
@@ -1126,6 +1226,7 @@ pub fn router(store: Arc<Store>) -> Router {
         .nest("/v1", v1)
         .fallback(not_found_fallback)
         .method_not_allowed_fallback(method_not_allowed)
+        .layer(middleware::from_fn_with_state(app.clone(), buffer_body))
         .layer(middleware::map_response(harden))
         .layer(middleware::from_fn_with_state(app.clone(), access_log))
         .with_state(app)

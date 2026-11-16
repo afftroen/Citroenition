@@ -214,3 +214,88 @@ pub fn python_csv_rows(dir: &Path, bytes: &[u8]) -> Vec<Vec<String>> {
     assert!(out.status.success(), "python could not parse the CSV: {}", String::from_utf8_lossy(&out.stderr));
     serde_json::from_slice(&out.stdout).expect("python printed JSON")
 }
+
+// ---- one TCP connection, spoken by hand ---------------------------------------------------------------------------
+
+/// A single keep-alive connection driven byte by byte: a test can send a request in pieces (the body arrives after
+/// the head, the way a slow or busy client does), read the answer, and then find out whether the same connection is
+/// still good for the next request. A pooled HTTP client does exactly that, and a hub that closes the connection
+/// behind a refusal makes it fail with "Peer disconnected" or "Broken pipe" instead of the refusal.
+pub struct Wire {
+    stream: std::net::TcpStream,
+    /// Bytes read from the socket but not consumed by an answer yet.
+    pending: Vec<u8>,
+}
+
+impl Wire {
+    /// `base_url` as `World::url` returns it: `http://127.0.0.1:PORT`.
+    pub fn connect(base_url: &str) -> Wire {
+        let addr = base_url.trim_start_matches("http://").trim_end_matches('/');
+        let stream = std::net::TcpStream::connect(addr).expect("connect to the hub");
+        stream.set_nodelay(true).expect("nodelay: each write goes out as its own packet");
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(30))).expect("read timeout");
+        Wire { stream, pending: Vec::new() }
+    }
+
+    pub fn send(&mut self, bytes: &[u8]) {
+        use std::io::Write;
+        self.stream.write_all(bytes).expect("write to the hub");
+        self.stream.flush().expect("flush");
+    }
+
+    /// The next answer (interim `100 Continue` answers are skipped), or why there is none.
+    pub fn answer(&mut self) -> Result<Raw, String> {
+        loop {
+            let head_end = loop {
+                if let Some(i) = self.pending.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break i + 4;
+                }
+                self.fill()?;
+            };
+            let head = String::from_utf8_lossy(&self.pending[..head_end - 4]).into_owned();
+            let mut lines = head.split("\r\n");
+            let status: u16 = lines
+                .next()
+                .and_then(|l| l.split(' ').nth(1))
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| format!("no status line in {head:?}"))?;
+            let headers: Vec<(String, String)> = lines
+                .filter_map(|l| l.split_once(':'))
+                .map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned()))
+                .collect();
+            self.pending.drain(..head_end);
+            if status == 100 {
+                continue;
+            }
+            let length = headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+                .and_then(|(_, v)| v.parse::<usize>().ok())
+                .unwrap_or(0);
+            while self.pending.len() < length {
+                self.fill()?;
+            }
+            let body = self.pending.drain(..length).collect();
+            return Ok(Raw { status, headers, body });
+        }
+    }
+
+    /// `true` when the hub has closed this connection (nothing more will ever come out of it).
+    pub fn is_closed_by_hub(&mut self) -> bool {
+        self.stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).expect("read timeout");
+        matches!(self.fill(), Err(e) if e.contains("closed"))
+    }
+
+    fn fill(&mut self) -> Result<(), String> {
+        use std::io::Read;
+        let mut chunk = [0u8; 16 * 1024];
+        match self.stream.read(&mut chunk) {
+            Ok(0) => Err("the hub closed the connection".to_owned()),
+            Ok(n) => {
+                self.pending.extend_from_slice(&chunk[..n]);
+                Ok(())
+            }
+            Err(e) => Err(format!("the connection broke: {e}")),
+        }
+    }
+}
