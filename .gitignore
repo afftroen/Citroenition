@@ -4,3 +4,5 @@
 .env
 *.asar
 SunBrowser*
+__pycache__/
+*.pyc
