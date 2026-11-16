@@ -85,7 +85,7 @@ impl CitroApp {
             ui.add_space(6.0);
             let mut theme = self.settings.theme;
             ui.horizontal(|ui| {
-                ui.add_sized([150.0, 22.0], egui::Label::new(dim(&p, "Theme")));
+                widgets::key_label(ui, &p, "Theme");
                 for t in [Theme::Dark, Theme::Light] {
                     ui.selectable_value(&mut theme, t, t.label());
                 }
@@ -105,16 +105,18 @@ impl CitroApp {
             ui.add_space(6.0);
             let s = &mut self.settings;
             ui.checkbox(&mut s.headless, "Headless: open browsers without a window");
-            ui.label(small_dim(
+            widgets::check_hint(
+                ui,
                 &p,
                 "For servers and automation. Turn it off when you want to see and use the browser.",
-            ));
+            );
             ui.add_space(8.0);
             ui.checkbox(&mut s.sandbox, "Keep Chromium's sandbox");
-            ui.label(small_dim(
+            widgets::check_hint(
+                ui,
                 &p,
                 "Safer, but the kernel then needs permission to create user namespaces. Leave it off in containers or when you run as root.",
-            ));
+            );
             ui.add_space(12.0);
             widgets::field_label(ui, &p, "Kernel path (optional)");
             ui.add(
@@ -150,7 +152,7 @@ impl CitroApp {
             widgets::section_title(ui, "This device and its data");
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.add_sized([150.0, 22.0], egui::Label::new(dim(&p, "Device name")));
+                widgets::key_label(ui, &p, "Device name");
                 ui.add(TextEdit::singleline(&mut self.settings.device_name).desired_width(240.0));
                 ui.label(small_dim(&p, "shown to teammates"));
             });
@@ -164,7 +166,7 @@ impl CitroApp {
                 ),
             ] {
                 ui.horizontal(|ui| {
-                    ui.add_sized([150.0, 22.0], egui::Label::new(dim(&p, key)));
+                    widgets::key_label(ui, &p, key);
                     ui.add(egui::Label::new(mono(value)).truncate());
                     if !raw.is_empty() && ui.small_button("Copy").clicked() {
                         copy = Some(raw);

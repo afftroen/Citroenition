@@ -4,7 +4,7 @@
 use super::app::{CitroApp, Page};
 use super::dialogs::{Confirm, ConfirmAction};
 use super::tasks::{Msg, Refresh};
-use super::widgets::{self, dim, small_dim};
+use super::widgets::{self, dim};
 use crate::backend::group_label;
 use citro_core::profile::Group;
 use eframe::egui::{self, Align, Key, Layout, RichText, TextEdit, Ui, vec2};
@@ -12,6 +12,8 @@ use egui_extras::{Column, TableBuilder};
 use std::collections::HashMap;
 
 const ROW_H: f32 = 38.0;
+/// Gap between the right-aligned profile counts and the remark column.
+const COUNT_INSET: f32 = 24.0;
 
 #[derive(Default)]
 pub struct State {
@@ -103,7 +105,10 @@ impl CitroApp {
                             h.col(|ui| {
                                 let text = RichText::new(t).size(12.5).strong().color(p.dim);
                                 if i == 1 {
-                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.label(text));
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        ui.add_space(COUNT_INSET);
+                                        ui.label(text)
+                                    });
                                 } else {
                                     ui.label(text);
                                 }
@@ -129,6 +134,7 @@ impl CitroApp {
                             });
                             row.col(|ui| {
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    ui.add_space(COUNT_INSET);
                                     ui.label(format!("{n}"));
                                 });
                             });
@@ -137,10 +143,10 @@ impl CitroApp {
                                     ui.add(TextEdit::singleline(&mut r.remark).desired_width(f32::INFINITY));
                                 }
                                 (Some(g), None) => {
-                                    ui.label(small_dim(&p, g.remark.clone()));
+                                    ui.label(dim(&p, g.remark.clone()));
                                 }
                                 (None, None) => {
-                                    ui.label(small_dim(&p, "Profiles that are not in any group"));
+                                    ui.label(dim(&p, "Profiles that are not in any group"));
                                 }
                             });
                             row.col(|ui| {

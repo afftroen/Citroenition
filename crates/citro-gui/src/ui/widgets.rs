@@ -103,11 +103,29 @@ pub fn field_label(ui: &mut Ui, p: &Palette, text: &str) {
     ui.label(small_dim(p, text));
 }
 
+/// Width of the key column of `key   value` rows (Kernel and Settings pages).
+pub const KEY_W: f32 = 132.0;
+
+/// A left-aligned key in a fixed-width column, so every `key   value` row of a card lines up.
+pub fn key_label(ui: &mut Ui, p: &Palette, text: &str) {
+    ui.allocate_ui_with_layout(vec2(KEY_W, 22.0), Layout::left_to_right(Align::Center), |ui| {
+        ui.set_min_width(KEY_W);
+        ui.label(dim(p, text));
+    });
+}
+
 /// `key   value` line used on the Kernel and Settings pages.
 pub fn kv(ui: &mut Ui, p: &Palette, key: &str, value: RichText) {
     ui.horizontal(|ui| {
-        ui.add_sized([120.0, 20.0], egui::Label::new(dim(p, key)));
+        key_label(ui, p, key);
         ui.add(egui::Label::new(value).truncate());
+    });
+}
+
+/// Explanation under a checkbox, indented to start under the checkbox's own label.
+pub fn check_hint(ui: &mut Ui, p: &Palette, text: &str) {
+    Frame::new().inner_margin(Margin { left: 19, right: 0, top: 0, bottom: 0 }).show(ui, |ui| {
+        ui.add(egui::Label::new(small_dim(p, text)).wrap());
     });
 }
 

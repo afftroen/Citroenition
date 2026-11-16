@@ -433,6 +433,7 @@ impl CitroApp {
             }
             StartPage::New => self.open_edit(None),
             StartPage::Export => {
+                self.refresh_view();
                 let ids: Vec<String> = self.rows.iter().take(3).map(|r| r.id().to_owned()).collect();
                 for id in ids {
                     self.profiles.selection.toggle(&id);
@@ -507,6 +508,13 @@ impl eframe::App for CitroApp {
         self.dialogs(&ctx);
         self.toasts_ui(&ctx);
         self.tick_shot(&ctx);
+    }
+
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // A screenshot must not show a stray hover highlight from wherever the X pointer happens to rest.
+        if self.shot.is_some() {
+            raw_input.events.push(egui::Event::PointerGone);
+        }
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {

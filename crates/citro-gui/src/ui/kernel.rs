@@ -121,7 +121,7 @@ impl CitroApp {
                     ui.add_space(8.0);
                     let shown = util::tildify(&k.path, self.home.as_deref());
                     ui.horizontal(|ui| {
-                        ui.add_sized([120.0, 20.0], egui::Label::new(dim(p, "Location")));
+                        widgets::key_label(ui, p, "Location");
                         let w = (ui.available_width() - 70.0).max(80.0);
                         ui.allocate_ui_with_layout(vec2(w, 20.0), Layout::left_to_right(Align::Center), |ui| {
                             ui.add(egui::Label::new(mono(shown)).truncate()).on_hover_text(&k.path);
@@ -244,20 +244,23 @@ impl CitroApp {
                 let is_active = active == Some(k.path.as_str());
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
-                    ui.allocate_ui_with_layout(vec2(150.0, 22.0), Layout::left_to_right(Align::Center), |ui| {
+                    ui.allocate_ui_with_layout(vec2(118.0, 22.0), Layout::left_to_right(Align::Center), |ui| {
                         ui.label(RichText::new(&k.version).monospace().strong());
                     });
-                    let w = (ui.available_width() - 150.0).max(80.0);
-                    ui.allocate_ui_with_layout(vec2(w, 22.0), Layout::left_to_right(Align::Center), |ui| {
-                        let shown = util::tildify(&k.path, self.home.as_deref());
-                        ui.add(egui::Label::new(mono(shown).color(p.dim)).truncate()).on_hover_text(&k.path);
+                    ui.allocate_ui_with_layout(vec2(54.0, 22.0), Layout::left_to_right(Align::Center), |ui| {
+                        if is_active {
+                            widgets::badge(ui, "Active", p.ok);
+                        }
                     });
-                    if is_active {
-                        widgets::badge(ui, "Active", p.ok);
-                    }
-                    if ui.small_button("Copy path").clicked() {
-                        acts.push(Act::Copy(k.path.clone()));
-                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.small_button("Copy path").clicked() {
+                            acts.push(Act::Copy(k.path.clone()));
+                        }
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            let shown = util::tildify(&k.path, self.home.as_deref());
+                            ui.add(egui::Label::new(mono(shown).color(p.dim)).truncate()).on_hover_text(&k.path);
+                        });
+                    });
                 });
                 if i + 1 < st.all.len() {
                     ui.separator();

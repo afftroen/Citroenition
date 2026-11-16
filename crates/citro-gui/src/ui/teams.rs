@@ -12,6 +12,7 @@ use crate::{timefmt, util};
 use eframe::egui::{
     self, Align, Align2, Color32, FontId, Grid, Key, Layout, RichText, ScrollArea, Sense, TextEdit, Ui, vec2,
 };
+use egui_extras::{Column, TableBuilder};
 
 #[derive(Default)]
 pub struct State {
@@ -240,26 +241,49 @@ impl CitroApp {
                 ui.label(dim(p, "No profile is open anywhere right now."));
                 return;
             }
-            Grid::new("team-locks").num_columns(5).striped(true).spacing([22.0, 9.0]).min_col_width(80.0).show(
-                ui,
-                |ui| {
-                    for h in ["Profile", "Held by", "Device", "Open since", ""] {
-                        ui.label(small_dim(p, h));
+            let row_h = 38.0;
+            TableBuilder::new(ui)
+                .id_salt("team-locks")
+                .striped(true)
+                .vscroll(false)
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .column(Column::remainder().at_least(180.0).clip(true))
+                .column(Column::exact(150.0))
+                .column(Column::exact(160.0))
+                .column(Column::exact(130.0))
+                .column(Column::exact(170.0))
+                .header(26.0, |mut h| {
+                    for t in ["Profile", "Held by", "Device", "Open since", ""] {
+                        h.col(|ui| {
+                            ui.label(small_dim(p, t));
+                        });
                     }
-                    ui.end_row();
-                    for l in &locks {
-                        ui.label(RichText::new(&l.name).strong());
-                        if l.mine {
-                            ui.label(format!("{} (you)", l.holder));
-                        } else {
-                            ui.label(RichText::new(&l.holder).color(p.locked));
-                        }
-                        ui.label(mono(&l.device));
-                        ui.label(timefmt::since(self.now, l.since, self.offset))
-                            .on_hover_text(timefmt::absolute(l.since, self.offset));
-                        if l.mine {
-                            ui.label(small_dim(p, "close it from Profiles"));
-                        } else {
+                })
+                .body(|body| {
+                    body.rows(row_h, locks.len(), |mut row| {
+                        let l = &locks[row.index()];
+                        row.col(|ui| {
+                            ui.label(RichText::new(&l.name).strong());
+                        });
+                        row.col(|ui| {
+                            if l.mine {
+                                ui.label(format!("{} (you)", l.holder));
+                            } else {
+                                ui.label(RichText::new(&l.holder).color(p.locked));
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.label(mono(&l.device));
+                        });
+                        row.col(|ui| {
+                            ui.label(timefmt::since(self.now, l.since, self.offset))
+                                .on_hover_text(timefmt::absolute(l.since, self.offset));
+                        });
+                        row.col(|ui| {
+                            if l.mine {
+                                ui.label(small_dim(p, "close it from Profiles"));
+                                return;
+                            }
                             let r = ui.add_enabled(can_unlock, egui::Button::new("Force unlock"));
                             let r = if can_unlock {
                                 r
@@ -276,11 +300,9 @@ impl CitroApp {
                                     mine: false,
                                 });
                             }
-                        }
-                        ui.end_row();
-                    }
-                },
-            );
+                        });
+                    });
+                });
         });
         chosen
     }

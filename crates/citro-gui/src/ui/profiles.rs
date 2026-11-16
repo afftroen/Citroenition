@@ -125,7 +125,7 @@ impl CitroApp {
         self.profiles.view.iter().map(|&i| self.rows[i].id().to_owned()).collect()
     }
 
-    fn refresh_view(&mut self) {
+    pub(super) fn refresh_view(&mut self) {
         let key = (self.rows_version, self.groups_version);
         let fresh =
             self.profiles.view_key.as_ref().is_some_and(|(v, g, q)| (*v, *g) == key && *q == self.profiles.query);
@@ -422,11 +422,11 @@ impl CitroApp {
                     .column(Column::initial(84.0).at_least(60.0).clip(true))
                     .column(Column::remainder().at_least(80.0).clip(true))
                     .column(Column::initial(150.0).at_least(90.0).clip(true))
-                    .column(Column::initial(104.0).at_least(70.0).clip(true))
-                    .column(Column::initial(72.0).at_least(60.0).clip(true))
+                    .column(Column::initial(98.0).at_least(70.0).clip(true))
                     .column(Column::initial(70.0).at_least(60.0).clip(true))
                     .column(Column::initial(70.0).at_least(60.0).clip(true))
-                    .column(Column::initial(92.0).at_least(80.0).clip(true))
+                    .column(Column::initial(70.0).at_least(60.0).clip(true))
+                    .column(Column::initial(112.0).at_least(80.0).clip(true))
                     .column(Column::exact(92.0))
                     .header(30.0, |mut header| {
                         header.col(|ui| {
