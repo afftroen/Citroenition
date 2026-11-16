@@ -3,6 +3,7 @@
 mod api;
 
 use anyhow::{Result, anyhow, bail};
+use citro_core::csv::{self, CsvRow};
 use citro_core::kernel::Kernel;
 use citro_core::launch::{self, LaunchOptions};
 use citro_core::profile::{Profile, ProxyConfig};
@@ -11,6 +12,7 @@ use citro_core::store::{self, Home, Store};
 use citro_core::{Error, Result as CoreResult};
 use clap::{Args, Parser, Subcommand};
 use serde_json::{Value, json};
+use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -49,6 +51,18 @@ enum Cmd {
     },
     /// Show a profile (secrets hidden)
     Show { profile: String },
+    /// Export profiles as a CSV file every spreadsheet opens (never contains passwords, cookies or proxy passwords)
+    Export {
+        /// Write to FILE instead of standard output
+        #[arg(long, short, value_name = "FILE")]
+        out: Option<PathBuf>,
+        /// Only this group (id or name)
+        #[arg(long)]
+        group: Option<String>,
+        /// Leave out the UTF-8 byte order mark (Excel then guesses a legacy code page for non-ASCII text)
+        #[arg(long)]
+        no_bom: bool,
+    },
     /// Change a profile (applies the next time it is opened)
     Edit {
         profile: String,
@@ -405,6 +419,29 @@ fn run(cli: Cli) -> Result<()> {
                     })
                     .collect();
                 table(&["NO", "ID", "NAME", "GROUP", "PROXY", "STATUS"], &body);
+            }
+        }
+        Cmd::Export { out, group, no_bom } => {
+            let _ = launch::sync_closed(&home);
+            let s = Store::open(&home)?;
+            let gid = group.as_deref().map(|g| resolve_group(&s, g)).transpose()?;
+            let rows: Vec<CsvRow> = s
+                .profiles()
+                .iter()
+                .filter(|p| gid.as_ref().is_none_or(|g| &p.group_id == g))
+                .map(|p| {
+                    let ungrouped = p.group_id.is_empty() || p.group_id == "0";
+                    let group_name = if ungrouped { String::new() } else { s.group_name(&p.group_id) };
+                    CsvRow::from_profile(p, &group_name, launch::running(&home, &p.profile_id).is_some())
+                })
+                .collect();
+            let bytes = csv::write(&rows, !no_bom);
+            match out {
+                Some(path) => {
+                    std::fs::write(&path, &bytes).map_err(|e| anyhow!("cannot write {}: {e}", path.display()))?;
+                    eprintln!("exported {} profile(s) to {}", rows.len(), path.display());
+                }
+                None => std::io::stdout().lock().write_all(&bytes)?,
             }
         }
         Cmd::Show { profile } => {
