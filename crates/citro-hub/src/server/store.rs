@@ -27,8 +27,10 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind: SocketAddr,
-    /// How long a lock lives without a heartbeat.
+    /// How long a lock lives without a heartbeat (unless the client asks for another TTL).
     pub lease_ttl: Duration,
+    /// The longest TTL a client may ask for; longer requests are cut down to this.
+    pub max_lease_ttl: Duration,
     /// Upper bound of one hosted data blob.
     pub max_blob_bytes: u64,
     /// How many versions of a profile's data are kept on disk (at least 1).
@@ -54,6 +56,7 @@ impl Default for Config {
         Config {
             bind: SocketAddr::from(([127, 0, 0, 1], 7878)),
             lease_ttl: Duration::from_secs(90),
+            max_lease_ttl: Duration::from_secs(600),
             max_blob_bytes: 512 * 1024 * 1024,
             keep_versions: super::blobs::DEFAULT_KEEP,
             max_json_bytes: 1024 * 1024,

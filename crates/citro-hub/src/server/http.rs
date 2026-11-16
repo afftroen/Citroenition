@@ -509,6 +509,26 @@ struct LockBody {
     device_id: String,
     #[serde(default)]
     device_name: String,
+    /// The lease length the client wants, in seconds (or milliseconds; the latter wins). Optional: the hub's
+    /// default applies. Anything above the hub's cap is cut down to it; the answer says what was granted.
+    #[serde(default)]
+    ttl_secs: Option<u64>,
+    #[serde(default)]
+    ttl_ms: Option<u64>,
+}
+
+/// The shortest lease the hub grants (a lease must outlive a round trip; tests use a few hundred ms).
+const MIN_LEASE_TTL_MS: i64 = 50;
+
+fn millis(d: Duration) -> i64 {
+    i64::try_from(d.as_millis()).unwrap_or(i64::MAX / 4)
+}
+
+/// The lease length for a lock request: what was asked (else the default), kept between the floor and the cap.
+fn lease_ttl_ms(b: &LockBody, default: Duration, cap: Duration) -> i64 {
+    let asked = b.ttl_ms.or_else(|| b.ttl_secs.map(|s| s.saturating_mul(1000)));
+    let ms = asked.map_or(millis(default), |ms| i64::try_from(ms).unwrap_or(i64::MAX));
+    ms.clamp(MIN_LEASE_TTL_MS, millis(cap).max(MIN_LEASE_TTL_MS))
 }
 
 async fn lock(
@@ -519,7 +539,15 @@ async fn lock(
     body: Body,
 ) -> ApiResult<Json<Lease>> {
     let b: LockBody = read_json(&app, &headers, body).await?;
-    Ok(Json(app.run(&c, move |st, cx| st.lock_profile(cx, &pid, &b.device_id, &b.device_name)).await?))
+    let cfg = app.store.config();
+    let ttl = lease_ttl_ms(&b, cfg.lease_ttl, cfg.max_lease_ttl);
+    let lease = app
+        .run(&c, move |st, cx| {
+            cx.ttl_ms = ttl;
+            st.lock_profile(cx, &pid, &b.device_id, &b.device_name)
+        })
+        .await?;
+    Ok(Json(lease))
 }
 
 async fn heartbeat(
@@ -679,6 +707,7 @@ async fn put_data(
     let lease = lease_of(&headers);
     let pre = Precondition::from_request(&headers, &parse_query::<DataQuery>(&uri)?);
     let declared = content_length(&headers)?;
+    let declared_sha = declared_sha256(&headers)?;
     let (max, keep) = (app.store.config().max_blob_bytes, app.store.config().keep_versions);
     let dir = app.store.blob_dir(&pid).ok_or_else(|| ApiError::not_found("no such profile"))?;
 
@@ -702,6 +731,11 @@ async fn put_data(
     if size == 0 {
         return Err(ApiError::invalid("empty data is not accepted"));
     }
+    if declared_sha.is_some_and(|d| d != sha) {
+        return Err(ApiError::invalid(
+            "the received data does not match the declared SHA-256 (damaged in transit?); nothing was stored",
+        ));
+    }
 
     // 3. Commit under the state mutex: the lease must still be live and the conditions must hold right now. The
     //    new version is `current + 1`, so the numbers only ever grow.
@@ -723,6 +757,20 @@ async fn put_data(
     Ok(Json(meta))
 }
 
+/// The SHA-256 a client declares for the data it pushes (`X-Citro-Data-Sha256`, or the usual `X-Content-SHA256`):
+/// 64 hex digits, any case, optionally quoted. The server verifies it against what it received.
+fn declared_sha256(headers: &HeaderMap) -> ApiResult<Option<String>> {
+    let Some(v) = headers.get(DATA_SHA256_HEADER).or_else(|| headers.get("x-content-sha256")) else {
+        return Ok(None);
+    };
+    let s = v.to_str().unwrap_or_default().trim().trim_matches('"').to_ascii_lowercase();
+    if s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Ok(Some(s))
+    } else {
+        Err(ApiError::invalid("the declared SHA-256 must be 64 hex digits"))
+    }
+}
+
 /// What a data pull answers with.
 enum Pull {
     /// Nothing is stored yet.
@@ -737,7 +785,8 @@ enum Pull {
 fn data_headers(h: &mut HeaderMap, version: u64, sha256: &str) {
     h.insert(header_name(DATA_VERSION_HEADER), HeaderValue::from(version));
     if let Ok(v) = HeaderValue::from_str(sha256) {
-        h.insert(header_name(DATA_SHA256_HEADER), v);
+        h.insert(header_name(DATA_SHA256_HEADER), v.clone());
+        h.insert(header_name("X-Content-SHA256"), v);
     }
     if let Ok(v) = HeaderValue::from_str(&format!("\"{sha256}\"")) {
         h.insert(header::ETAG, v);
@@ -1021,7 +1070,11 @@ async fn export_csv(
         bom: Option<String>,
     }
     let q: Q = parse_query(&uri)?;
-    let bom = parse_flag(q.bom.as_deref(), "bom")?;
+    // Excel only reads UTF-8 correctly with a BOM, and "readable by everyone" is the point: it is on unless `?bom=0`.
+    let bom = match q.bom.as_deref() {
+        None | Some("") => true,
+        other => parse_flag(other, "bom")?,
+    };
     let group = q.group;
     let (bytes, filename) = app
         .read(&c, move |st, cx| {
@@ -1150,6 +1203,35 @@ mod tests {
         }
         let q: DataQuery = serde_urlencoded::from_str(query).unwrap();
         Precondition::from_request(&h, &q)
+    }
+
+    #[test]
+    fn requested_lease_lengths_are_kept_between_the_floor_and_the_cap() {
+        let body = |secs: Option<u64>, ms: Option<u64>| LockBody {
+            device_id: "d".into(),
+            device_name: String::new(),
+            ttl_secs: secs,
+            ttl_ms: ms,
+        };
+        let (default, cap) = (Duration::from_secs(90), Duration::from_secs(600));
+        assert_eq!(lease_ttl_ms(&body(None, None), default, cap), 90_000);
+        assert_eq!(lease_ttl_ms(&body(Some(30), None), default, cap), 30_000);
+        assert_eq!(lease_ttl_ms(&body(Some(30), Some(700)), default, cap), 700, "milliseconds win");
+        assert_eq!(lease_ttl_ms(&body(Some(86_400), None), default, cap), 600_000, "cut down to the cap");
+        assert_eq!(lease_ttl_ms(&body(None, Some(0)), default, cap), MIN_LEASE_TTL_MS, "never zero");
+        assert_eq!(lease_ttl_ms(&body(Some(u64::MAX), None), default, cap), 600_000, "no overflow");
+        assert_eq!(lease_ttl_ms(&body(None, None), Duration::from_secs(9999), cap), 600_000, "a silly default too");
+    }
+
+    #[test]
+    fn declared_hashes_are_validated() {
+        let mut h = HeaderMap::new();
+        assert_eq!(declared_sha256(&h).unwrap(), None);
+        let hex = "AB".repeat(32);
+        h.insert("x-content-sha256", HeaderValue::from_str(&format!("\"{hex}\"")).unwrap());
+        assert_eq!(declared_sha256(&h).unwrap(), Some("ab".repeat(32)));
+        h.insert("x-citro-data-sha256", HeaderValue::from_static("nope"));
+        assert!(declared_sha256(&h).is_err(), "the Citro header wins and is checked");
     }
 
     #[test]

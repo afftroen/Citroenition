@@ -87,7 +87,8 @@ pub fn export_profiles(
     bom: bool,
     now_ms: i64,
 ) -> ApiResult<Vec<u8>> {
-    st.require_role(user, team_id, TeamRole::Member)?;
+    // The file holds nothing a viewer cannot already see in the profile list.
+    st.require_role(user, team_id, TeamRole::Viewer)?;
     let group_id = match group.map(str::trim).filter(|g| !g.is_empty()) {
         None => None,
         Some(g) => Some(st.resolve_group(team_id, g).ok_or_else(|| ApiError::invalid(format!("unknown group `{g}`")))?),
