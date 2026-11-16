@@ -77,8 +77,11 @@ enum Cmd {
     Delete {
         #[arg(required = true)]
         profiles: Vec<String>,
+        /// A profile of the team hub belongs to the whole team: this deletes it on the hub, for everybody
+        #[arg(long)]
+        everywhere: bool,
     },
-    /// Open a profile in its own browser
+    /// Open a profile in its own browser (a profile of the team hub is locked for this device first)
     Open(OpenArgs),
     /// Close running browsers
     Close {
@@ -95,6 +98,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: GroupCmd,
     },
+    /// Share profiles with a team through a Citroenition hub: one device at a time, the data follows the profile
+    Hub {
+        #[command(subcommand)]
+        cmd: HubCmd,
+    },
     /// The open-source browser kernel (Clearcote): which one is used, what is installed
     Kernel {
         #[command(subcommand)]
@@ -102,6 +110,44 @@ enum Cmd {
     },
     /// Serve the AdsPower Local API
     Serve(ServeArgs),
+}
+
+#[derive(Subcommand)]
+enum HubCmd {
+    /// Log in to a team hub with an access token (a hub admin makes one for you)
+    Login {
+        /// Address of the hub, e.g. https://hub.example.org
+        #[arg(long, env = "CITRO_HUB_URL", value_name = "URL")]
+        url: String,
+        /// Access token (prefer the environment variable: arguments show up in `ps`)
+        #[arg(long, env = "CITRO_HUB_TOKEN", hide_env_values = true, value_name = "TOKEN")]
+        token: String,
+        /// How this device is called in lock messages and logs (default: its host name)
+        #[arg(long, value_name = "NAME")]
+        device_name: Option<String>,
+        /// The team to use, when the account is in several
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Forget the login (the hub's profiles stay here, locked to the hub, until you log in again or unbind them)
+    Logout,
+    /// Who you are logged in as, whether the hub answers, and what is waiting to be uploaded
+    Status,
+    /// Bring the team's profiles here (settings only: cookies and data come down when a profile is opened)
+    Pull,
+    /// Put a local profile on the hub: its cookies and data go up and the team can open it from then on
+    Push { profile: String },
+    /// Who has which profile open right now
+    Locks {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Break the lock somebody holds (team owners and admins): their browser stops at its next check
+    Unlock { profile: String },
+    /// Upload what a session left behind (the browser died, or the hub was away when it was closed)
+    Recover { profile: String },
+    /// Detach a profile from the hub: it stays here, with its data, as an ordinary local profile
+    Unbind { profile: String },
 }
 
 #[derive(Subcommand)]
@@ -224,6 +270,21 @@ fn invalid<T>(msg: impl Into<String>) -> CoreResult<T> {
 
 fn now_secs() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+}
+
+/// A duration in seconds as `45s`, `12m05s`, `3h20m` or `2d04h`.
+fn age(secs: i64) -> String {
+    let s = secs.max(0);
+    match s {
+        0..=59 => format!("{s}s"),
+        60..=3599 => format!("{}m{:02}s", s / 60, s % 60),
+        3600..=86_399 => format!("{}h{:02}m", s / 3600, s % 3600 / 60),
+        _ => format!("{}d{:02}h", s / 86_400, s % 86_400 / 3600),
+    }
+}
+
+fn who_has_it(l: &citro_sync::LockedBy) -> String {
+    format!("{} on {} (for {})", l.user, l.device, age(now_secs() - l.since))
 }
 
 /// A group id, or a group name (case-insensitive), as an id.
@@ -363,6 +424,176 @@ fn dry_run(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) -> R
     Ok(())
 }
 
+/// A profile of the team hub: the hub's lock is taken first and the newest data comes down. This process then
+/// keeps the lock alive until the browser is closed, uploads what the session changed and hands the profile back,
+/// so it stays in the foreground (Ctrl-C closes the browser properly). For scripts, `citro serve` does the same.
+fn open_on_hub(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions, as_json: bool) -> Result<()> {
+    citro_sync::catch_signals();
+    let r = match citro_sync::open(home, kernel, p, opts) {
+        Ok(r) => r,
+        Err(e) => match e.locked_by() {
+            Some(l) => bail!(
+                "{} ({}) is open on another device: {}; it opens here as soon as it is closed there",
+                p.serial_number,
+                p.name,
+                who_has_it(&l)
+            ),
+            None => return Err(e.into()),
+        },
+    };
+    print_running(p, &r, as_json)?;
+    eprintln!(
+        "{} belongs to the team hub: keep this window open. Closing the browser (or Ctrl-C here) uploads its data \
+         and hands the profile back.",
+        p.profile_id
+    );
+    let id = &p.profile_id;
+    let out = loop {
+        if let Some(o) = citro_sync::wait(home, id, Duration::from_millis(500)) {
+            break Some(o);
+        }
+        if !citro_sync::is_syncing(home, id) {
+            break citro_sync::wait(home, id, Duration::ZERO);
+        }
+    };
+    let Some(out) = out else { return Ok(()) };
+    if !out.is_clean() {
+        bail!("{} ({}) closed, but: {}", p.serial_number, p.name, out.summary());
+    }
+    eprintln!("closed {} ({}): {}", p.serial_number, p.name, out.summary());
+    Ok(())
+}
+
+fn hub_connect(home: &Home) -> Result<citro_sync::Hub> {
+    Ok(citro_sync::Hub::connect(home)?.ok_or(citro_sync::Error::NotLoggedIn)?)
+}
+
+fn hub_cmd(home: &Home, cmd: HubCmd) -> Result<()> {
+    match cmd {
+        HubCmd::Login { url, token, device_name, team } => {
+            let hub = citro_sync::Hub::log_in(home, &url, &token, device_name.as_deref(), team.as_deref())?;
+            let l = hub.login();
+            println!("logged in to {} as {} in team {}", l.url, l.user, l.team_name);
+            println!("this device is `{}`; bring the team's profiles here with: citro hub pull", hub.device_name());
+        }
+        HubCmd::Logout => {
+            if citro_sync::log_out(home)? {
+                println!("logged out; the hub's profiles stay here but cannot be opened until you log in again");
+            } else {
+                eprintln!("this device was not logged in");
+            }
+        }
+        HubCmd::Status => {
+            let Some(hub) = citro_sync::Hub::connect(home)? else {
+                println!("not logged in to a team hub: citro hub login --url <hub> --token <token>");
+                return Ok(());
+            };
+            let l = hub.login();
+            println!("hub        {}", l.url);
+            println!("team       {} ({})", l.team_name, l.team_id);
+            println!("user       {}", l.user);
+            println!("device     {} ({})", hub.device_name(), hub.client().device().id);
+            match hub.client().me() {
+                Ok(_) => println!("reachable  yes"),
+                Err(e) => println!("reachable  NO: {e}"),
+            }
+            let bound = citro_sync::bound_ids(home);
+            let open = bound.iter().filter(|id| launch::running(home, id).is_some()).count();
+            println!("profiles   {} from the hub, {open} open on this device", bound.len());
+            for id in &bound {
+                let waiting = citro_sync::Bound::load(home, id).is_some_and(|b| b.dirty);
+                if waiting && launch::running(home, id).is_none() {
+                    println!("waiting    {id} has newer data than the hub: citro hub recover {id}");
+                }
+            }
+        }
+        HubCmd::Pull => {
+            let hub = hub_connect(home)?;
+            let r = hub.pull()?;
+            println!(
+                "pulled {} profile(s) from {}: {} new, {} already here",
+                r.added.len() + r.updated.len(),
+                hub.login().team_name,
+                r.added.len(),
+                r.updated.len()
+            );
+            for e in &r.added {
+                println!("  + {}  {}", e.id, e.name);
+            }
+            for e in &r.gone {
+                eprintln!(
+                    "  ! {}  {}: not on the hub any more. It stays here; `citro hub unbind {}` makes it a local profile",
+                    e.id, e.name, e.id
+                );
+            }
+        }
+        HubCmd::Push { profile } => {
+            let hub = hub_connect(home)?;
+            let r = hub.push(&profile)?;
+            println!("{}", r.profile.profile_id);
+            eprintln!("{} ({}) is on the hub now: {}", r.profile.serial_number, r.profile.name, r.outcome.summary());
+            if !r.outcome.is_clean() {
+                bail!("the profile is on the hub, but its data is not clean there: {}", r.outcome.summary());
+            }
+        }
+        HubCmd::Locks { json } => {
+            let rows = hub_connect(home)?.locks()?;
+            if json {
+                let list: Vec<Value> = rows
+                    .iter()
+                    .map(|r| {
+                        json!({
+                            "profile_id": r.profile_id, "name": r.name, "user": r.user, "device": r.device,
+                            "since": r.since, "expires_at": r.expires_at, "this_device": r.mine,
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&list)?);
+            } else if rows.is_empty() {
+                eprintln!("nothing is open on the hub");
+            } else {
+                let now = now_secs();
+                let body: Vec<Vec<String>> = rows
+                    .iter()
+                    .map(|r| {
+                        let device = if r.mine { format!("{} (this device)", r.device) } else { r.device.clone() };
+                        vec![
+                            r.profile_id.clone(),
+                            r.name.clone(),
+                            r.user.clone(),
+                            device,
+                            age(now - r.since),
+                            age(r.expires_at - now),
+                        ]
+                    })
+                    .collect();
+                table(&["ID", "NAME", "USER", "DEVICE", "OPEN FOR", "FREES IN"], &body);
+            }
+        }
+        HubCmd::Unlock { profile } => {
+            if hub_connect(home)?.force_unlock(&profile)? {
+                println!(
+                    "unlocked {profile}: its browser stops at its next check and its unsaved changes are kept aside"
+                );
+            } else {
+                eprintln!("{profile} was not open");
+            }
+        }
+        HubCmd::Recover { profile } => {
+            let out = citro_sync::recover(home, &profile)?;
+            if !out.is_clean() {
+                bail!("{}: {}", out.profile_id, out.summary());
+            }
+            println!("{}: {}", out.profile_id, out.summary());
+        }
+        HubCmd::Unbind { profile } => {
+            let p = citro_sync::unbind(home, &profile)?;
+            println!("{} ({}) is a local profile now; nothing changed on the hub", p.serial_number, p.name);
+        }
+    }
+    Ok(())
+}
+
 fn run(cli: Cli) -> Result<()> {
     let home = Home::discover(cli.home.as_deref());
     match cli.cmd {
@@ -395,6 +626,7 @@ fn run(cli: Cli) -> Result<()> {
                         json!({
                             "profile_no": p.serial_number, "profile_id": p.profile_id, "name": p.name,
                             "group": s.group_name(&p.group_id), "proxy": proxy_label(p),
+                            "hub": home.hub_bound(&p.profile_id),
                             "running": live.is_some(), "debug_port": live.map(|r| r.debug_port),
                         })
                     })
@@ -403,22 +635,31 @@ fn run(cli: Cli) -> Result<()> {
             } else if rows.is_empty() {
                 eprintln!("no profiles yet: citro new <name> --proxy socks5://user:pass@host:port");
             } else {
+                let any_hub = rows.iter().any(|p| home.hub_bound(&p.profile_id));
                 let body: Vec<Vec<String>> = rows
                     .iter()
                     .map(|p| {
                         let status = launch::running(&home, &p.profile_id)
                             .map_or("-".to_owned(), |r| format!("running :{}", r.debug_port));
-                        vec![
+                        let mut row = vec![
                             p.serial_number.to_string(),
                             p.profile_id.clone(),
                             p.name.clone(),
                             s.group_name(&p.group_id),
                             proxy_label(p),
                             status,
-                        ]
+                        ];
+                        if any_hub {
+                            row.push(if home.hub_bound(&p.profile_id) { "hub" } else { "" }.to_owned());
+                        }
+                        row
                     })
                     .collect();
-                table(&["NO", "ID", "NAME", "GROUP", "PROXY", "STATUS"], &body);
+                if any_hub {
+                    table(&["NO", "ID", "NAME", "GROUP", "PROXY", "STATUS", "HUB"], &body);
+                } else {
+                    table(&["NO", "ID", "NAME", "GROUP", "PROXY", "STATUS"], &body);
+                }
             }
         }
         Cmd::Export { out, group, no_bom } => {
@@ -458,18 +699,18 @@ fn run(cli: Cli) -> Result<()> {
                 v["cookie"] = json!(format!("<{} bytes>", p.cookie.len()));
             }
             v["group_name"] = json!(s.group_name(&p.group_id));
+            v["hub"] = json!(home.hub_bound(&p.profile_id));
             v["running"] = launch::running(&home, &p.profile_id).map_or(Value::Null, |r| api::endpoints(&r));
             println!("{}", serde_json::to_string_pretty(&v)?);
         }
         Cmd::Edit { profile, name, set } => {
-            let p = store::locked(&home, |s| {
-                // validate on a copy: a bad flag must leave the stored profile untouched
-                let mut staged = s.get(&profile)?.clone();
+            // validated on a copy (a bad flag leaves the stored profile untouched); a profile of the team hub is
+            // changed on the hub first, so everybody gets the same one
+            let p = citro_sync::edit(&home, &profile, |s, staged| {
                 if let Some(n) = name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
                     staged.name = n.to_owned();
                 }
-                set.apply(s, &mut staged)?;
-                s.update(&profile, |p| *p = staged)
+                set.apply(s, staged)
             })?;
             let note = if launch::running(&home, &p.profile_id).is_some() {
                 " (running: applies the next time it is opened)"
@@ -478,14 +719,19 @@ fn run(cli: Cli) -> Result<()> {
             };
             eprintln!("updated profile {} ({}){note}", p.serial_number, p.name);
         }
-        Cmd::Delete { profiles } => {
-            let gone = store::locked(&home, |s| s.delete(&profiles))?;
-            if gone.is_empty() {
-                bail!("no such profile: {}", profiles.join(", "));
+        Cmd::Delete { profiles, everywhere } => {
+            let mut failed = Vec::new();
+            for key in &profiles {
+                match citro_sync::delete(&home, key, everywhere) {
+                    Ok(p) => println!("deleted {} ({})", p.serial_number, p.name),
+                    Err(e) => {
+                        eprintln!("{key}: {e}");
+                        failed.push(key.as_str());
+                    }
+                }
             }
-            for p in &gone {
-                launch::purge(&home, &p.profile_id)?;
-                println!("deleted {} ({})", p.serial_number, p.name);
+            if !failed.is_empty() {
+                bail!("not deleted: {}", failed.join(", "));
             }
         }
         Cmd::Open(a) => {
@@ -500,8 +746,18 @@ fn run(cli: Cli) -> Result<()> {
                 startup_timeout: Duration::from_secs(a.timeout),
                 ..Default::default()
             };
+            let on_hub = home.hub_bound(&p.profile_id);
             if a.dry_run {
+                if on_hub {
+                    bail!(
+                        "{} belongs to the team hub and gets its real settings with its lock: there is no dry run, open it",
+                        p.profile_id
+                    );
+                }
                 return dry_run(&home, &kernel, &p, &opts);
+            }
+            if on_hub {
+                return open_on_hub(&home, &kernel, &p, &opts, a.json);
             }
             let r = launch::start(&home, &kernel, &p, &opts)?;
             let _ = store::locked(&home, |s| s.touch_opened(&p.profile_id));
@@ -515,18 +771,31 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Close { profiles } => {
             let s = Store::open(&home)?;
             let mut missing = Vec::new();
+            let mut unclean = Vec::new();
             for key in &profiles {
-                match s.find(key) {
-                    Some(p) if launch::stop(&home, &p.profile_id)? => {
-                        println!("closed {} ({})", p.serial_number, p.name)
+                let Some(p) = s.find(key) else {
+                    missing.push(key.as_str());
+                    continue;
+                };
+                // a profile of the team hub is closed, its data uploaded and its lock handed back before this returns
+                let report = citro_sync::close(&home, &p.profile_id, Duration::from_secs(180))?;
+                if report.stopped {
+                    println!("closed {} ({})", p.serial_number, p.name);
+                } else {
+                    eprintln!("{} ({}) was not running", p.serial_number, p.name);
+                }
+                if let Some(out) = &report.outcome {
+                    println!("  {}", out.summary());
+                    if !out.is_clean() {
+                        unclean.push(p.profile_id.as_str());
                     }
-                    Some(p) => eprintln!("{} ({}) was not running", p.serial_number, p.name),
-                    None => missing.push(key.as_str()),
                 }
             }
-            let _ = launch::sync_closed(&home);
             if !missing.is_empty() {
                 bail!("no such profile: {}", missing.join(", "));
+            }
+            if !unclean.is_empty() {
+                bail!("closed, but the hub side needs a look: {}", unclean.join(", "));
             }
         }
         Cmd::Ps { json } => {
@@ -587,6 +856,7 @@ fn run(cli: Cli) -> Result<()> {
                 .collect();
             table(&["ID", "NAME", "PROFILES", "REMARK"], &body);
         }
+        Cmd::Hub { cmd } => hub_cmd(&home, cmd)?,
         Cmd::Kernel { cmd: None | Some(KernelCmd::Status) } => {
             let k = Kernel::discover(&home, cli.kernel.as_deref())?;
             println!("binary        {}", k.binary.display());
@@ -624,11 +894,17 @@ fn run(cli: Cli) -> Result<()> {
                 .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
                 .init();
             let state = api::AppState::new(home, cli.kernel, a.api_key);
-            tokio::runtime::Builder::new_multi_thread()
+            let served = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .map_err(|e| anyhow!("cannot start the async runtime: {e}"))?
-                .block_on(api::serve(state, a.bind))?;
+                .block_on(api::serve(state, a.bind));
+            // the browsers of hub profiles this server opened are closed, their data uploaded and their locks
+            // handed back: nothing else would keep those locks alive
+            for out in citro_sync::shutdown(Duration::from_secs(180)) {
+                tracing::info!(profile = %out.profile_id, "closed on shutdown: {}", out.summary());
+            }
+            served?;
         }
     }
     Ok(())

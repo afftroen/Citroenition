@@ -28,6 +28,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -59,6 +60,15 @@ fn ok(data: Value) -> Reply {
 
 fn fail(msg: impl std::fmt::Display) -> Reply {
     Json(json!({"code": -1, "data": {}, "msg": msg.to_string()}))
+}
+
+/// A sync error as the core error the routes speak: what the core said stays as it was, the rest is its message
+/// (who has the profile open, that the hub does not answer, ...).
+fn sync_err(e: citro_sync::Error) -> Error {
+    match e {
+        citro_sync::Error::Core(c) => c,
+        other => Error::Invalid(other.to_string()),
+    }
 }
 
 /// Run blocking core work off the async runtime.
@@ -230,7 +240,9 @@ fn do_start(st: &AppState, key: &str, opts: LaunchOptions) -> CoreResult<Value> 
     let _one_at_a_time = st.open_lock.lock().unwrap_or_else(PoisonError::into_inner);
     let profile = Store::open(&st.home)?.get(key)?.clone();
     let kernel = Kernel::discover(&st.home, st.kernel.as_deref())?;
-    let r = launch::start(&st.home, &kernel, &profile, &opts)?;
+    // a profile of the team hub is opened under the hub's lock (refused when another device has it, whoever asks);
+    // anything else is launched as it is
+    let r = citro_sync::open(&st.home, &kernel, &profile, &opts).map_err(sync_err)?;
     // a failed bookkeeping write must not fail an open that already succeeded
     let _ = store::locked(&st.home, |s| s.touch_opened(&profile.profile_id));
     Ok(endpoints(&r))
@@ -263,9 +275,15 @@ async fn stop_from(st: AppState, m: Map<String, Value>) -> Reply {
     let Some(key) = key_of(&m) else { return fail("profile_id (or profile_no) is required") };
     run(move || {
         let id = resolve_id(&st.home, &key)?;
-        launch::stop(&st.home, &id)?;
-        launch::sync_closed(&st.home)?;
-        Ok(json!({}))
+        // a profile of the team hub is closed, its data uploaded and its lock handed back before this answers
+        let report = citro_sync::close(&st.home, &id, Duration::from_secs(120)).map_err(sync_err)?;
+        match report.outcome {
+            Some(out) if !out.is_clean() => {
+                Err(Error::Invalid(format!("the browser is closed, but the hub side needs a look: {}", out.summary())))
+            }
+            Some(out) => Ok(json!({ "hub": out.summary() })),
+            None => Ok(json!({})),
+        }
     })
     .await
 }
@@ -417,14 +435,14 @@ async fn create_v2(State(st): State<AppState>, body: Bytes) -> Reply {
 async fn update_from(st: AppState, m: Map<String, Value>) -> Reply {
     let Some(key) = key_of(&m) else { return fail("profile_id (or user_id) is required") };
     run(move || {
-        store::locked(&st.home, |s| {
-            // validate on a copy first: a bad request must leave the stored profile untouched
-            let mut staged = s.get(&key)?.clone();
-            apply_body(&mut staged, &m).map_err(Error::Invalid)?;
-            check_group(s, &staged)?;
-            s.update(&key, |p| *p = staged)?;
-            Ok(json!({}))
+        // validated on a copy first: a bad request must leave the stored profile untouched. A profile of the team
+        // hub is changed on the hub, so everybody gets the same one.
+        citro_sync::edit(&st.home, &key, |s, staged| {
+            apply_body(staged, &m).map_err(Error::Invalid)?;
+            check_group(s, staged)
         })
+        .map_err(sync_err)?;
+        Ok(json!({}))
     })
     .await
 }
@@ -452,13 +470,19 @@ async fn delete_from(st: AppState, m: Map<String, Value>) -> Reply {
     if keys.is_empty() {
         return fail("profile_id (a list of ids) is required");
     }
+    // a profile of the team hub is the whole team's: it goes only when the request says `"everywhere": true`
+    let everywhere = truthy(&m, "everywhere", false);
     run(move || {
-        let gone = store::locked(&st.home, |s| s.delete(&keys))?;
-        if gone.is_empty() {
-            return Err(Error::ProfileNotFound(keys.join(",")));
+        let mut gone = 0;
+        for key in &keys {
+            match citro_sync::delete(&st.home, key, everywhere) {
+                Ok(_) => gone += 1,
+                Err(citro_sync::Error::Core(Error::ProfileNotFound(_))) => {}
+                Err(e) => return Err(sync_err(e)),
+            }
         }
-        for p in &gone {
-            launch::purge(&st.home, &p.profile_id)?;
+        if gone == 0 {
+            return Err(Error::ProfileNotFound(keys.join(",")));
         }
         Ok(json!({}))
     })
@@ -618,8 +642,24 @@ async fn shutdown_signal() {
     tokio::select! { () = ctrl_c => {}, () = term => {} }
 }
 
+fn adopt_orphans(home: &Home) {
+    match citro_sync::Hub::connect(home) {
+        Ok(Some(hub)) => {
+            for o in hub.adopt() {
+                tracing::warn!(profile = %o.profile_id, "{}", o.summary());
+            }
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!(error = %e, "cannot look for browsers that outlived their session"),
+    }
+}
+
 /// Serve until Ctrl-C / SIGTERM. Running browsers are separate processes and keep running.
 pub async fn serve(state: AppState, bind: SocketAddr) -> anyhow::Result<()> {
+    // browsers of hub profiles that outlived their session (a crash, a kill): back under the lock, or stopped when
+    // somebody else has the profile by now
+    let home = state.home.clone();
+    let _ = tokio::task::spawn_blocking(move || adopt_orphans(&home)).await;
     let listener = tokio::net::TcpListener::bind(bind).await.with_context(|| format!("cannot listen on {bind}"))?;
     let addr = listener.local_addr()?;
     // AdsPower publishes its address in a `local_api` file; so do we

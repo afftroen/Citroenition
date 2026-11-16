@@ -276,7 +276,14 @@ fn a_profile_is_open_on_one_device_only_and_its_data_follows_it() {
     assert_eq!(rows.len(), 1);
     assert_eq!((rows[0].user.as_str(), rows[0].device.as_str(), rows[0].mine), ("anna", "Anna's Mac", false));
     assert!(a.hub.locks().expect("locks")[0].mine);
-    assert!(citro_sync::edit(&b.home, &id, |_, p| Ok(p.name = "renamed".into())).is_err(), "no edits while it is open");
+    assert!(
+        citro_sync::edit(&b.home, &id, |_, p| {
+            p.name = "renamed".into();
+            Ok(())
+        })
+        .is_err(),
+        "no edits while it is open"
+    );
     assert_eq!(running.profile_id, id);
 
     // the browser works: a cookie, and a cache that must not travel

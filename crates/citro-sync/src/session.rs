@@ -64,6 +64,9 @@ pub struct Outcome {
     pub notes: Vec<String>,
     /// Something that needs the user's eyes.
     pub error: Option<String>,
+    /// Another process of this device had the session and finished it (`citro close` in a second terminal): the
+    /// details are in that process's own report.
+    pub handled_elsewhere: bool,
 }
 
 impl Outcome {
@@ -74,6 +77,9 @@ impl Outcome {
 
     /// One line for a terminal or a toast.
     pub fn summary(&self) -> String {
+        if self.handled_elsewhere && self.is_clean() {
+            return "the process that opened it uploaded the data and handed the profile back".to_owned();
+        }
         let mut parts = Vec::new();
         match self.uploaded {
             Some(v) => parts.push(format!("profile data uploaded (version {v})")),
@@ -628,14 +634,29 @@ pub fn close(home: &Home, id: &str, patience: Duration) -> Result<CloseReport> {
     if live().contains_key(&key(home, id)) {
         return Ok(CloseReport { stopped, outcome: wait(home, id, patience) });
     }
+    // another process of this device has the session (`citro open` in the foreground, a server): it closes the
+    // browser's side, uploads and unlocks; wait for it
     let deadline = Instant::now() + patience;
     while state::session_alive(home, id) && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(200));
     }
-    if !state::session_alive(home, id) && Bound::load(home, id).is_some_and(|b| b.dirty) {
+    if state::session_alive(home, id) {
+        let error = format!("{id} is still being closed by the process that opened it: its data is not on the hub yet");
+        return Ok(CloseReport {
+            stopped,
+            outcome: Some(Outcome { profile_id: id.to_owned(), error: Some(error), ..Outcome::default() }),
+        });
+    }
+    if Bound::load(home, id).is_some_and(|b| b.dirty) {
         return Ok(CloseReport { stopped, outcome: Some(recover(home, id)?) });
     }
-    Ok(CloseReport { stopped, outcome: None })
+    let outcome = stopped.then(|| Outcome {
+        profile_id: id.to_owned(),
+        released: true,
+        handled_elsewhere: true,
+        ..Outcome::default()
+    });
+    Ok(CloseReport { stopped, outcome })
 }
 
 /// Is a supervisor of this process still working on the profile?
