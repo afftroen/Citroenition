@@ -4,7 +4,8 @@
 //! * [`server`] — the hub itself (state file, locks and leases, hosted profile data, logs, CSV export, HTTP API).
 //! * [`client`] — a blocking, typed client for the GUI / CLI (`ureq`), including a lease keep-alive helper.
 //!
-//! See `docs/HUB_API.md` for the HTTP contract and the operating notes.
+//! See `docs/HUB.md` for the concepts, the HTTP contract and the operating notes.
 
+pub mod client;
 pub mod model;
 pub mod server;
