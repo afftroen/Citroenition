@@ -220,6 +220,7 @@ Global options (accepted by every command): `--home DIR` (env `CITRO_HOME`) and 
 | `citro new NAME [options]` | create a profile, print its id |
 | `citro list [--group G] [--json]` | list profiles (alias `ls`) |
 | `citro show PROFILE` | the full profile as JSON, secrets hidden |
+| `citro export [--out FILE] [--group G] [--no-bom]` | all profiles as a CSV every spreadsheet opens ([below](#csv-export)) |
 | `citro edit PROFILE [options]` | change a profile; applies the next time it is opened |
 | `citro delete PROFILE…` | delete profiles **and their browser data** (alias `rm`) |
 | `citro group new NAME` / `citro group ls` | create / list groups |
@@ -241,6 +242,35 @@ Global options (accepted by every command): `--home DIR` (env `CITRO_HOME`) and 
 | `--screen WxH` | screen / window size, e.g. `1920x1080` |
 | `--fp KEY=VALUE` | any `fingerprint_config` key, JSON value when it parses: `--fp webrtc=proxy --fp hardware_concurrency=8` |
 | `--arg FLAG` | extra kernel flag, repeat for more: `--arg=--disable-gpu` |
+
+### CSV export
+
+```sh
+citro export --out profiles.csv                 # every profile
+citro export --group "Shops FR" --no-bom | less # one group, to standard output, for scripts
+```
+
+One header row, then one row per profile, 24 columns in this order:
+
+| Columns | Content |
+|---|---|
+| `no`, `id`, `name`, `group`, `remark` | serial number, id, name, group *name* (empty = ungrouped), remark |
+| `persona_os`, `country`, `language`, `timezone` | the claimed OS, ISO country (upper case), and the language and time zone the profile pins, or that its country implies |
+| `proxy_type`, `proxy_host`, `proxy_port`, `proxy_user` | the proxy without its password; empty for a direct connection |
+| `tabs` | start pages joined with ` \| `; any `user:password@` inside a URL is masked as `user:***@` |
+| `account_username` | the login name you stored for the target platform |
+| `created_at`, `last_open_at`, `last_close_at` | ISO 8601 UTC, e.g. `2026-11-16T11:13:38Z`; empty = never |
+| `status` | `open` or `closed` |
+| `created_by`, `last_open_by`, `last_close_by`, `locked_by`, `locked_device` | filled by the team hub's export, empty in a local export |
+
+The file is RFC 4180 (comma separated, CRLF line ends, quotes doubled) in UTF-8 **with a byte order mark**, so
+Excel, Numbers, LibreOffice and Google Sheets all show accents correctly; `--no-bom` leaves it out for scripts. A
+text cell that would start a formula in a spreadsheet (`=`, `+`, `-`, `@`, tab) gets a leading `'`, so a hostile
+remark cannot run anything when the file is opened.
+
+**Never in the file:** account passwords, 2FA keys, cookies, proxy passwords. The columns are written from a
+fixed list, so a bug elsewhere cannot add one. `proxy_user` *is* in it: if your proxy provider puts a token in the
+user name, treat the file as confidential.
 
 ### Running
 
@@ -357,8 +387,8 @@ Several people can use Citroenition against **your own server**. `citro-hub` pro
 * **hosting of cookies and profile data** on that server: the data blob is only readable and writable by the device
   that holds the lock, so two machines can never race on the same cookie jar;
 * **logs** for the browser and for Citroenition, **remarks**, **last opened / last closed** per profile;
-* **CSV export** of a team's profiles in a format every spreadsheet reads (UTF-8 with BOM, RFC 4180, ISO 8601
-  times).
+* **CSV export** of a team's profiles in the same 24-column format as `citro export`
+  ([above](#csv-export)), with the `*_by`, `locked_by` and `locked_device` columns filled in.
 
 Everything about running and using it is in [docs/HUB.md](docs/HUB.md).
 
