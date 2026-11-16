@@ -68,8 +68,9 @@ store, under one lock.
 
 ## 2. Install
 
-Requirements: Linux x86-64 (the kernel builds Clearcote publishes are Linux x64 and Windows x64), a recent stable
-Rust toolchain, and a display (or Xvfb) for headful browsers. Headless works without one.
+Requirements: Linux x86-64, a recent stable Rust toolchain, and a display (or Xvfb) for headful browsers; headless
+works without one. Linux only for now: process tracking uses `/proc` and POSIX signals. Clearcote also publishes
+Windows (and in some releases macOS) builds, which Citroenition does not drive yet.
 
 ### 2.1 Build
 
@@ -123,11 +124,20 @@ $ citro new "shop-fr-1" --proxy socks5://alice:s3cret@203.0.113.9:1080 --country
 k5mf18c
 created profile 1 (shop-fr-1); open it with: citro open k5mf18c
 $ citro new "direct-test" --proxy none
+kj4o4r2
+created profile 2 (direct-test); open it with: citro open kj4o4r2
 $ citro ls
 NO  ID       NAME         GROUP      PROXY                      STATUS
 1   k5mf18c  shop-fr-1    Shops FR   socks5://203.0.113.9:1080  -
 2   kj4o4r2  direct-test  Ungrouped  direct                     -
+$ citro group ls
+ID  NAME      PROFILES  REMARK
+1   Shops FR  1
+$ citro kernel list
+151.0.7922.108      <home>/kernels/clearcote-151.0.7922.108/chrome
 ```
+
+(The first line of `new`'s output, the id, goes to stdout so a script can capture it; the sentence goes to stderr.)
 
 `citro open 1` starts the browser for profile 1 (the argument is the id or the serial number). `citro open 1
 --dry-run` prints exactly what would be started instead, with the secrets hidden:
@@ -138,22 +148,27 @@ $ citro open 1 --dry-run
   "args": [
     "--user-data-dir=<home>/profiles/k5mf18c/data",
     "--remote-debugging-port=0",
-    ...
-    "--fingerprint=k5mf18c",            <- the seed: one seed is one machine
-    "--fingerprint-platform=linux",     <- the OS the profile claims
+    "--no-first-run", "--no-default-browser-check", "--password-store=basic", "--disable-sync",
+    "--disable-breakpad", "--disable-dev-shm-usage", "--disable-background-networking", …,
+    "--disable-features=Translate,BrowsingTopics,BrowsingTopicsDocumentAPI,Fledge,…,WebBluetooth",
+    "--fingerprint=k5mf18c",                  <- the seed: one seed is one machine
+    "--fingerprint-platform=linux",           <- the OS the profile claims
     "--fingerprint-brand=chrome",
-    "--accept-lang=fr-FR,fr,en-US,en",  <- Chrome's own list for a French locale
+    "--accept-lang=fr-FR,fr,en-US,en",        <- Chrome's own list for a French locale
     "--lang=fr",
-    "--timezone=Europe/Paris",          <- from --country fr
+    "--timezone=Europe/Paris",                <- from --country fr
     "--webrtc-ip-handling-policy=disable_non_proxied_udp",
     "--proxy-server=socks5://203.0.113.9:1080",
-    "--disable-quic",                   <- QUIC is UDP; a TCP proxy cannot carry it
+    "--disable-quic",                         <- QUIC is UDP; a TCP proxy cannot carry it
     "--socks5-credentials=<hidden>",
-    "--ignore-gpu-blocklist",           <- keeps WebGL on, see docs/KERNEL.md
+    "--no-sandbox",                           <- as AdsPower's Linux build; --sandbox keeps it
+    "--test-type",                            <- silences the --no-sandbox infobar
+    "--ignore-gpu-blocklist",                 <- keeps WebGL on, see docs/KERNEL.md
     "https://www.example.com"
   ],
-  "env": { "FONTCONFIG_FILE": [...], "LANGUAGE": ["fr"] },
-  ...
+  "env": { "FONTCONFIG_FILE": ["<home>/cache/fonts-151.0.7922.108.conf"], "LANGUAGE": ["fr"] },
+  "kernel": "<home>/kernels/clearcote-151.0.7922.108/chrome",
+  "version": "151.0.7922.108"
 }
 ```
 
@@ -203,13 +218,13 @@ Global options (accepted by every command): `--home DIR` (env `CITRO_HOME`) and 
 | Command | What it does |
 |---|---|
 | `citro new NAME [options]` | create a profile, print its id |
-| `citro ls [--group G] [--json]` | list profiles (alias `list`) |
+| `citro list [--group G] [--json]` | list profiles (alias `ls`) |
 | `citro show PROFILE` | the full profile as JSON, secrets hidden |
 | `citro edit PROFILE [options]` | change a profile; applies the next time it is opened |
 | `citro delete PROFILE…` | delete profiles **and their browser data** (alias `rm`) |
 | `citro group new NAME` / `citro group ls` | create / list groups |
 
-`new` and `edit` share these options:
+`new` and `edit` share these options (`edit` also has `--name NAME` to rename):
 
 | Option | Meaning |
 |---|---|
@@ -247,7 +262,7 @@ launch only, replacing the profile's own), `--timeout SECS` (wait for the DevToo
 | `citro kernel [status]` | the kernel `open` would use |
 | `citro kernel list` | installed kernels, newest first |
 | `citro kernel install [--version V] [--force]` | download, verify and install Clearcote |
-| `citro serve [--bind ADDR] [--api-key KEY]` | the Local API; default `127.0.0.1:50325`; an API key is mandatory off loopback |
+| `citro serve [--bind ADDR] [--api-key KEY]` | the Local API; default `127.0.0.1:50325`; the key can also come from `CITRO_API_KEY`; it is mandatory off loopback |
 
 ## 6. The persona: what a profile claims to be
 
@@ -365,14 +380,22 @@ browser's exit IP is the proxy's.
 
 | Checker | Result |
 |---|---|
-| [iphey.com](https://iphey.com) | **Trustworthy**, MX score 100, all five tiles (Browser, Location, IP address, Hardware, Software) green |
-| [BrowserScan](https://www.browserscan.net) | authenticity **95 %**; Bot Detection: *No*; Proxy: *No*. The only deduction is `WebGL exception −5 %`, a GPU-less server presenting an Intel GPU identity |
+| [iphey.com](https://iphey.com) | **Trustworthy**, MX score **100** in both runs. Browser *Chrome*, Location *Germany*, IP address the proxy's, Hardware and Software *Everything is fine* |
+| [BrowserScan](https://www.browserscan.net) | Bot Detection: *No*, Proxy: *No*. Authenticity **95 %** in one run and **85 %** in the other (see below) |
 | [CreepJS](https://abrahamjuliot.github.io/creepjs/) | **0 % headless**, **0 % stealth**, 38 % "like headless"; WebRTC blocked |
 | stock Chromium 157 (control, same host and proxy) | iphey MX score 90: the engine scores higher than an unmodified browser |
+
+BrowserScan's deductions: `WebGL exception −5 %` in both runs (the host has no GPU and presents an Intel GPU
+identity over a software rasteriser), and `Different time zones −10 %` in the second run only. That second one is
+the checker's own data, not the browser's: in that run BrowserScan's IP database located the exit IP in *Prague,
+Czech Republic* while it had located the same IP in Germany in the first run, and iphey and our own lookup both say
+Frankfurt. The browser reported `Europe/Berlin` every time.
 
 Page-side values in the same run: `navigator.webdriver` is `false`, the user agent is
 `Chrome/151.0.0.0 … Linux x86_64`, the language `de-DE` with `["de-DE","de","en-US","en"]`, the time zone
 `Europe/Berlin`, and the browser's exit IP is the proxy's.
+
+The screenshots are from the 95 % run:
 
 ![iphey](docs/screenshots/verify-iphey.png)
 ![BrowserScan](docs/screenshots/verify-browserscan.png)
@@ -385,10 +408,11 @@ export CITRO_TEST_PROXY='socks5://host:port:user:pass'      # your own proxy; ne
 python3 -I tests/e2e/iphey.py out/ --os linux                # installs the kernel with citro kernel install
 ```
 
-Honest limits: the Windows persona is still flagged on iphey's Browser tile on a Linux host; each checker's own
-IP-geolocation database disagrees with the others (BrowserScan placed the same exit IP in two different regions in
-two runs a few minutes apart), which is the checker's data, not the browser's; the detectors change, so re-run the
-harness after any launcher change. More in [docs/KERNEL.md](docs/KERNEL.md#verification).
+Honest limits: the Windows persona is still flagged on iphey's Browser tile on a Linux host; the checkers' IP
+geolocation databases disagree with each other and with themselves over time, which moves scores by ±10 % without any
+change in the browser; the detectors change, so re-run the harness after any launcher change. The second run used
+the kernel that `citro kernel install` had just downloaded, with no path given, so the installer, the launcher and
+the engine are verified together. More in [docs/KERNEL.md](docs/KERNEL.md#verification).
 
 ## 13. Security notes
 
@@ -399,6 +423,10 @@ harness after any launcher change. More in [docs/KERNEL.md](docs/KERNEL.md#verif
   With a key every route except `/status` needs `Authorization: Bearer <key>`. Anyone who can reach the API can
   open any profile and read its cookies through DevTools: treat the key like a root password and never expose the
   port without TLS.
+* **Command lines.** With the current Clearcote build (151) the proxy login and the seed are on the browser's command
+  line, which every local user can read in `/proc/<pid>/cmdline`. On a shared machine mount `/proc` with
+  `hidepid=2` or run Citroenition under a dedicated user; a kernel with `--persona-from-env` moves them into the
+  process environment automatically.
 * **DevTools.** The browser's debugging port listens on `127.0.0.1` on a random port, for the Local API's
   clients. Other users on the same machine can reach it; see the note on shared machines in [section 7](#7-proxies).
 * **Kernel supply chain.** The kernel is verified against a pinned OpenPGP key and a signed checksum list before a
