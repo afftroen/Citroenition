@@ -5,6 +5,7 @@
 //! * [`ui`] - the egui pages.
 
 pub mod backend;
+pub mod cli;
 pub mod countries;
 pub mod csv;
 pub mod eventlog;
@@ -14,4 +15,5 @@ pub mod query;
 pub mod selection;
 pub mod settings;
 pub mod timefmt;
+pub mod ui;
 pub mod util;

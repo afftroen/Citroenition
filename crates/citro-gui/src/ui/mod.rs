@@ -1,0 +1,21 @@
+//! The egui layer. `app` owns the state and the frame loop; every other module is one page or dialog and only
+//! draws + returns what the user asked for. Blocking backend work goes through `tasks`.
+
+pub mod app;
+pub mod dialogs;
+pub mod edit;
+pub mod export;
+pub mod groups;
+pub mod kernel;
+pub mod logs;
+pub mod messages;
+pub mod profiles;
+pub mod settings;
+pub mod shell;
+pub mod shot;
+pub mod tasks;
+pub mod teams;
+pub mod theme;
+pub mod widgets;
+
+pub use app::{AppOptions, CitroApp, Page};
