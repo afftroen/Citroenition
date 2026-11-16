@@ -22,6 +22,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
@@ -144,10 +145,23 @@ fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
+/// Write `bytes` so that a reader sees the old file or the new one, never half of it: write a private temp
+/// file next to it and rename it over the target. The run record is read by other processes at any moment
+/// (`citro list`, the Local API, the desktop app, the hub supervisor); with truncate-then-write one of them could
+/// see an empty record, take it for "the browser is gone" and retire the record of a live browser.
 fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
-    let mut f = OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(path)?;
-    f.write_all(bytes)?;
-    Ok(())
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let tmp =
+        PathBuf::from(format!("{}.tmp{}-{}", path.display(), std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
+    let written = (|| -> std::io::Result<()> {
+        let mut f = OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(&tmp)?;
+        f.write_all(bytes)?;
+        fs::rename(&tmp, path)
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    Ok(written?)
 }
 
 fn data_dir_of(home: &Home, id: &str) -> PathBuf {
@@ -328,16 +342,24 @@ fn retire(home: &Home, id: &str, at: i64) {
 /// The record of a live browser for this profile id, if any. A record whose browser is gone is retired
 /// (see [`take_closed`]).
 pub fn running(home: &Home, id: &str) -> Option<Running> {
-    let bytes = fs::read(home.run_file(id)).ok()?;
-    let record: Option<Running> = serde_json::from_slice(&bytes).ok();
+    let path = home.run_file(id);
     let data_dir = data_dir_of(home, id);
-    match record {
-        Some(r) if r.profile_id == id && pid_is_browser(r.pid, &data_dir) => Some(r),
-        other => {
-            retire(home, id, estimate_close_time(&data_dir, other.map(|r| r.started)));
-            None
+    // A few rounds: the record may be replaced by a new launch between our read and our verdict.
+    for _ in 0..3 {
+        let bytes = fs::read(&path).ok()?;
+        let record: Option<Running> = serde_json::from_slice(&bytes).ok();
+        match record {
+            Some(r) if r.profile_id == id && pid_is_browser(r.pid, &data_dir) => return Some(r),
+            other => {
+                // Retire the record we judged, not one a newer launch has put there since.
+                if fs::read(&path).is_ok_and(|now_bytes| now_bytes == bytes) {
+                    retire(home, id, estimate_close_time(&data_dir, other.map(|r| r.started)));
+                    return None;
+                }
+            }
         }
     }
+    None
 }
 
 fn run_ids(home: &Home) -> Vec<String> {
@@ -762,6 +784,61 @@ mod tests {
         assert_eq!(closed[0].profile_id, p.profile_id);
         assert!(closed[0].at >= r.started && closed[0].at <= now(), "{closed:?}");
         let _ = fs::remove_dir_all(&home.root);
+    }
+
+    /// A browser's run record is read by other processes while it is being written. A reader that saw a
+    /// half-written record used to retire it: the hub supervisor then took a live browser for closed, uploaded
+    /// its data and released the team lock under it.
+    #[test]
+    fn a_live_browsers_record_survives_readers_that_poll_while_it_is_rewritten() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+        let home = tmp_home("poll");
+        let (kernel, _listener) = listening_kernel(&home);
+        let p = profile(&home, Profile { name: "poll".into(), ..Default::default() });
+        let r = start(&home, &kernel, &p, &LaunchOptions::default()).unwrap();
+        let id = p.profile_id.clone();
+        let done = Arc::new(AtomicBool::new(false));
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let (home, id, done) = (home.clone(), id.clone(), done.clone());
+                std::thread::spawn(move || {
+                    let mut gone = 0u32;
+                    while !done.load(Ordering::Relaxed) {
+                        if running(&home, &id).is_none() {
+                            gone += 1;
+                        }
+                    }
+                    gone
+                })
+            })
+            .collect();
+        let bytes = serde_json::to_vec_pretty(&r).unwrap();
+        for _ in 0..4000 {
+            write_private(&home.run_file(&id), &bytes).unwrap();
+        }
+        done.store(true, Ordering::Relaxed);
+        let gone: u32 = readers.into_iter().map(|t| t.join().unwrap()).sum();
+        assert_eq!(gone, 0, "a reader took the live browser for closed");
+        assert!(running(&home, &id).is_some());
+        assert!(take_closed(&home).is_empty(), "nothing was retired");
+        assert!(stop(&home, &id).unwrap());
+        let _ = fs::remove_dir_all(&home.root);
+    }
+
+    #[test]
+    fn a_record_of_a_process_that_is_not_the_browser_is_still_retired() {
+        let home = tmp_home("replaced");
+        let (kernel, _listener) = listening_kernel(&home);
+        let p = profile(&home, Profile { name: "r".into(), ..Default::default() });
+        let r = start(&home, &kernel, &p, &LaunchOptions::default()).unwrap();
+        // a record for a pid that is not ours: the reader may retire it, but only while it is unchanged
+        let stale = Running { pid: 1, ..r.clone() };
+        write_private(&home.run_file(&p.profile_id), &serde_json::to_vec_pretty(&stale).unwrap()).unwrap();
+        assert!(running(&home, &p.profile_id).is_none(), "pid 1 is not this profile's browser");
+        assert!(!home.run_file(&p.profile_id).exists(), "the stale record is retired");
+        let _ = fs::remove_dir_all(&home.root);
+        signal(-(r.pid as i32), libc::SIGKILL);
     }
 
     #[test]

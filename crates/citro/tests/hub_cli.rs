@@ -250,6 +250,22 @@ fn wait_until(what: &str, secs: u64, mut cond: impl FnMut() -> bool) {
     panic!("timed out waiting for: {what}");
 }
 
+/// Wait for the browser a spawned `citro open` starts. If the command ends first, or the wait runs out, say what
+/// it printed: a bare "timed out" cannot tell a slow start from a refused open.
+fn wait_for_open(what: &str, secs: u64, m: &Machine, id: &str, cmd: &mut Proc) {
+    let end = Instant::now() + Duration::from_secs(secs);
+    while Instant::now() < end {
+        if m.running(id) {
+            return;
+        }
+        if let Some(status) = cmd.child.try_wait().expect("try_wait") {
+            panic!("{what}: the command ended first ({status}); stdout: {:?} stderr: {:?}", cmd.stdout(), cmd.stderr());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    panic!("timed out waiting for: {what}; stdout: {:?} stderr: {:?}", cmd.stdout(), cmd.stderr());
+}
+
 /// One HTTP GET against the Local API; the body as JSON.
 fn api_get(addr: &str, path: &str) -> Value {
     let mut s = TcpStream::connect(addr).expect("connect to the Local API");
@@ -293,8 +309,11 @@ fn a_profile_is_open_on_one_device_only_and_its_data_follows_it() {
 
     // anna opens it: the command stays in the foreground and keeps the lock
     let mut open_a = a.spawn(&["open", &id], "open-a");
-    wait_until("the browser on anna's machine", 30, || a.running(&id));
-    assert!(open_a.stderr().contains("belongs to the team hub"), "{}", open_a.stderr());
+    wait_for_open("the browser on anna's machine", 30, &a, &id, &mut open_a);
+    // the notice is printed just after the browser is up, so wait for it rather than racing the command
+    wait_until("the command to say the profile is the team's", 10, || {
+        open_a.stderr().contains("belongs to the team hub")
+    });
     a.browse(&id, "Default/Cookies", "session=anna-1");
 
     // ben sees who has it, and cannot open it: no browser, nothing fetched
@@ -355,7 +374,7 @@ fn a_profile_is_open_on_one_device_only_and_its_data_follows_it() {
 
     // and back on anna's machine: ben's work is there
     let mut again = a.spawn(&["open", &id], "open-a2");
-    wait_until("the browser on anna's machine again", 30, || a.running(&id));
+    wait_for_open("the browser on anna's machine again", 30, &a, &id, &mut again);
     assert_eq!(a.read(&id, "Default/Cookies").as_deref(), Some("session=anna-1\nsession=ben-2"));
 
     // Ctrl-C (SIGTERM here) closes properly: data uploaded, lock released, no stray browser
@@ -366,7 +385,7 @@ fn a_profile_is_open_on_one_device_only_and_its_data_follows_it() {
     assert!(again.stderr().contains("lock released"), "{}", again.stderr());
     assert!(!a.running(&id));
     let mut after = b.spawn(&["open", &id], "open-b2");
-    wait_until("ben may open it right after", 30, || b.running(&id));
+    wait_for_open("ben may open it right after", 30, &b, &id, &mut after);
     assert_eq!(b.read(&id, "Default/Cookies").as_deref(), Some("session=anna-1\nsession=ben-2\nsession=anna-3"));
     assert!(b.ok(&["close", &id]).stdout.contains("handed the profile back"));
     assert!(after.wait(30).success());
@@ -427,7 +446,7 @@ fn the_teams_profiles_are_not_deleted_or_forgotten_by_accident() {
 
     // nobody edits a profile that is open
     let mut open_a = a.spawn(&["open", &id], "open-a");
-    wait_until("the browser", 30, || a.running(&id));
+    wait_for_open("the browser", 30, &a, &id, &mut open_a);
     let busy = b.run(&["edit", &id, "--name", "hijacked"]);
     assert!(!busy.status.success(), "{}{}", busy.stdout, busy.stderr);
     a.ok(&["close", &id]);

@@ -9,7 +9,7 @@ Without --kernel-dir the kernel comes from `citro kernel install` (download + si
 Everything printed has the proxy login redacted. Exit 0 only if the browser's exit IP is the proxy's.
 Env: CITRO (binary; default target dir of this checkout), NODE.
 """
-import argparse, json, os, shutil, subprocess, sys, tempfile, time
+import argparse, json, os, re, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 
 ap = argparse.ArgumentParser()
@@ -94,7 +94,8 @@ try:
         except Exception:
             print("[iphey] raw:", red(q.stdout)[:400], red(q.stderr)[:200])
     cfg = {
-        "creepjs": ("https://abrahamjuliot.github.io/creepjs/", r"trust score|bot|lies", "100", "8"),
+        # CreepJS draws the page once every module has finished: the FP ID is at the top, the Status block last
+        "creepjs": ("https://abrahamjuliot.github.io/creepjs/", r"FP ID:[\s\S]*Status[0-9a-f]{8}", "150", "6"),
         "browserscan": ("https://www.browserscan.net/", r"authenticity|fingerprint|webrtc|ip address", "90", "8"),
     }
     for s in sites:
@@ -105,6 +106,10 @@ try:
                 r = json.loads(q.stdout)
                 print("[%s] ready=%s waited=%ss chars=%s" % (s, r["ready"], r["waited_s"], r["chars"]))
                 print("[%s] head: %s" % (s, red(r["head"])[:500].replace("\n", " | ")))
+                if s == "creepjs":
+                    txt = (out / "creepjs.txt").read_text(errors="replace")
+                    keep = [l.strip() for l in txt.splitlines() if re.search(r"% (like headless|headless|stealth)|^lies|^privacy:|^mode:|confidence|^Europe/|^userAgent:|^Linux x86_64$", l.strip())]
+                    print("[creepjs] verdict:", " | ".join(keep[:12]), "| lies section:", "present" if re.search(r"(?im)^lies\b", txt) else "none")
             except Exception:
                 print("[%s] raw: %s %s" % (s, red(q.stdout)[:300], red(q.stderr)[:200]))
 
