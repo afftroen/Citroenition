@@ -20,4 +20,4 @@ pub use hub::{Entry, Hub, LockRow, PullReport, PushReport, delete, edit, log_out
 pub use session::{
     CloseReport, Outcome, catch_signals, close, is_syncing, open, recover, shutdown, take_finished, wait,
 };
-pub use state::{Bound, Login, bound_ids, load_login};
+pub use state::{Bound, Login, bound_ids, device, load_login};

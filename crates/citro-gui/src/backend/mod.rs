@@ -6,12 +6,15 @@
 //! Implementations:
 //! * [`mock::MockBackend`]  - in-memory fake data (`--demo`, unit tests, screenshots).
 //! * [`local::LocalBackend`] - single-user implementation over `citro-core` (Store / Home / launch / Kernel).
-//! * a hub-backed implementation is added later, once `citro-hub` lands; it only has to implement this trait.
+//!
+//! The team features of [`local::LocalBackend`] sit on `citro-sync`, the layer the command line and the Local API
+//! use too, so every way of opening a team profile obeys the hub's lock.
 
 use citro_core::profile::{Group, Profile, ProxyConfig};
 use std::fmt;
 
 pub mod local;
+mod local_hub;
 pub mod mock;
 pub mod proxycheck;
 
@@ -46,6 +49,28 @@ impl From<citro_core::Error> for BackendError {
             citro_core::Error::Invalid(s) => BackendError::Invalid(s),
             other => BackendError::Other(other.to_string()),
         }
+    }
+}
+
+impl From<citro_sync::Error> for BackendError {
+    fn from(e: citro_sync::Error) -> Self {
+        match e {
+            citro_sync::Error::Core(e) => e.into(),
+            citro_sync::Error::Invalid(s) => BackendError::Invalid(s),
+            citro_sync::Error::NotLoggedIn => BackendError::Invalid(
+                "this device is not connected to a team hub: connect on the Teams page first".into(),
+            ),
+            citro_sync::Error::TeamProfile(name) => BackendError::Invalid(format!(
+                "{name} belongs to the team hub: deleting it removes it for the whole team, not only here"
+            )),
+            other => BackendError::Other(other.to_string()),
+        }
+    }
+}
+
+impl From<citro_hub::client::Error> for BackendError {
+    fn from(e: citro_hub::client::Error) -> Self {
+        citro_sync::Error::from(e).into()
     }
 }
 
@@ -354,8 +379,18 @@ pub struct HubStatus {
     pub connected: bool,
     pub url: String,
     pub user: String,
+    /// The team this device works with.
+    pub team: String,
     pub device_name: String,
     pub error: Option<String>,
+}
+
+/// Something that happened without the user asking: a team browser was closed by its window and its data went up,
+/// a lock was lost while the browser ran, a browser that outlived its session was stopped. Shown once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub level: Level,
+    pub text: String,
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -428,9 +463,36 @@ pub trait Backend: Send + Sync {
     // team -------------------------------------------------------------------------------------------------
     fn teams(&self) -> BResult<Vec<TeamInfo>>;
     fn hub_status(&self) -> HubStatus;
-    fn connect_hub(&self, url: &str, token: &str, device_name: &str) -> BResult<HubStatus>;
+    /// `team` is only needed when the account is in several teams (empty otherwise).
+    fn connect_hub(&self, url: &str, token: &str, device_name: &str, team: &str) -> BResult<HubStatus>;
     /// Admin only: releases a lock held by somebody else.
     fn force_unlock(&self, profile_id: &str) -> BResult<()>;
+    /// Forget the hub login on this device. Team profiles stay, but cannot be opened until it is connected again.
+    fn disconnect_hub(&self) -> BResult<HubStatus> {
+        Err(BackendError::Unsupported("this backend has no team hub".into()))
+    }
+    /// Bring the team's profiles up to date (names, remarks, groups, proxies, who opened what last). Returns a
+    /// sentence about what changed. Cookies and browser data come down when a profile is opened.
+    fn pull_team(&self) -> BResult<String> {
+        Err(BackendError::Unsupported("this backend has no team hub".into()))
+    }
+    /// Put local profiles on the team hub (they belong to the team from then on). Returns a sentence.
+    fn share_profiles(&self, _ids: &[String]) -> BResult<String> {
+        Err(BackendError::Unsupported("this backend has no team hub".into()))
+    }
+    /// Deletes profiles for everybody: a team profile goes from the hub too (`delete_profiles` refuses those).
+    fn delete_profiles_everywhere(&self, ids: &[String]) -> BResult<()> {
+        self.delete_profiles(ids)
+    }
+    /// What happened on its own since the last call (see [`Notice`]).
+    fn take_notices(&self) -> Vec<Notice> {
+        Vec::new()
+    }
+    /// The app is quitting: close what must not outlive it (the browsers of team profiles: nothing else would keep
+    /// their lock alive). Blocks until their data is uploaded. Returns one line per profile that needed it.
+    fn shutdown(&self) -> Vec<String> {
+        Vec::new()
+    }
 
     // misc -------------------------------------------------------------------------------------------------
     /// Adds a line to the Citroenition log (the UI reports what it did: exports, ...). Default: dropped.

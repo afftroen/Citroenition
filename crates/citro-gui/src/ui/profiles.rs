@@ -37,6 +37,7 @@ enum Act {
     Remark(Vec<String>),
     CopyId(String),
     Delete(Vec<String>),
+    Share(Vec<String>),
     Sort(SortKey),
     ToggleCheck(String),
     ToggleAll,
@@ -289,6 +290,7 @@ impl CitroApp {
         let can_open = rows.iter().any(|r| matches!(r.run, RunState::Closed) && free(r.id()));
         let can_close = rows.iter().any(|r| r.run.is_open() && free(r.id()));
         let any = !sel.is_empty();
+        let hub_on = self.hub.connected;
         let mut acts = Vec::new();
         let mut new = false;
         let mut export = false;
@@ -308,6 +310,13 @@ impl CitroApp {
             }
             if widgets::button(ui, "Set remark", any).clicked() {
                 acts.push(Act::Remark(sel.clone()));
+            }
+            if hub_on
+                && widgets::button(ui, "Share with team", any)
+                    .on_hover_text("Put the selected profiles on the team hub: everybody in the team can open them")
+                    .clicked()
+            {
+                acts.push(Act::Share(sel.clone()));
             }
             export |=
                 widgets::button(ui, "Export CSV", true).on_hover_text("Write the profile list to a CSV file").clicked();
@@ -378,6 +387,7 @@ impl CitroApp {
                 self.toast(ToastKind::Info, format!("Copied {id}"));
             }
             Act::Delete(ids) => self.confirm_delete_profiles(ids),
+            Act::Share(ids) => self.confirm_share(ids),
             Act::Sort(key) => {
                 let q = &mut self.profiles.query;
                 if q.sort == key {
@@ -394,6 +404,7 @@ impl CitroApp {
         let p = self.pal;
         let (now, offset) = (self.now, self.offset);
         let ctx = self.ctx.clone();
+        let hub_on = self.hub.connected;
         let mut acts: Vec<Act> = Vec::new();
         {
             let CitroApp { rows, groups, busy, last_error, profiles, .. } = &mut *self;
@@ -475,6 +486,10 @@ impl CitroApp {
                             cell(&mut row, |ui| {
                                 avatar(ui, &p, &id, &pr.name);
                                 ui.add(egui::Label::new(RichText::new(&pr.name).strong()).truncate());
+                                if r.team.is_some() {
+                                    widgets::badge(ui, "Team", p.accent)
+                                        .on_hover_text("Shared through the team hub: it opens on one device at a time");
+                                }
                             });
                             cell(&mut row, |ui| {
                                 let label = group_label(groups, &pr.group_id);
@@ -601,6 +616,10 @@ impl CitroApp {
                                 }
                                 if ui.button(many("Clear cache…")).clicked() {
                                     acts.push(Act::ClearCache(targets.clone()));
+                                    ui.close();
+                                }
+                                if hub_on && ui.button(many("Share with team…")).clicked() {
+                                    acts.push(Act::Share(targets.clone()));
                                     ui.close();
                                 }
                                 if ui.button("Copy profile id").clicked() {

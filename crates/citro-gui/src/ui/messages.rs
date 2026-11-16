@@ -167,6 +167,46 @@ impl CitroApp {
                 Err(e) => self.teams_error = Some(e.to_string()),
             },
             Msg::Hub(h) => self.hub = h,
+            Msg::HubDisconnected(result) => {
+                self.teams_ui.working = false;
+                match result {
+                    Ok(h) => {
+                        self.hub = h;
+                        self.teams = None;
+                        self.teams_error = None;
+                        self.toast(ToastKind::Info, "Disconnected from the team hub");
+                        self.refresh_rows();
+                    }
+                    Err(e) => self.toast(ToastKind::Err, e.to_string()),
+                }
+            }
+            Msg::Pulled(result) => {
+                self.teams_ui.working = false;
+                match result {
+                    Ok(sentence) => self.toast(ToastKind::Ok, format!("Team: {sentence}")),
+                    Err(e) => self.toast(ToastKind::Err, e.to_string()),
+                }
+                self.refresh_teams();
+                self.refresh_rows();
+                self.refresh_groups();
+            }
+            Msg::Notices(list) => {
+                for n in list {
+                    let kind = match n.level {
+                        crate::backend::Level::Error => ToastKind::Err,
+                        crate::backend::Level::Warn => ToastKind::Warn,
+                        _ => ToastKind::Info,
+                    };
+                    self.toast(kind, n.text);
+                }
+            }
+            Msg::QuitDone(lines) => {
+                self.quit = super::app::Quit::Done;
+                for l in &lines {
+                    self.backend.record(crate::backend::Level::Info, None, &format!("quit: {l}"));
+                }
+                self.ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+            }
             Msg::HubConnected(result) => {
                 self.teams_ui.connecting = false;
                 match result {

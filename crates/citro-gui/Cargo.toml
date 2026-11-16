@@ -16,6 +16,10 @@ path = "src/main.rs"
 
 [dependencies]
 citro-core = { version = "0.1.0", path = "../citro-core" }
+# The team layer: a team profile opens only with the hub's lock, closing uploads its data (same code as the CLI).
+citro-sync = { version = "0.1.0", path = "../citro-sync" }
+citro-hub = { version = "0.1.0", path = "../citro-hub" }
+citro-install = { version = "0.1.0", path = "../citro-install" }
 # Pure-Rust GUI stack: glow (OpenGL) renderer, X11 windowing, bundled fonts. No gtk, no system file dialogs.
 eframe = { version = "0.37", default-features = false, features = ["glow", "x11", "default_fonts", "clipboard"] }
 egui_extras = { version = "0.37", default-features = false }

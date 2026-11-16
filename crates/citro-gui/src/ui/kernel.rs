@@ -187,8 +187,13 @@ impl CitroApp {
                     }
                 }
                 ui.add_space(2.0);
-                let text =
-                    if done == 0 { "Starting the download\u{2026}".to_owned() } else { progress_text(done, total) };
+                let text = if done == 0 {
+                    "Starting the download\u{2026}".to_owned()
+                } else if total > 0 && done >= total {
+                    "Downloaded \u{b7} verifying the signature and unpacking\u{2026}".to_owned()
+                } else {
+                    progress_text(done, total)
+                };
                 ui.label(dim(p, text));
             } else {
                 ui.horizontal(|ui| {

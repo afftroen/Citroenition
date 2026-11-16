@@ -7,7 +7,6 @@
 pub mod backend;
 pub mod cli;
 pub mod countries;
-pub mod csv;
 pub mod eventlog;
 pub mod installer;
 pub mod proxy;

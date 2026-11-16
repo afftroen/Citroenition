@@ -7,9 +7,9 @@ use super::{
     LogKind, LogLine, LogQuery, Member, OpenError, OpenOpts, ProxyCheck, Query, Role, Row, RunInfo, RunState, TeamInfo,
     redact,
 };
-use crate::csv::{self, CsvRow};
 use crate::query;
 use crate::timefmt::now_ts;
+use citro_core::csv::{self, CsvRow};
 use citro_core::profile::{Group, Profile, ProxyConfig};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -384,6 +384,7 @@ impl MockBackend {
                     connected: true,
                     url: "https://hub.example.net".into(),
                     user: me.into(),
+                    team: "Atelier".into(),
                     device_name: "MIA-LAPTOP".into(),
                     error: None,
                 },
@@ -792,13 +793,14 @@ impl Backend for MockBackend {
         self.lock().hub.clone()
     }
 
-    fn connect_hub(&self, url: &str, _token: &str, device_name: &str) -> BResult<HubStatus> {
+    fn connect_hub(&self, url: &str, _token: &str, device_name: &str, _team: &str) -> BResult<HubStatus> {
         self.nap(0.5);
         let mut st = self.lock();
         st.hub = HubStatus {
             connected: true,
             url: url.into(),
             user: "mia".into(),
+            team: "Atelier".into(),
             device_name: device_name.into(),
             error: None,
         };

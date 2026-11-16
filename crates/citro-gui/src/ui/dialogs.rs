@@ -1,14 +1,17 @@
 //! The small modal dialogs: confirm, move to group, set remark and the "could not open" report.
 
 use super::app::{CitroApp, Page, ToastKind};
-use super::tasks::Refresh;
+use super::tasks::{Msg, Refresh};
 use super::widgets::{self, mono};
-use crate::backend::group_label;
+use crate::backend::{RunState, group_label};
 use citro_core::profile::Group;
 use eframe::egui::{self, ComboBox, Key, RichText, ScrollArea, TextEdit};
 
 pub enum ConfirmAction {
-    DeleteProfiles(Vec<String>),
+    /// `true` = the selection holds team profiles: they go from the hub too, for everybody.
+    DeleteProfiles(Vec<String>, bool),
+    Share(Vec<String>),
+    Disconnect,
     DeleteGroup(String),
     ClearCache(Vec<String>),
     ForceUnlock(String),
@@ -68,6 +71,36 @@ impl CitroApp {
         }
     }
 
+    /// The window stays open while the team browsers are closed and their data goes up to the hub: nothing else
+    /// keeps their locks alive, and the next person must get the newest cookies.
+    pub fn guard_quit(&mut self, ctx: &egui::Context) {
+        use super::app::Quit;
+        if self.quit == Quit::Idle && ctx.input(|i| i.viewport().close_requested()) {
+            let team_open =
+                self.rows.iter().any(|r| r.team.is_some() && (r.run.is_open() || r.run == RunState::Closing));
+            if team_open {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.quit = Quit::Working;
+                self.tasks.spawn(false, |w| w.send(Msg::QuitDone(w.backend.shutdown())));
+            }
+        }
+        if self.quit == Quit::Working {
+            let p = self.pal;
+            widgets::modal(ctx, &p, "quit-modal", 400.0, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().size(18.0));
+                    ui.label(RichText::new("Closing your team browsers").size(17.0).strong());
+                });
+                ui.add_space(4.0);
+                ui.label(widgets::dim(
+                    &p,
+                    "Their cookies and data are going up to the hub so the next person gets the newest state. The app \
+                     closes by itself when that is done.",
+                ));
+            });
+        }
+    }
+
     pub fn confirm_delete_profiles(&mut self, ids: Vec<String>) {
         if ids.is_empty() {
             return;
@@ -77,14 +110,85 @@ impl CitroApp {
         } else {
             plural(ids.len(), "profile", "profiles")
         };
-        self.confirm = Some(Confirm {
-            title: format!("Delete {what}?"),
-            body:
-                "The profile, its cookies, cache and saved logins are removed from this device. This cannot be undone."
+        let team: Vec<String> = ids
+            .iter()
+            .filter_map(|id| self.row(id).filter(|r| r.team.is_some()).map(|r| r.profile.name.clone()))
+            .collect();
+        if team.is_empty() {
+            self.confirm = Some(Confirm {
+                title: format!("Delete {what}?"),
+                body: "The profile, its cookies, cache and saved logins are removed from this device. This cannot be \
+                       undone."
                     .to_owned(),
-            button: "Delete".to_owned(),
+                button: "Delete".to_owned(),
+                danger: true,
+                action: ConfirmAction::DeleteProfiles(ids, false),
+            });
+            return;
+        }
+        // a team profile is the whole team's: deleting it takes it away from every member
+        let which =
+            if team.len() == 1 { format!("\"{}\" belongs", team[0]) } else { format!("{} of them belong", team.len()) };
+        self.confirm = Some(Confirm {
+            title: format!("Delete {what} for the whole team?"),
+            body: format!(
+                "{which} to the team hub. Deleting removes {} from the hub for EVERYBODY in the team: the profile, its \
+                 cookies and saved logins are gone for all of them. This cannot be undone.",
+                if team.len() == 1 { "it" } else { "them" }
+            ),
+            button: "Delete for everyone".to_owned(),
             danger: true,
-            action: ConfirmAction::DeleteProfiles(ids),
+            action: ConfirmAction::DeleteProfiles(ids, true),
+        });
+    }
+
+    pub fn confirm_share(&mut self, ids: Vec<String>) {
+        // only the ones that are not on the hub yet
+        let ids: Vec<String> = ids.into_iter().filter(|id| self.row(id).is_some_and(|r| r.team.is_none())).collect();
+        if ids.is_empty() {
+            self.toast(ToastKind::Info, "These profiles are already shared with the team");
+            return;
+        }
+        let team = if self.hub.team.is_empty() { "the team".to_owned() } else { self.hub.team.clone() };
+        let what = if ids.len() == 1 {
+            format!("\"{}\"", self.name_of(&ids[0]))
+        } else {
+            plural(ids.len(), "profile", "profiles")
+        };
+        self.confirm = Some(Confirm {
+            title: format!("Share {what} with {team}?"),
+            body:
+                "The profile's settings, proxy, cookies and browser data are uploaded to the hub. Every member of the \
+                   team sees it and can open it (one device at a time). Deleting a shared profile removes it for \
+                   everybody."
+                    .to_owned(),
+            button: "Share".to_owned(),
+            danger: false,
+            action: ConfirmAction::Share(ids),
+        });
+    }
+
+    pub fn confirm_disconnect(&mut self) {
+        let open =
+            self.rows.iter().filter(|r| r.team.is_some() && (r.run.is_open() || r.run == RunState::Closing)).count();
+        if open > 0 {
+            self.toast(
+                ToastKind::Warn,
+                format!(
+                    "Close the {} before disconnecting: their data has to reach the hub first",
+                    plural(open, "open team browser", "open team browsers")
+                ),
+            );
+            return;
+        }
+        self.confirm = Some(Confirm {
+            title: "Disconnect from the team hub?".to_owned(),
+            body: "Team profiles stay on this computer but cannot be opened until you connect again. Nothing is \
+                   deleted, here or on the hub."
+                .to_owned(),
+            button: "Disconnect".to_owned(),
+            danger: false,
+            action: ConfirmAction::Disconnect,
         });
     }
 
@@ -110,11 +214,23 @@ impl CitroApp {
     fn run_confirm(&mut self) {
         let Some(c) = self.confirm.take() else { return };
         match c.action {
-            ConfirmAction::DeleteProfiles(ids) => {
+            ConfirmAction::DeleteProfiles(ids, everywhere) => {
                 let ok = format!("Deleted {}", plural(ids.len(), "profile", "profiles"));
                 self.profiles.selection.clear();
                 let ids2 = ids.clone();
-                self.run_op(ids, ok, Refresh::ROWS_GROUPS, move |b| b.delete_profiles(&ids2));
+                self.run_op(ids, ok, Refresh::TEAMS, move |b| {
+                    if everywhere { b.delete_profiles_everywhere(&ids2) } else { b.delete_profiles(&ids2) }
+                });
+            }
+            ConfirmAction::Share(ids) => {
+                let team = if self.hub.team.is_empty() { "the team".to_owned() } else { self.hub.team.clone() };
+                let ok = format!("Shared {} with {team}", plural(ids.len(), "profile", "profiles"));
+                let ids2 = ids.clone();
+                self.run_op(ids, ok, Refresh::TEAMS, move |b| b.share_profiles(&ids2).map(|_| ()));
+            }
+            ConfirmAction::Disconnect => {
+                self.teams_ui.working = true;
+                self.tasks.spawn(true, |w| w.send(Msg::HubDisconnected(w.backend.disconnect_hub())));
             }
             ConfirmAction::ClearCache(ids) => {
                 let ok = format!("Cleared the cache of {}", plural(ids.len(), "profile", "profiles"));

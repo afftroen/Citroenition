@@ -617,6 +617,9 @@ name = "citro-gui"
 version = "0.1.0"
 dependencies = [
  "citro-core",
+ "citro-hub",
+ "citro-install",
+ "citro-sync",
  "eframe",
  "egui_extras",
  "png",

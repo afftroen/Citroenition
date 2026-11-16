@@ -3,7 +3,7 @@
 //! never waits for the backend.
 
 use crate::backend::{
-    BResult, Backend, HubStatus, KernelStatus, LogLine, OpenError, ProxyCheck, Row, RunInfo, TeamInfo,
+    BResult, Backend, HubStatus, KernelStatus, LogLine, Notice, OpenError, ProxyCheck, Row, RunInfo, TeamInfo,
 };
 use citro_core::profile::{Group, Profile};
 use eframe::egui;
@@ -41,21 +41,55 @@ pub struct OpDone {
 pub enum Msg {
     Rows(BResult<Vec<Row>>),
     Groups(BResult<Vec<Group>>),
-    Opened { id: String, name: String, result: Result<RunInfo, OpenError> },
-    Closed { id: String, name: String, result: BResult<()> },
+    Opened {
+        id: String,
+        name: String,
+        result: Result<RunInfo, OpenError>,
+    },
+    Closed {
+        id: String,
+        name: String,
+        result: BResult<()>,
+    },
     Op(OpDone),
-    Saved { result: BResult<Profile>, created: bool },
+    Saved {
+        result: BResult<Profile>,
+        created: bool,
+    },
     GroupCreated(BResult<Group>),
-    FullProfile { id: String, result: BResult<Profile> },
-    ProxyChecked { token: u64, result: BResult<ProxyCheck> },
-    Exported { path: String, rows: usize, result: Result<(), String> },
-    Logs { token: u64, result: BResult<Vec<LogLine>> },
+    FullProfile {
+        id: String,
+        result: BResult<Profile>,
+    },
+    ProxyChecked {
+        token: u64,
+        result: BResult<ProxyCheck>,
+    },
+    Exported {
+        path: String,
+        rows: usize,
+        result: Result<(), String>,
+    },
+    Logs {
+        token: u64,
+        result: BResult<Vec<LogLine>>,
+    },
     Kernel(BResult<KernelStatus>),
-    KernelProgress { done: u64, total: u64 },
+    KernelProgress {
+        done: u64,
+        total: u64,
+    },
     KernelInstalled(BResult<KernelStatus>),
     Teams(BResult<Vec<TeamInfo>>),
     Hub(HubStatus),
     HubConnected(BResult<HubStatus>),
+    HubDisconnected(BResult<HubStatus>),
+    /// The sentence a pull of the team's profiles produced.
+    Pulled(BResult<String>),
+    /// Things that happened by themselves (a team browser closed by its window and uploaded, a lost lock ...).
+    Notices(Vec<Notice>),
+    /// The team browsers are closed and uploaded: the app may quit.
+    QuitDone(Vec<String>),
 }
 
 /// What a worker closure gets: the backend and a way to answer.

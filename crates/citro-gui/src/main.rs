@@ -5,6 +5,7 @@ use citro_gui::backend::Backend;
 use citro_gui::backend::local::LocalBackend;
 use citro_gui::backend::mock::MockBackend;
 use citro_gui::cli::{Args, USAGE};
+use citro_gui::installer::CitroInstaller;
 use citro_gui::settings::Settings;
 use citro_gui::ui::{AppOptions, CitroApp};
 use eframe::egui;
@@ -39,7 +40,8 @@ fn main() -> eframe::Result {
     } else {
         let home = Home::discover(args.home.as_deref());
         let path = home.root.join("gui-settings.json");
-        (Arc::new(LocalBackend::new(home)), Settings::load(&path), Some(path), Vec::new())
+        let backend = LocalBackend::new(home).with_installer(Arc::new(CitroInstaller::default()));
+        (Arc::new(backend), Settings::load(&path), Some(path), Vec::new())
     };
     if let Some(t) = args.theme {
         settings.theme = t;

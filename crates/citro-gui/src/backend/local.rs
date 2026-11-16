@@ -3,16 +3,18 @@
 //!
 //! All methods block; the UI calls them from worker threads.
 
+use super::local_hub::{self, CLOSE_PATIENCE, HubState};
 use super::proxycheck;
 use super::{
     BResult, Backend, BackendError, BackendInfo, BackendKind, Caps, HubStatus, KernelInfo, KernelStatus, Level,
-    LogKind, LogLine, LogQuery, MASK, OpenError, OpenOpts, ProxyCheck, Query, Row, RunInfo, RunState, TeamInfo, redact,
+    LogKind, LogLine, LogQuery, MASK, Notice, OpenError, OpenOpts, ProxyCheck, Query, Row, RunInfo, RunState, TeamInfo,
+    redact,
 };
-use crate::csv::{self, CsvRow};
 use crate::eventlog::EventLog;
 use crate::installer::{KernelInstaller, StubInstaller};
 use crate::query;
 use crate::util::mask_secrets_in_text;
+use citro_core::csv::{self, CsvRow};
 use citro_core::kernel::Kernel;
 use citro_core::launch::{self, LaunchOptions};
 use citro_core::profile::{Group, Profile, ProxyConfig};
@@ -34,13 +36,21 @@ pub struct LocalBackend {
     events: Arc<EventLog>,
     installer: Arc<dyn KernelInstaller>,
     kernel_override: Mutex<Option<PathBuf>>,
+    /// The team side: the cache of who has what open, notices, background refresh (see `local_hub`).
+    pub(super) hub: HubState,
 }
 
 impl LocalBackend {
     /// Uses (and creates on demand) the data directory `home`. The GUI event log lives next to the store.
     pub fn new(home: Home) -> LocalBackend {
         let events = Arc::new(EventLog::with_file(home.root.join("gui-events.log")));
-        LocalBackend { home, events, installer: Arc::new(StubInstaller), kernel_override: Mutex::new(None) }
+        LocalBackend {
+            home,
+            events,
+            installer: Arc::new(StubInstaller),
+            kernel_override: Mutex::new(None),
+            hub: HubState::default(),
+        }
     }
 
     /// Swap the stub for the real installer (`citro-install`) without touching any UI code.
@@ -65,6 +75,10 @@ impl LocalBackend {
     /// Notices browsers that exited since the last look (closed by the user, crashed, closed by the CLI),
     /// stores their `last_close_time` and logs them. Returns the live browsers.
     fn sync(&self) -> HashMap<String, launch::Running> {
+        // a team browser closed by its window: its supervisor uploaded the data and gave the lock back; say so once
+        for o in citro_sync::take_finished() {
+            self.report_outcome(&o, true);
+        }
         let running = launch::list_running(&self.home); // also retires the records of dead browsers
         let closed = launch::take_closed(&self.home);
         if !closed.is_empty() {
@@ -87,7 +101,7 @@ impl LocalBackend {
         running.into_iter().map(|r| (r.profile_id.clone(), r)).collect()
     }
 
-    fn profile_name(&self, id: &str) -> String {
+    pub(super) fn profile_name(&self, id: &str) -> String {
         Store::open(&self.home).ok().and_then(|s| s.find(id).map(|p| p.name.clone())).unwrap_or_else(|| id.to_owned())
     }
 }
@@ -246,23 +260,38 @@ impl Backend for LocalBackend {
         BackendInfo {
             kind: BackendKind::Local,
             data_dir: self.home.root.display().to_string(),
-            caps: Caps { teams: false, kernel_install: !self.installer.is_stub(), proxy_check: true, group_edit: true },
+            caps: Caps { teams: true, kernel_install: !self.installer.is_stub(), proxy_check: true, group_edit: true },
         }
     }
 
     // profiles ------------------------------------------------------------------------------------------------
     fn list_profiles(&self, q: &Query) -> BResult<Vec<Row>> {
         let running = self.sync();
+        self.keep_hub_fresh(); // background: the table never waits for the network
         let store = Store::open(&self.home)?;
+        let bound: HashMap<String, String> = self.bound_teams().into_iter().collect();
         let rows: Vec<Row> = store
             .profiles()
             .iter()
-            .map(|p| Row {
-                run: running
-                    .get(&p.profile_id)
-                    .map_or(RunState::Closed, |r| RunState::Open { pid: r.pid, since: r.started }),
-                profile: redact(p),
-                team: None,
+            .map(|p| {
+                let id = &p.profile_id;
+                let run = running.get(id).map(|r| (r.pid, r.started));
+                match bound.get(id) {
+                    Some(team) => Row {
+                        run: local_hub::run_state(
+                            run,
+                            citro_sync::is_syncing(&self.home, id),
+                            self.hub.lock_of(id).as_ref(),
+                        ),
+                        profile: redact(p),
+                        team: Some(team.clone()),
+                    },
+                    None => Row {
+                        run: run.map_or(RunState::Closed, |(pid, since)| RunState::Open { pid, since }),
+                        profile: redact(p),
+                        team: None,
+                    },
+                }
             })
             .collect();
         Ok(query::apply(rows, q, store.groups()))
@@ -281,17 +310,29 @@ impl Backend for LocalBackend {
             return Ok(created);
         }
         let id = p.profile_id.clone();
-        let saved = store::locked(&self.home, |s| {
-            let old = s.get(&id)?.clone();
+        // a local profile is updated in the store; a team profile is written through to the hub first (which refuses
+        // while somebody has it open), so everybody gets the same one
+        let saved = citro_sync::edit(&self.home, &id, |_, staged| {
+            let old = staged.clone();
             restore_masked_secrets(&mut p, &old);
             keep_identity(&mut p, &old);
-            s.update(&id, |slot| *slot = p)
+            *staged = p;
+            Ok(())
         })?;
         self.events.info(Some(&id), format!("saved profile {}", saved.name));
         Ok(saved)
     }
 
     fn delete_profiles(&self, ids: &[String]) -> BResult<()> {
+        let team = self.bound_names(ids);
+        if !team.is_empty() {
+            return Err(BackendError::Invalid(format!(
+                "{} belong{} to the team hub: deleting removes {} for the whole team, not only here",
+                team.join(", "),
+                if team.len() == 1 { "s" } else { "" },
+                if team.len() == 1 { "it" } else { "them" },
+            )));
+        }
         let gone = store::locked(&self.home, |s| s.delete(ids))?;
         for p in &gone {
             // stops the browser if it is still running, then removes the data directory
@@ -308,21 +349,26 @@ impl Backend for LocalBackend {
 
     fn set_remark(&self, id: &str, text: &str) -> BResult<()> {
         let text = text.trim_end().to_owned();
-        store::locked(&self.home, |s| s.update(id, |p| p.remark = text))?;
+        citro_sync::edit(&self.home, id, |_, p| {
+            p.remark = text;
+            Ok(())
+        })?;
         Ok(())
     }
 
     fn move_to_group(&self, ids: &[String], group: &str) -> BResult<()> {
         let group = if group.is_empty() { "0" } else { group };
-        let name = store::locked(&self.home, |s| {
-            if group != "0" && !s.groups().iter().any(|g| g.group_id == group) {
-                return Err(citro_core::Error::Invalid(format!("group {group} does not exist")));
-            }
-            for id in ids {
-                s.update(id, |p| p.group_id = group.to_owned())?;
-            }
-            Ok(s.group_name(group))
-        })?;
+        let name = Store::open(&self.home)?.group_name(group);
+        for id in ids {
+            // each profile on its own: a team profile goes to the hub (which also names the group there)
+            citro_sync::edit(&self.home, id, |s, p| {
+                if group != "0" && !s.groups().iter().any(|g| g.group_id == group) {
+                    return Err(citro_core::Error::Invalid(format!("group {group} does not exist")));
+                }
+                p.group_id = group.to_owned();
+                Ok(())
+            })?;
+        }
         self.events.info(None, format!("moved {} profile(s) to {name}", ids.len()));
         Ok(())
     }
@@ -377,24 +423,64 @@ impl Backend for LocalBackend {
             self.events.error(Some(id), format!("could not open {}: {}", p.name, crate::util::first_line(&message)));
             Err(OpenError::Other(message))
         };
+        if self.is_bound(id) && !matches!(citro_sync::load_login(&self.home), Ok(Some(_))) {
+            return fail(format!(
+                "{} belongs to a team hub and this device is not connected to it: connect on the Teams page first",
+                p.name
+            ));
+        }
         let kernel = match self.kernel() {
             Ok(k) => k,
             Err(e) => return fail(e.to_string()),
         };
         let lo = LaunchOptions { headless: opts.headless, sandbox: opts.sandbox, ..Default::default() };
-        match launch::start(&self.home, &kernel, &p, &lo) {
+        // a team profile is opened with the hub's lock (and its newest data), a local one is launched as it is
+        match citro_sync::open(&self.home, &kernel, &p, &lo) {
             Ok(r) => {
-                let _ = store::locked(&self.home, |s| s.touch_opened(id));
+                if self.is_bound(id) {
+                    self.hub.stale();
+                } else {
+                    let _ = store::locked(&self.home, |s| s.touch_opened(id));
+                }
                 let how = if opts.headless { ", headless" } else { "" };
                 self.events.info(Some(id), format!("opened {} (pid {}{how})", p.name, r.pid));
                 Ok(RunInfo { pid: r.pid, since: r.started })
             }
-            Err(e) => fail(e.to_string()),
+            Err(e) => match local_hub::open_error(e) {
+                OpenError::LockedElsewhere { user, device, since } => {
+                    self.hub.stale();
+                    self.events.warn(Some(id), format!("{} is open on {device} by {user}: not opened here", p.name));
+                    Err(OpenError::LockedElsewhere { user, device, since })
+                }
+                OpenError::Other(message) => fail(message),
+            },
         }
     }
 
     fn close(&self, id: &str) -> BResult<()> {
         let name = self.profile_name(id);
+        if self.is_bound(id) {
+            // stops the browser, then waits until its data is on the hub and the lock is handed back, so the next
+            // device can open it the moment this returns
+            let report = citro_sync::close(&self.home, id, CLOSE_PATIENCE)?;
+            self.hub.stale();
+            if report.stopped {
+                self.events.info(Some(id), format!("closed {name}"));
+            } else {
+                self.events.info(Some(id), format!("{name} was not running"));
+            }
+            return match report.outcome {
+                Some(o) => {
+                    self.report_outcome(&o, false);
+                    if o.is_clean() {
+                        Ok(())
+                    } else {
+                        Err(BackendError::Other(format!("{name} closed, but: {}", o.summary())))
+                    }
+                }
+                None => Ok(()),
+            };
+        }
         let was_running = launch::stop(&self.home, id)?;
         self.sync(); // stores last_close_time and logs `closed <name>`
         if !was_running {
@@ -546,21 +632,69 @@ impl Backend for LocalBackend {
 
     // team ----------------------------------------------------------------------------------------------------
     fn teams(&self) -> BResult<Vec<TeamInfo>> {
-        Ok(Vec::new())
+        self.hub_teams()
     }
 
     fn hub_status(&self) -> HubStatus {
-        HubStatus::default()
+        self.hub_info()
     }
 
-    fn connect_hub(&self, _url: &str, _token: &str, _device_name: &str) -> BResult<HubStatus> {
-        Err(BackendError::Unsupported(
-            "connecting to a team hub is not wired into this build yet (the hub client lands with citro-hub)".into(),
-        ))
+    fn connect_hub(&self, url: &str, token: &str, device_name: &str, team: &str) -> BResult<HubStatus> {
+        self.hub_connect(url, token, device_name, team)
     }
 
-    fn force_unlock(&self, _profile_id: &str) -> BResult<()> {
-        Err(BackendError::Unsupported("profile locks only exist when connected to a team hub".into()))
+    fn disconnect_hub(&self) -> BResult<HubStatus> {
+        self.hub_disconnect()
+    }
+
+    fn force_unlock(&self, profile_id: &str) -> BResult<()> {
+        self.hub_force_unlock(profile_id)
+    }
+
+    fn pull_team(&self) -> BResult<String> {
+        self.hub_pull_now()
+    }
+
+    fn share_profiles(&self, ids: &[String]) -> BResult<String> {
+        self.hub_share(ids)
+    }
+
+    fn delete_profiles_everywhere(&self, ids: &[String]) -> BResult<()> {
+        let mut gone = 0usize;
+        for id in ids {
+            let name = self.profile_name(id);
+            match citro_sync::delete(&self.home, id, true) {
+                Ok(p) => {
+                    gone += 1;
+                    self.events.info(
+                        Some(&p.profile_id),
+                        format!("deleted profile {} (for everybody it was shared with)", p.name),
+                    );
+                }
+                Err(citro_sync::Error::Core(citro_core::Error::ProfileNotFound(_))) => {}
+                Err(e) => {
+                    let msg = BackendError::from(e).to_string();
+                    self.events.error(Some(id), format!("could not delete {name}: {msg}"));
+                    return Err(BackendError::Other(format!("{name}: {msg}")));
+                }
+            }
+        }
+        self.hub.stale();
+        if gone == 0 && !ids.is_empty() {
+            return Err(BackendError::NotFound("none of the selected profiles exists any more".into()));
+        }
+        Ok(())
+    }
+
+    fn take_notices(&self) -> Vec<Notice> {
+        for o in citro_sync::take_finished() {
+            self.report_outcome(&o, true);
+        }
+        self.hub.take_notices()
+    }
+
+    fn shutdown(&self) -> Vec<String> {
+        self.quit()
     }
 
     // misc ----------------------------------------------------------------------------------------------------
@@ -896,13 +1030,19 @@ mod tests {
         let t = TmpHome::new("info");
         let i = t.backend().info();
         assert_eq!(i.kind, BackendKind::Local);
-        assert!(!i.caps.teams && i.caps.proxy_check && i.caps.group_edit);
+        assert!(i.caps.teams && i.caps.proxy_check && i.caps.group_edit);
         assert!(!i.caps.kernel_install, "the installer is a stub for now");
         assert_eq!(i.data_dir, t.0.root.display().to_string());
         let b = t.backend();
         assert!(!b.hub_status().connected);
-        assert!(matches!(b.connect_hub("https://h.example", "tok", "dev"), Err(BackendError::Unsupported(_))));
-        assert!(matches!(b.force_unlock("k1"), Err(BackendError::Unsupported(_))));
+        // no hub yet: nothing to list, nothing to pull, and a team action says what to do first
         assert!(b.teams().unwrap().is_empty());
+        assert!(b.take_notices().is_empty() && b.shutdown().is_empty());
+        assert!(b.pull_team().is_err() && b.force_unlock("k1").is_err());
+        let status = b.disconnect_hub().unwrap();
+        assert!(!status.connected, "logging out of nothing is not an error");
+        // a hub that is not there is refused in words, and the device stays unconnected
+        assert!(b.connect_hub("http://127.0.0.1:1", "tok", "dev", "").is_err());
+        assert!(!b.hub_status().connected);
     }
 }

@@ -6,7 +6,8 @@ use super::tasks::Msg;
 use super::widgets::{self, dim, mono, small_dim};
 use crate::backend::{Backend, group_label};
 use crate::timefmt::DateTime;
-use crate::{csv, util};
+use crate::util;
+use citro_core::csv;
 use eframe::egui::{self, Key, RadioButton, RichText, TextEdit, Ui};
 use std::path::Path;
 

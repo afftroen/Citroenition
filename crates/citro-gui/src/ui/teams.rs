@@ -17,8 +17,12 @@ use egui_extras::{Column, TableBuilder};
 #[derive(Default)]
 pub struct State {
     pub connecting: bool,
+    /// A pull or a disconnect is running.
+    pub working: bool,
     pub error: Option<String>,
     url: String,
+    /// Only needed when the account is in several teams.
+    team: String,
     token: String,
     device: String,
     seeded: bool,
@@ -105,13 +109,35 @@ impl CitroApp {
     fn teams_connected(&mut self, ui: &mut Ui) {
         let p = self.pal;
         let hub = self.hub.clone();
+        let (mut pull, mut disconnect) = (false, false);
         ui.horizontal(|ui| {
             ui.label(RichText::new("Teams").size(22.0).strong());
             ui.add_space(8.0);
             widgets::dot(ui, p.ok, true);
             ui.label(RichText::new("Connected").color(p.ok));
             ui.label(small_dim(&p, format!("{}  \u{b7}  {} on {}", hub.url, hub.user, hub.device_name)));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if widgets::button(ui, "Disconnect", !self.teams_ui.working).clicked() {
+                    disconnect = true;
+                }
+                if widgets::button(ui, "Pull now", !self.teams_ui.working)
+                    .on_hover_text("Fetch the team's newest profiles, remarks and groups")
+                    .clicked()
+                {
+                    pull = true;
+                }
+                if self.teams_ui.working {
+                    ui.add(egui::Spinner::new().size(16.0));
+                }
+            });
         });
+        if pull {
+            self.teams_ui.working = true;
+            self.tasks.spawn(true, |w| w.send(Msg::Pulled(w.backend.pull_team())));
+        }
+        if disconnect {
+            self.confirm_disconnect();
+        }
         ui.label(dim(&p, "Shared profiles, who may do what, and who has a profile open right now."));
         ui.add_space(10.0);
         let teams = self.teams.clone();
@@ -203,7 +229,7 @@ impl CitroApp {
             .rows
             .iter()
             .filter_map(|r| match &r.run {
-                RunState::Open { since, .. } => Some(Lock {
+                RunState::Open { since, .. } if r.team.is_some() => Some(Lock {
                     id: r.id().to_owned(),
                     name: r.profile.name.clone(),
                     holder: self.hub.user.clone(),
@@ -362,6 +388,13 @@ impl CitroApp {
                         ui.add_space(8.0);
                         widgets::field_label(ui, &p, "This device is called");
                         ui.add(TextEdit::singleline(&mut st.device).desired_width(f32::INFINITY));
+                        ui.add_space(8.0);
+                        widgets::field_label(ui, &p, "Team (only if you are in several)");
+                        ui.add(
+                            TextEdit::singleline(&mut st.team)
+                                .hint_text("leave empty for your only team")
+                                .desired_width(f32::INFINITY),
+                        );
                     });
                     if st.tried
                         && !busy
@@ -403,8 +436,11 @@ impl CitroApp {
         }
         st.connecting = true;
         st.error = None;
-        let (url, token, device) = (st.url.trim().to_owned(), st.token.clone(), st.device.trim().to_owned());
-        self.tasks.spawn(true, move |w| w.send(Msg::HubConnected(w.backend.connect_hub(&url, &token, &device))));
+        let (url, token, device, team) =
+            (st.url.trim().to_owned(), st.token.clone(), st.device.trim().to_owned(), st.team.trim().to_owned());
+        self.tasks.spawn(true, move |w| {
+            w.send(Msg::HubConnected(w.backend.connect_hub(&url, &token, &device, &team)));
+        });
     }
 }
 

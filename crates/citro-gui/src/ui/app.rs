@@ -96,6 +96,15 @@ impl Toast {
     }
 }
 
+/// Where the app is on its way out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quit {
+    Idle,
+    /// Team browsers are being closed and their data uploaded: the window stays until that is done.
+    Working,
+    Done,
+}
+
 /// What the UI is doing to a profile right now (the backend only knows open / closed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Busy {
@@ -136,6 +145,8 @@ pub struct CitroApp {
     pub rows_error: Option<String>,
     pub(super) rows_inflight: bool,
     pub(super) last_poll: Instant,
+    /// Quitting while team browsers are open waits for their data to reach the hub.
+    pub quit: Quit,
     pub(super) last_slow: Instant,
     pub groups: Vec<Group>,
     pub groups_version: u64,
@@ -197,6 +208,7 @@ impl CitroApp {
             rows_error: None,
             rows_inflight: false,
             last_poll: Instant::now(),
+            quit: Quit::Idle,
             last_slow: Instant::now(),
             groups: Vec::new(),
             groups_version: 0,
@@ -240,7 +252,13 @@ impl CitroApp {
             return;
         }
         self.rows_inflight = true;
-        self.tasks.spawn(false, |w| w.send(Msg::Rows(w.backend.list_profiles(&Query::default()))));
+        self.tasks.spawn(false, |w| {
+            w.send(Msg::Rows(w.backend.list_profiles(&Query::default())));
+            let notices = w.backend.take_notices();
+            if !notices.is_empty() {
+                w.send(Msg::Notices(notices));
+            }
+        });
     }
 
     pub fn refresh_groups(&mut self) {
@@ -505,9 +523,20 @@ impl eframe::App for CitroApp {
                 Page::Teams => self.teams_page(ui),
                 Page::Settings => self.settings_page(ui),
             });
+        self.guard_quit(&ctx);
         self.dialogs(&ctx);
         self.toasts_ui(&ctx);
         self.tick_shot(&ctx);
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // a safety net: whatever team browser is still supervised is closed and uploaded before the process ends
+        // (instant when there is none)
+        if self.quit != Quit::Done {
+            for line in self.backend.shutdown() {
+                self.backend.record(crate::backend::Level::Info, None, &format!("quit: {line}"));
+            }
+        }
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
