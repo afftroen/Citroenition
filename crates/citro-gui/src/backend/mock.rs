@@ -632,6 +632,48 @@ impl Backend for MockBackend {
         Ok(())
     }
 
+    fn probe(&self, p: &Profile) -> BResult<citro_core::probe::Probe> {
+        // the demo has no browser: stable made-up values per seed
+        self.nap(0.8);
+        let r = citro_core::fingerprint::Resolved::resolve(
+            &citro_core::fingerprint::Ident {
+                profile_id: &p.profile_id,
+                country: &p.country,
+                ip: &p.ip,
+                persona_os: &p.persona_os,
+            },
+            &p.fingerprint_config,
+        );
+        let h = r.seed.bytes().fold(0x811c9dc5u32, |a, b| (a ^ b as u32).wrapping_mul(0x01000193));
+        let hex = |k: u32| format!("{:08X}", h.rotate_left(k) ^ k);
+        let (w, hh) = r.screen.unwrap_or([(1920, 1080), (1536, 864), (2560, 1440), (1440, 900)][(h % 4) as usize]);
+        Ok(citro_core::probe::Probe {
+            user_agent: "Mozilla/5.0 (demo) Chrome/150.0.0.0 Safari/537.36".into(),
+            platform: match r.os {
+                citro_core::fingerprint::Os::Windows => "Win32",
+                citro_core::fingerprint::Os::Mac => "MacIntel",
+                citro_core::fingerprint::Os::Linux => "Linux x86_64",
+            }
+            .into(),
+            cores: r.hardware_concurrency.unwrap_or([4, 8, 12, 16][(h % 4) as usize]),
+            memory: r.device_memory.unwrap_or(8) as f64,
+            screen: (w, hh),
+            avail_screen: (w, hh - 40),
+            pixel_ratio: 1.0,
+            color_depth: 24,
+            languages: r.accept_lang.split(',').map(str::to_owned).collect(),
+            timezone: r.timezone.clone().unwrap_or_default(),
+            gpu_vendor: "Google Inc. (Intel)".into(),
+            gpu_renderer: "ANGLE (Intel, Intel(R) UHD Graphics 770, OpenGL 4.6)".into(),
+            canvas_hash: hex(3),
+            webgl_hash: hex(7),
+            audio_hash: hex(11),
+            rects_hash: hex(13),
+            voices: 3,
+            media_devices: (1, 1, 1),
+        })
+    }
+
     fn check_proxy(&self, proxy: &ProxyConfig) -> BResult<ProxyCheck> {
         let Some(hop) = proxy.hop() else {
             return Err(BackendError::Invalid("no proxy is configured (direct connection)".into()));

@@ -111,6 +111,19 @@ pub fn lock(home: &Home) -> Result<Locked> {
     Ok(Locked(f))
 }
 
+/// [`locked`], but `None` at once when another holder has the lock (a caller that may itself be inside [`locked`]
+/// must not wait for it).
+pub fn try_locked<T>(home: &Home, f: impl FnOnce(&mut Store) -> Result<T>) -> Option<Result<T>> {
+    fs::create_dir_all(&home.root).ok()?;
+    let file = OpenOptions::new().create(true).write(true).truncate(false).open(home.root.join("store.lock")).ok()?;
+    // SAFETY: plain flock(2) on an fd we own.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return None;
+    }
+    let _guard = Locked(file);
+    Some(Store::open(home).and_then(|mut s| f(&mut s)))
+}
+
 /// Run `f` on a freshly opened store while holding the store lock (the read-modify-write pattern).
 pub fn locked<T>(home: &Home, f: impl FnOnce(&mut Store) -> Result<T>) -> Result<T> {
     let _guard = lock(home)?;

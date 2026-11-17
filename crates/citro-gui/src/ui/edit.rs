@@ -17,6 +17,7 @@ use super::tasks::Msg;
 use crate::backend::{MASK, ProxyCheck, redact};
 use crate::proxy::{self, ProxyKind};
 use citro_core::fingerprint::{FingerprintConfig, Ident, Resolved};
+use citro_core::probe::Probe;
 use citro_core::profile::{Group, Profile, ProxyConfig};
 use eframe::egui::{self, Key};
 use serde_json::{Map, Value, json};
@@ -59,6 +60,10 @@ pub struct EditDialog {
     search_engine: String,
     cookie: String,
     cookie_stored: bool,
+    /// The stored cookies as shown in the field; saving them unchanged keeps the stored text.
+    cookie_shown: String,
+    cookies_reading: bool,
+    cookie_note: Option<Result<String, String>>,
     // proxy
     url: String,
     url_err: Option<String>,
@@ -119,6 +124,12 @@ pub struct EditDialog {
     current: usize,
     /// Editing Settings' defaults for new profiles, not a profile.
     pub template: bool,
+    /// What the browser really shows for the persona `probe_key` (read from the browser itself).
+    probe: Option<Result<Probe, String>>,
+    probe_key: String,
+    probing: bool,
+    /// A persona the form changed to, and when: it is read once the form has been still for a moment.
+    probe_wanted: Option<(String, std::time::Instant)>,
 }
 
 enum Do {
@@ -127,6 +138,7 @@ enum Do {
     Save,
     Check,
     CreateGroup(String),
+    ReadCookies,
 }
 
 fn fp_get(fp: &FingerprintConfig, key: &str) -> String {
@@ -172,6 +184,9 @@ impl EditDialog {
             search_engine: String::new(),
             cookie: String::new(),
             cookie_stored: false,
+            cookie_shown: String::new(),
+            cookies_reading: false,
+            cookie_note: None,
             url: String::new(),
             url_err: None,
             kind: ProxyKind::Direct,
@@ -220,6 +235,10 @@ impl EditDialog {
             jump: None,
             current: 0,
             template: false,
+            probe: None,
+            probe_key: String::new(),
+            probing: false,
+            probe_wanted: None,
         }
     }
 
@@ -229,6 +248,8 @@ impl EditDialog {
             self.loading = false;
             return;
         }
+        // the cookies are shown as they are (the user wants to read and copy them); the other secrets stay masked
+        let cookies = if p.cookie == MASK { None } else { Some(pretty_cookies(&p.cookie)) };
         let p = redact(p);
         self.id = p.profile_id.clone();
         self.serial = p.serial_number;
@@ -254,8 +275,15 @@ impl EditDialog {
         self.country = p.country.trim().to_ascii_lowercase();
         self.tabs = p.tabs.join("\n");
         self.bookmarks = citro_core::bookmarks::to_lines(&p.bookmarks);
-        self.cookie.clear();
         self.cookie_stored = !p.cookie.is_empty();
+        match cookies {
+            Some(text) => {
+                self.cookie = text.clone();
+                self.cookie_shown = text;
+            }
+            // only the mask so far: the full profile follows
+            None => (self.cookie, self.cookie_shown) = (String::new(), String::new()),
+        }
         self.domain = p.domain_name.clone();
         self.plat_user = p.username.clone();
         self.plat_pass.clear();
@@ -318,6 +346,53 @@ impl EditDialog {
         self.creating_group = false;
         self.new_group.clear();
         self.error = None;
+    }
+
+    pub fn probed(&mut self, key: &str, r: Result<Probe, String>) {
+        if key == self.probe_key {
+            self.probing = false;
+            self.probe = Some(r);
+        }
+    }
+
+    pub fn cookies_read(&mut self, r: Result<String, String>) {
+        self.cookies_reading = false;
+        match r {
+            Ok(text) => {
+                let n = text.lines().filter(|l| l.trim_start().starts_with('{')).count();
+                self.cookie = text;
+                self.touched = true;
+                self.cookie_note = Some(Ok(format!("Read {n} cookies from the open browser. Save to keep them.")));
+            }
+            Err(e) => self.cookie_note = Some(Err(e)),
+        }
+    }
+
+    /// The profile whose fingerprint the Overview shows: this form, unsaved. `None` for the defaults page.
+    fn probe_profile(&self) -> Option<(String, Profile)> {
+        if self.template {
+            return None;
+        }
+        let mut p = self.original.clone().unwrap_or_default();
+        p.profile_id = if self.id.is_empty() { "new-profile".to_owned() } else { self.id.clone() };
+        p.persona_os = self.os.clone();
+        p.country = self.country.clone();
+        p.fingerprint_config = self.fingerprint();
+        p.launch_args =
+            self.launch_args.lines().map(str::trim).filter(|l| l.starts_with("--")).map(str::to_owned).collect();
+        let mut key = self.resolved().switches().join("\n");
+        for a in &p.launch_args {
+            key.push('\n');
+            key.push_str(a);
+        }
+        Some((key, p))
+    }
+
+    /// The probe for the form as it is now, and whether it is still being read.
+    fn current_probe(&self) -> (Option<&Probe>, bool) {
+        let fresh = self.probe_profile().is_some_and(|(k, _)| k == self.probe_key);
+        let p = self.probe.as_ref().and_then(|r| r.as_ref().ok());
+        (p, self.probing || !fresh)
     }
 
     pub fn proxy_checked(&mut self, token: u64, r: Result<ProxyCheck, String>) {
@@ -614,12 +689,10 @@ impl EditDialog {
             .filter(|l| !l.is_empty())
             .map(|l| if l.contains("://") || l.starts_with("about:") { l.to_owned() } else { format!("https://{l}") })
             .collect();
-        p.cookie = if !self.cookie.trim().is_empty() {
-            self.cookie.trim().to_owned()
-        } else if self.cookie_stored {
-            MASK.to_owned()
+        p.cookie = if self.cookie_stored && self.cookie.trim() == self.cookie_shown.trim() {
+            MASK.to_owned() // unchanged: the backend keeps the stored text (and the browser is not sent it again)
         } else {
-            String::new()
+            self.cookie.trim().to_owned()
         };
         p.domain_name = self.domain.trim().to_owned();
         p.username = self.plat_user.trim().to_owned();
@@ -691,6 +764,8 @@ impl CitroApp {
                 }
                 d.group = self.profiles.query.group.clone().unwrap_or_else(|| "0".to_owned());
                 d.focus_name = true;
+                // its own seed from the start, so the Overview can show the machine it will be
+                d.new_fingerprint();
             }
         }
         self.edit = Some(d);
@@ -707,6 +782,31 @@ impl CitroApp {
         // Esc leaves only an untouched form: a long page of settings must not vanish on a stray key
         if !d.saving && esc && !d.touched && !ui.ctx().egui_wants_keyboard_input() {
             act = Do::Cancel;
+        }
+        // read the fingerprint from the browser once the form has been still for a moment
+        if let Some((key, profile)) = d.probe_profile()
+            && key != d.probe_key
+        {
+            let now = std::time::Instant::now();
+            match &d.probe_wanted {
+                Some((k, since)) if *k == key => {
+                    if now.duration_since(*since) >= std::time::Duration::from_millis(600) && !d.loading {
+                        d.probe_wanted = None;
+                        d.probe_key = key.clone();
+                        d.probing = true;
+                        self.tasks.spawn(false, move |w| {
+                            let result = w.backend.probe(&profile);
+                            w.send(Msg::Probed { key, result });
+                        });
+                    } else {
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(150));
+                    }
+                }
+                _ => {
+                    d.probe_wanted = Some((key, now));
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(150));
+                }
+            }
         }
         match act {
             Do::Cancel => return,
@@ -747,6 +847,15 @@ impl CitroApp {
                     w.send(Msg::ProxyChecked { token, result: w.backend.check_proxy(&cfg) });
                 });
             }
+            Do::ReadCookies => {
+                d.cookies_reading = true;
+                d.cookie_note = None;
+                let id = d.id.clone();
+                self.tasks.spawn(true, move |w| {
+                    let result = w.backend.live_cookies(&id);
+                    w.send(Msg::LiveCookies { id, result });
+                });
+            }
             Do::CreateGroup(name) => {
                 let g = Group { group_name: name, ..Default::default() };
                 self.tasks.spawn(true, move |w| w.send(Msg::GroupCreated(w.backend.save_group(g))));
@@ -754,6 +863,17 @@ impl CitroApp {
             Do::Nothing => {}
         }
         self.edit = Some(d);
+    }
+}
+
+/// Cookie text for reading: a JSON array gets one cookie per line; anything else is shown as it is.
+fn pretty_cookies(text: &str) -> String {
+    let t = text.trim();
+    match serde_json::from_str::<Vec<Value>>(t) {
+        Ok(list) if !list.is_empty() => {
+            format!("[\n{}\n]", list.iter().map(Value::to_string).collect::<Vec<_>>().join(",\n"))
+        }
+        _ => t.to_owned(),
     }
 }
 
@@ -880,7 +1000,8 @@ mod tests {
         d.fill(&src);
         assert_eq!((d.tz_mode, d.timezone.as_str()), (Follow::Custom, "Asia/Tokyo"));
         assert_eq!((d.screen_mode, d.gl_mode, d.canvas), (Hw::Custom, Hw::Real, false));
-        assert!(d.cookie_stored && d.plat_pass_stored && d.cookie.is_empty());
+        // the cookies are shown; the platform password is not
+        assert!(d.cookie_stored && d.plat_pass_stored && d.cookie.contains("\"name\":\"a\""));
         let out = d.build().unwrap();
         let fp = &out.fingerprint_config;
         for k in ["automatic_timezone", "timezone", "screen_resolution", "webgl", "canvas", "seed", "flash"] {
@@ -889,6 +1010,25 @@ mod tests {
         assert_eq!(fp.list("language"), ["ja-JP"]);
         // secrets go back as the mask, which the backend swaps for the stored value
         assert_eq!((out.cookie.as_str(), out.password.as_str()), (MASK, MASK));
+    }
+
+    #[test]
+    fn cookies_are_shown_and_go_back_as_the_mask_unless_changed() {
+        let src = Profile {
+            name: "c".into(),
+            cookie: "[{\"name\":\"a\",\"value\":\"1\"},{\"name\":\"b\"}]".into(),
+            ..Default::default()
+        };
+        let mut d = EditDialog::blank();
+        d.fill(&src);
+        assert_eq!(d.cookie.lines().count(), 4, "one cookie per line: {}", d.cookie);
+        assert_eq!(d.build().unwrap().cookie, MASK);
+        d.cookie.push('\n');
+        assert_eq!(d.build().unwrap().cookie, MASK, "whitespace is no change");
+        d.cookie = "x=1".into();
+        assert_eq!(d.build().unwrap().cookie, "x=1");
+        d.cookie.clear();
+        assert_eq!(d.build().unwrap().cookie, "", "emptying the field deletes them");
     }
 
     #[test]

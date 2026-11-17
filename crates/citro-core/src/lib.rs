@@ -19,6 +19,7 @@ pub mod kernel;
 pub mod kernel_env;
 pub mod launch;
 pub mod locale;
+pub mod probe;
 pub mod profile;
 pub mod redact;
 pub mod relay;

@@ -383,7 +383,7 @@ impl EditDialog {
             );
         });
         if !self.template {
-            ch |= self.account_rows(ui, p);
+            ch |= self.account_rows(ui, p, act);
         }
         ch
     }
@@ -443,37 +443,63 @@ impl EditDialog {
     }
 
     /// Cookie and remark (not part of the defaults).
-    fn account_rows(&mut self, ui: &mut Ui, p: &Palette) -> bool {
+    fn account_rows(&mut self, ui: &mut Ui, p: &Palette, act: &mut Do) -> bool {
         let mut ch = false;
+        let existing = !self.id.is_empty();
         form_row(ui, p, "Cookie", |ui| {
-            let hint_text = if self.cookie_stored {
-                "Saved. Paste new cookies here to replace them."
-            } else {
-                "Paste cookies: JSON (Cookie-Editor, EditThisCookie), Netscape cookies.txt or name=value"
-            };
             let r = ui.add(
                 TextEdit::multiline(&mut self.cookie)
                     .font(egui::TextStyle::Monospace)
-                    .hint_text(hint_text)
+                    .hint_text(
+                        "Paste cookies: JSON (Cookie-Editor, EditThisCookie), Netscape cookies.txt or name=value",
+                    )
                     .margin(Margin::symmetric(10, 8))
-                    .desired_rows(3)
+                    .desired_rows(6)
                     .desired_width(f32::INFINITY),
             );
             ch |= r.changed();
-            if self.cookie_stored && self.cookie.trim().is_empty() {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("\u{2713} Cookies saved").color(p.ok).size(12.5));
-                    if ui.small_button("Clear").on_hover_text("Forget the saved cookies").clicked() {
-                        self.cookie_stored = false;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let n = self.cookie.lines().filter(|l| l.trim_start().starts_with('{')).count();
+                if n > 0 {
+                    ui.label(small_dim(p, format!("{n} cookies")));
+                }
+                if existing
+                    && ui
+                        .add_enabled(!self.cookies_reading, egui::Button::new("Read from the open browser").small())
+                        .on_hover_text(
+                            "Puts the cookies the profile's browser holds right now in this field (the profile must be open)",
+                        )
+                        .clicked()
+                {
+                    *act = Do::ReadCookies;
+                }
+                if self.cookies_reading {
+                    ui.add(egui::Spinner::new().size(12.0));
+                }
+                if !self.cookie.trim().is_empty() {
+                    if ui.small_button("Copy").clicked() {
+                        ui.ctx().copy_text(self.cookie.clone());
+                    }
+                    if ui.small_button("Clear").on_hover_text("Delete the cookies when you save").clicked() {
+                        self.cookie.clear();
                         ch = true;
                     }
-                });
+                }
+            });
+            match &self.cookie_note {
+                Some(Ok(m)) => {
+                    ui.label(RichText::new(m).color(p.ok).size(12.5));
+                }
+                Some(Err(e)) => error_line(ui, p, e),
+                None => {}
             }
             hint(
                 ui,
                 p,
-                "Imported into the browser the next time it opens (and again only after you change them here), so \
-                 sites can keep renewing them. A name=value list uses the platform's site.",
+                "The cookies of this profile. When Citroenition closes the browser (or you close its window) the \
+                 browser's current cookies are saved here. Cookies you paste or change go into the browser the next \
+                 time it opens. A name=value list uses the platform's site.",
             );
         });
         form_row(ui, p, "Remark", |ui| {
@@ -693,6 +719,38 @@ impl EditDialog {
 
     fn fingerprint_block(&mut self, ui: &mut Ui, p: &Palette) -> bool {
         let mut ch = false;
+        let (probe, reading) = self.current_probe();
+        let probe = probe.cloned();
+        if !self.template {
+            form_row(ui, p, "", |ui| {
+                Frame::NONE
+                    .fill(p.raised)
+                    .corner_radius(CornerRadius::same(10))
+                    .inner_margin(Margin::symmetric(14, 10))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.add(
+                            egui::Label::new(dim(
+                                p,
+                                "\u{201c}Based on seed\u{201d}: the value comes from this profile's seed, a code that \
+                                 stands for one made-up computer. The same seed always gives the same values, so the \
+                                 profile looks like the same machine every time and its values never contradict each \
+                                 other. What each setting gives right now is shown next to it and in the Overview, \
+                                 read from the browser itself.",
+                            ))
+                            .wrap(),
+                        );
+                    });
+            });
+        }
+        let seen = |f: &dyn Fn(&citro_core::probe::Probe) -> String| -> Option<String> { probe.as_ref().map(f) };
+        let measured = |ui: &mut Ui, text: Option<String>| {
+            if let Some(t) = text {
+                ui.label(RichText::new(format!("This profile: {t}")).color(p.accent_hover).size(12.5));
+            } else if reading {
+                ui.label(small_dim(p, "Reading from the browser\u{2026}"));
+            }
+        };
         let (zones, langs) = zones_and_languages();
         form_row(ui, p, "WebRTC", |ui| {
             ch |= widgets::segmented(ui, p, &mut self.webrtc, &WEBRTC.map(|(v, l)| (v.to_owned(), l)));
@@ -780,6 +838,16 @@ impl EditDialog {
             );
             if self.screen_mode == Hw::Custom {
                 ch |= with_presets(ui, "edit-screen", &mut self.screen, "1920 x 1080", &SCREENS);
+            } else {
+                measured(
+                    ui,
+                    seen(&|x| {
+                        format!(
+                            "{} x {} (available {} x {})",
+                            x.screen.0, x.screen.1, x.avail_screen.0, x.avail_screen.1
+                        )
+                    }),
+                );
             }
         });
         form_row(ui, p, "Hardware noise", |ui| {
@@ -791,8 +859,19 @@ impl EditDialog {
             hint(
                 ui,
                 p,
-                "AudioContext, ClientRects, media devices and speech voices always come from the seed, so they \
-                 cannot contradict each other. WebGL image noise is only turned off together with canvas.",
+                "Noise changes the canvas, WebGL, audio and text-size readings a little, the same way every time for \
+                 this seed, so sites cannot match this profile with others. AudioContext, ClientRects, media devices \
+                 and speech voices always come from the seed. WebGL image noise is only turned off together with \
+                 canvas.",
+            );
+            measured(
+                ui,
+                seen(&|x| {
+                    format!(
+                        "canvas {} \u{b7} WebGL {} \u{b7} audio {} \u{b7} rects {}",
+                        x.canvas_hash, x.webgl_hash, x.audio_hash, x.rects_hash
+                    )
+                }),
             );
         });
         form_row(ui, p, "WebGL metadata", |ui| {
@@ -831,14 +910,18 @@ impl EditDialog {
                 );
             } else if self.gl_mode == Hw::Real {
                 hint(ui, p, "This computer's own GPU: names, limits and pixels alike.");
+            } else {
+                measured(ui, seen(&|x| format!("{}\n{}", x.gpu_vendor, x.gpu_renderer)));
             }
         });
         form_row(ui, p, "CPU cores", |ui| {
-            ch |= hw_combo(ui, "edit-cpu", &mut self.cpu, &CPUS, "cores");
+            let now = seen(&|x| format!("{} cores", x.cores));
+            ch |= hw_combo(ui, "edit-cpu", &mut self.cpu, &CPUS, "cores", now);
         });
         form_row(ui, p, "Memory", |ui| {
-            ch |= hw_combo(ui, "edit-ram", &mut self.ram, &RAMS, "GB");
-            hint(ui, p, "Chrome never reports more than 8 GB.");
+            let now = seen(&|x| format!("{} GB", x.memory));
+            ch |= hw_combo(ui, "edit-ram", &mut self.ram, &RAMS, "GB", now);
+            hint(ui, p, "What sites read as navigator.deviceMemory.");
         });
         if !self.template {
             form_row(ui, p, "Fingerprint seed", |ui| {
@@ -906,17 +989,38 @@ impl EditDialog {
 
     fn overview(&self, ui: &mut Ui, p: &Palette, kernel: Option<&str>) {
         let r = self.resolved();
+        let (probe, reading) = self.current_probe();
+        let failed = match &self.probe {
+            Some(Err(e)) if !reading => Some(e.clone()),
+            _ => None,
+        };
+        let pr = |f: &dyn Fn(&citro_core::probe::Probe) -> String, otherwise: &str| -> String {
+            probe.map_or_else(|| otherwise.to_owned(), f)
+        };
+        let noise = |on: bool, f: &dyn Fn(&citro_core::probe::Probe) -> String| -> String {
+            if on { probe.map_or("Noise".to_owned(), |x| format!("Noise [{}]", f(x))) } else { "Real".to_owned() }
+        };
         let os = match r.os {
             Os::Windows => "Windows",
             Os::Mac => "macOS",
             Os::Linux => "Linux",
         };
         let brand = BRANDS.iter().find(|b| b.0 == r.brand).map_or("Chrome", |b| b.1);
-        let seed_or = |v: Option<String>| v.unwrap_or_else(|| "Based on seed".to_owned());
+        let seed_or = |v: Option<String>, f: &dyn Fn(&citro_core::probe::Probe) -> String| {
+            v.unwrap_or_else(|| pr(f, "Based on seed"))
+        };
         let rows: Vec<(&str, String)> = vec![
             ("Browser", format!("{brand} \u{b7} Clearcote {}", kernel.unwrap_or("(not installed)"))),
             ("OS", os.to_owned()),
-            ("User-Agent", if self.ua.trim().is_empty() { "Automatic".to_owned() } else { self.ua.trim().to_owned() }),
+            (
+                "User-Agent",
+                if self.ua.trim().is_empty() {
+                    pr(&|x| x.user_agent.clone(), "Automatic")
+                } else {
+                    self.ua.trim().to_owned()
+                },
+            ),
+            ("Platform", pr(&|x| x.platform.clone(), "Based on OS")),
             (
                 "Proxy",
                 match self.kind {
@@ -936,21 +1040,37 @@ impl EditDialog {
             ("Location", r.location.map_or("Not set".to_owned(), |(la, lo)| format!("{la:.4}, {lo:.4}"))),
             ("Language", r.accept_lang.clone()),
             ("Display language", r.ui_locale.clone().unwrap_or_else(|| "Default".to_owned())),
-            ("Screen", seed_or(r.screen.map(|(w, h)| format!("{w} x {h}")))),
-            ("Canvas", if r.noise == Noise::On { "Noise" } else { "Real" }.to_owned()),
-            ("WebGL image", if r.noise == Noise::AllOff { "Real" } else { "Noise" }.to_owned()),
-            ("AudioContext", "Noise (seed)".to_owned()),
-            ("ClientRects", "Noise (seed)".to_owned()),
+            (
+                "Screen",
+                seed_or(r.screen.map(|(w, h)| format!("{w} x {h}")), &|x| format!("{} x {}", x.screen.0, x.screen.1)),
+            ),
+            ("Canvas", noise(r.noise == Noise::On, &|x| x.canvas_hash.clone())),
+            ("WebGL image", noise(r.noise != Noise::AllOff, &|x| x.webgl_hash.clone())),
+            ("AudioContext", noise(true, &|x| x.audio_hash.clone())),
+            ("ClientRects", noise(true, &|x| x.rects_hash.clone())),
+            ("Speech voices", pr(&|x| format!("{} voices", x.voices), "Based on seed")),
+            (
+                "Media devices",
+                pr(
+                    &|x| {
+                        format!(
+                            "{} mic, {} speaker, {} camera",
+                            x.media_devices.0, x.media_devices.1, x.media_devices.2
+                        )
+                    },
+                    "Based on seed",
+                ),
+            ),
             (
                 "WebGL metadata",
                 match &r.gpu {
-                    Gpu::Persona => "Based on seed".to_owned(),
+                    Gpu::Persona => pr(&|x| format!("{}\n{}", x.gpu_vendor, x.gpu_renderer), "Based on seed"),
                     Gpu::Real => "This computer's GPU".to_owned(),
                     Gpu::Custom(v, rd) => format!("{v}\n{rd}"),
                 },
             ),
-            ("CPU", seed_or(r.hardware_concurrency.map(|v| format!("{v} cores")))),
-            ("Memory", seed_or(r.device_memory.map(|v| format!("{v} GB")))),
+            ("CPU", seed_or(r.hardware_concurrency.map(|v| format!("{v} cores")), &|x| format!("{} cores", x.cores))),
+            ("Memory", seed_or(r.device_memory.map(|v| format!("{v} GB")), &|x| format!("{} GB", x.memory))),
             (
                 "Seed",
                 if self.id.is_empty() && self.custom_seed.trim().is_empty() {
@@ -969,7 +1089,24 @@ impl EditDialog {
                 ui.set_width(ui.available_width());
                 ui.label(semibold("Overview", 16.0));
                 ui.add_space(2.0);
-                ui.label(small_dim(p, "What sites will see, computed live from this form."));
+                ui.horizontal(|ui| {
+                    if self.template {
+                        ui.label(small_dim(p, "What sites will see, computed live from this form."));
+                    } else if reading {
+                        ui.add(egui::Spinner::new().size(11.0));
+                        ui.label(small_dim(p, "Reading from the browser\u{2026}"));
+                    } else {
+                        ui.label(small_dim(p, "What sites will see, read from the browser itself."));
+                    }
+                });
+                if let Some(e) = &failed {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("Could not read the browser: {e}")).color(p.warn).size(12.0),
+                        )
+                        .wrap(),
+                    );
+                }
                 ui.add_space(10.0);
                 ui.spacing_mut().item_spacing.y = 9.0;
                 for (k, v) in rows {
@@ -994,9 +1131,13 @@ impl EditDialog {
 }
 
 /// "Based on seed" or a fixed number from a short list.
-fn hw_combo(ui: &mut Ui, id: &str, value: &mut String, choices: &[&str], unit: &str) -> bool {
+fn hw_combo(ui: &mut Ui, id: &str, value: &mut String, choices: &[&str], unit: &str, now: Option<String>) -> bool {
     let mut ch = false;
-    let shown = if value.is_empty() { "Based on seed".to_owned() } else { format!("{value} {unit}") };
+    let shown = match (value.is_empty(), now) {
+        (true, Some(n)) => format!("Based on seed ({n})"),
+        (true, None) => "Based on seed".to_owned(),
+        _ => format!("{value} {unit}"),
+    };
     ComboBox::from_id_salt(id).width(240.0).icon(widgets::chevron_icon).selected_text(shown).show_ui(ui, |ui| {
         ch |= ui.selectable_value(value, String::new(), "Based on seed").changed();
         for c in choices {

@@ -51,6 +51,8 @@ enum Cmd {
     },
     /// Show a profile (secrets hidden)
     Show { profile: String },
+    /// Start the browser hidden with the profile's fingerprint and print what sites see (CPU, screen, GPU, noise)
+    Fingerprint { profile: String },
     /// Export profiles as a CSV file every spreadsheet opens (never contains passwords, cookies or proxy passwords)
     Export {
         /// Write to FILE instead of standard output
@@ -755,6 +757,12 @@ fn run(cli: Cli) -> Result<()> {
             v["hub"] = json!(home.hub_bound(&p.profile_id));
             v["running"] = launch::running(&home, &p.profile_id).map_or(Value::Null, |r| api::endpoints(&r));
             println!("{}", serde_json::to_string_pretty(&v)?);
+        }
+        Cmd::Fingerprint { profile } => {
+            let p = Store::open(&home)?.get(&profile)?.clone();
+            let kernel = Kernel::discover(&home, cli.kernel.as_deref())?;
+            let r = citro_core::probe::probe(&home, &kernel, &p)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
         }
         Cmd::Edit { profile, name, set } => {
             // validated on a copy (a bad flag leaves the stored profile untouched); a profile of the team hub is

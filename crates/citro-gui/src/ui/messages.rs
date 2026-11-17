@@ -126,6 +126,22 @@ impl CitroApp {
                     }
                 }
             }
+            Msg::Probed { key, result } => {
+                if let Some(d) = &mut self.edit {
+                    d.probed(&key, result.map_err(|e| e.to_string()));
+                }
+            }
+            Msg::LiveCookies { id, result } => {
+                if let Some(d) = self.edit.as_mut().filter(|d| d.id == id) {
+                    match result {
+                        Ok(text) if text.is_empty() => {
+                            d.cookies_read(Err("The browser has no cookies yet.".into()));
+                        }
+                        r => d.cookies_read(r.map_err(|e| e.to_string())),
+                    }
+                }
+            }
+            Msg::RowProxyChecked { id, result } => self.row_proxy_checked(id, result),
             Msg::ProxyChecked { token, result } => {
                 if let Some(d) = &mut self.edit {
                     d.proxy_checked(token, result.map_err(|e| e.to_string()));

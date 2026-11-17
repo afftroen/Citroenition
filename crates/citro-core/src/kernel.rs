@@ -124,8 +124,22 @@ impl Kernel {
     /// NUL-terminated string literals in the binary, so a NUL-delimited search is an exact capability probe
     /// (`proxy-auth` does not match the `proxy-authenticate` header name). Any failure answers `false`.
     pub fn supports_switch(&self, name: &str) -> bool {
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        // the engine is hundreds of megabytes: look each name up once per engine file (and its modification time)
+        type Seen = HashMap<(PathBuf, Option<std::time::SystemTime>, String), bool>;
+        static SEEN: Mutex<Option<Seen>> = Mutex::new(None);
+        let image = self.engine_image();
+        let key = (image.clone(), std::fs::metadata(&image).and_then(|m| m.modified()).ok(), name.to_owned());
+        if let Some(&hit) = SEEN.lock().ok().and_then(|m| m.as_ref().and_then(|m| m.get(&key).copied())).as_ref() {
+            return hit;
+        }
         let needle = [&[0u8][..], name.as_bytes(), &[0u8][..]].concat();
-        file_contains(&self.engine_image(), &needle, 8 << 20).unwrap_or(false)
+        let found = file_contains(&image, &needle, 8 << 20).unwrap_or(false);
+        if let Ok(mut m) = SEEN.lock() {
+            m.get_or_insert_with(HashMap::new).insert(key, found);
+        }
+        found
     }
 
     /// The file that holds the engine's code, where switch names are looked up: the executable itself, except in a

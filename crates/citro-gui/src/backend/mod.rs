@@ -490,6 +490,17 @@ pub trait Backend: Send + Sync {
         Err(BackendError::Unsupported("importing profiles".into()))
     }
 
+    /// What the profile's browser really shows (read from the browser itself; cached per persona). `p` may be an
+    /// unsaved form.
+    fn probe(&self, _p: &Profile) -> BResult<citro_core::probe::Probe> {
+        Err(BackendError::Unsupported("reading the fingerprint".into()))
+    }
+
+    /// The cookies of an open profile's browser, as JSON (one cookie per line).
+    fn live_cookies(&self, _id: &str) -> BResult<String> {
+        Err(BackendError::Unsupported("reading cookies".into()))
+    }
+
     /// Move all data to `to` (a new or empty folder) and use it from now on; refused while a browser runs.
     fn move_data(&self, _to: &str) -> BResult<()> {
         Err(BackendError::Unsupported("moving the data folder".into()))

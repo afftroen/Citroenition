@@ -1,7 +1,22 @@
 # Changelog
 
-## Unreleased
+## 0.1.8 (2026-11-17)
 
+* **Closing a browser window closes the browser.** On macOS, the red close button left the browser running in the Dock
+  (still "open", cookies and tabs not written out). Citroenition now quits the browser when its last window closes;
+  the tabs that were open come back the next time the profile opens.
+* **The Cookie field shows the cookies.** When Citroenition closes a browser (or you close its window) the browser's
+  current cookies are saved into the profile, one cookie per line, ready to read, copy or change. "Read from the open
+  browser" fetches them while the profile is open. Unchanged cookies are not pushed into the browser again.
+* **Real fingerprint values.** Every "Based on seed" setting now shows what it gives: the Overview and the form read
+  screen, CPU cores, memory, GPU, platform, user agent, speech voices, media devices and the canvas / WebGL / audio /
+  ClientRects noise from the browser itself (started hidden for a moment, then cached). `citro fingerprint <profile>`
+  prints the same. A new profile gets its own seed at once; a duplicated profile gets a new one.
+* **Profile list**: click the IP to change the proxy, check it (green or red mark, exit IP and country saved) or remove
+  it; "Check proxy" in the right-click menu checks many at once. Click a remark to read, select, copy or edit it.
+  Columns can be resized by dragging their edges, and the list no longer scrolls sideways, so the tick boxes and
+  Open stay in view.
+* Launches are faster: the kernel's switches are looked up once instead of on every launch.
 * **`deploy/install-hub.sh` and `deploy/expose-hub.sh`** put the team hub on an Ubuntu server: a `citro-hub` system user
   with no login, its data in `/var/lib/citro-hub` (`0700`), the checksum-verified release program owned by root, a
   sandboxed systemd service on `127.0.0.1:8470`, and then HTTPS through the server's nginx and certbot. Re-running the

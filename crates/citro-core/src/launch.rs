@@ -316,7 +316,21 @@ pub fn prepare(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) 
     {
         wanted.push(d);
     }
-    let mut urls: Vec<String> = if opts.last_opened_tabs && data_dir.join("Default/Sessions").is_dir() {
+    let reopen: Vec<String> = fs::read(home.profile_dir(id).join(REOPEN_TABS))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    let mut urls: Vec<String> = if opts.last_opened_tabs && !reopen.is_empty() {
+        // the window was closed (not quit): its session is empty, so the tabs Citroenition saw come back instead
+        let before = opened_start_urls(home, id);
+        let mut u = reopen;
+        for w in wanted.iter().filter(|u| !before.contains(u)) {
+            if !u.contains(w) {
+                u.push(w.clone());
+            }
+        }
+        u
+    } else if opts.last_opened_tabs && data_dir.join("Default/Sessions").is_dir() {
         // the last session comes back; a start page that is new or was changed since opens next to it
         args.push("--restore-last-session".into());
         let before = opened_start_urls(home, id);
@@ -331,7 +345,7 @@ pub fn prepare(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) 
     Ok(Prepared { args, env, data_dir, relay, start_urls: wanted, later_tabs })
 }
 
-fn read_devtools_port(data_dir: &Path) -> Option<(u16, String)> {
+pub(crate) fn read_devtools_port(data_dir: &Path) -> Option<(u16, String)> {
     let text = fs::read_to_string(data_dir.join("DevToolsActivePort")).ok()?;
     let mut lines = text.lines();
     let port: u16 = lines.next()?.trim().parse().ok()?;
@@ -339,7 +353,7 @@ fn read_devtools_port(data_dir: &Path) -> Option<(u16, String)> {
     (port != 0 && path.starts_with('/')).then(|| (port, path.to_owned()))
 }
 
-fn listening(port: u16) -> bool {
+pub(crate) fn listening(port: u16) -> bool {
     TcpStream::connect_timeout(&SocketAddr::from((Ipv4Addr::LOCALHOST, port)), Duration::from_millis(500)).is_ok()
 }
 
@@ -355,7 +369,7 @@ fn tail(path: &Path, max: u64) -> String {
     String::from_utf8_lossy(&buf).trim().to_owned()
 }
 
-fn signal(pid: i32, sig: i32) {
+pub(crate) fn signal(pid: i32, sig: i32) {
     // SAFETY: kill(2) takes plain integers; a stale pid at worst yields ESRCH.
     let _ = unsafe { libc::kill(pid, sig) };
 }
@@ -713,6 +727,7 @@ pub fn start(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) ->
     fs::create_dir_all(home.run_dir())?;
     write_private(&home.run_file(&r.profile_id), &serde_json::to_vec_pretty(&r)?)?;
     let _ = fs::write(pdir.join("start-urls.json"), serde_json::to_vec(&prep.start_urls)?);
+    let _ = fs::remove_file(pdir.join(REOPEN_TABS));
     if !prep.later_tabs.is_empty()
         && let Ok(mut cdp) = crate::cdp::Cdp::connect(&r.ws)
     {
@@ -721,6 +736,12 @@ pub fn start(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) ->
         }
     }
     import_cookies(&pdir, &log_path, p, &prep.start_urls, &r.ws);
+
+    // macOS keeps an app running after its last window closes; a profile browser must not linger like that
+    // (still "open", cookies and session not written out). When every window is gone, save the cookies and quit.
+    if !opts.headless {
+        watch_windows(home.clone(), r.profile_id.clone(), r.ws.clone(), pid);
+    }
 
     // Reap the child when it exits (no zombies in a long-lived server) and drop our run record, unless a
     // newer launch has already replaced it.
@@ -736,6 +757,59 @@ pub fn start(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) ->
         }
     });
     Ok(r)
+}
+
+/// The tabs that were open when the user closed the last window; the next launch opens them.
+const REOPEN_TABS: &str = "reopen-tabs.json";
+
+/// Quit the browser `pid` once it has no window left: poll its page targets, and when none is left for two
+/// looks in a row (after it had one), save the cookies and close it the way Chrome's own Quit does
+/// (`Browser.close`), which writes the cookies and the session to disk.
+fn watch_windows(home: Home, id: String, ws: String, pid: u32) {
+    let _ = std::thread::Builder::new().name(format!("windows-{pid}")).spawn(move || {
+        let Ok(mut cdp) = crate::cdp::Cdp::connect(&ws) else { return };
+        let (mut seen, mut empty, mut polls) = (false, 0, 0u32);
+        // without a page the browser no longer hands out its cookies, so a recent copy is kept while it has one
+        let mut last = String::new();
+        // and the tabs: a window closed tab by tab or with its close button leaves an empty session behind
+        let mut tabs: Vec<String> = Vec::new();
+        loop {
+            polls += 1;
+            std::thread::sleep(Duration::from_millis(700));
+            let Ok(r) = cdp.call("Target.getTargets", serde_json::json!({})) else { return }; // it is gone
+            let pages = r["targetInfos"].as_array().map_or(0, |t| t.iter().filter(|t| t["type"] == "page").count());
+            if pages > 0 {
+                (seen, empty) = (true, 0);
+                tabs = r["targetInfos"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|t| t["type"] == "page")
+                    .filter_map(|t| t["url"].as_str())
+                    .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
+                    .map(str::to_owned)
+                    .collect();
+                if polls % 3 == 1
+                    && let Ok(t) = crate::cookies::export_live(&ws)
+                {
+                    last = t;
+                }
+                continue;
+            }
+            empty += 1;
+            if seen && empty >= 2 {
+                keep_cookies(&home, &id, &last);
+                if !tabs.is_empty() {
+                    let _ = fs::write(
+                        home.profile_dir(&id).join(REOPEN_TABS),
+                        serde_json::to_vec(&tabs).unwrap_or_default(),
+                    );
+                }
+                let _ = cdp.call("Browser.close", serde_json::json!({}));
+                return;
+            }
+        }
+    });
 }
 
 /// Put the profile's `cookie` field into the browser, once per change of the field (a digest in `cookies-imported`
@@ -771,6 +845,45 @@ fn import_cookies(pdir: &Path, log_path: &Path, p: &Profile, start_urls: &[Strin
 /// Close the profile: SIGTERM so Chromium shuts down cleanly (cookies and session are flushed), then
 /// SIGKILL for the whole process group if it lingers. `Ok(false)` = it was not running.
 pub fn stop(home: &Home, id: &str) -> Result<bool> {
+    if let Some(r) = running(home, id) {
+        save_cookies(home, id, &r.ws);
+    }
+    stop_quietly(home, id)
+}
+
+/// Keep what the browser holds now in the profile's `cookie` field, so the editor shows the real cookies and an
+/// export carries them. The import marker is set to the same text: the browser already has these cookies, so the
+/// next launch does not put them back over newer ones. Team profiles (the hub keeps their data) and a store
+/// someone else is writing are left alone.
+pub fn save_cookies(home: &Home, id: &str, ws: &str) {
+    if home.hub_bound(id) {
+        return;
+    }
+    if let Ok(text) = crate::cookies::export_live(ws) {
+        keep_cookies(home, id, &text);
+    }
+}
+
+/// Store cookie text read from the browser (see [`save_cookies`]).
+fn keep_cookies(home: &Home, id: &str, text: &str) {
+    use sha2::Digest;
+    if text.is_empty() || home.hub_bound(id) {
+        return;
+    }
+    let saved = crate::store::try_locked(home, |s| {
+        let same = s.get(id).is_ok_and(|p| crate::cookies::same(&p.cookie, text));
+        if !same {
+            s.update(id, |p| p.cookie = text.to_owned())?;
+        }
+        Ok(())
+    });
+    if matches!(saved, Some(Ok(()))) {
+        let digest = format!("{:x}", sha2::Sha256::digest(text.trim().as_bytes()));
+        let _ = fs::write(home.profile_dir(id).join("cookies-imported"), digest);
+    }
+}
+
+fn stop_quietly(home: &Home, id: &str) -> Result<bool> {
     let Some(r) = running(home, id) else { return Ok(false) };
     let data_dir = data_dir_of(home, id);
     let pid = r.pid as i32;
@@ -791,7 +904,7 @@ pub fn stop(home: &Home, id: &str) -> Result<bool> {
 
 /// Stop the browser (if running) and delete the profile's data directory.
 pub fn purge(home: &Home, id: &str) -> Result<()> {
-    stop(home, id)?;
+    stop_quietly(home, id)?;
     match fs::remove_dir_all(home.profile_dir(id)) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
         _ => Ok(()),

@@ -4,13 +4,14 @@ use super::app::{Busy, CitroApp, Page, ToastKind};
 use super::dialogs::{MoveDialog, RemarkDialog};
 use super::theme::{self, Palette};
 use super::widgets::{self, Icon, Pill, dim, small_dim};
-use crate::backend::{Query, Row, RunState, SortKey, StatusFilter, group_label};
+use crate::backend::{ProxyCheck, Query, Row, RunState, SortKey, StatusFilter, group_label};
 use crate::selection::{Mods, Selection};
 use crate::ui::tasks::Refresh;
 use crate::{countries, query, timefmt};
+use citro_core::profile::ProxyConfig;
 use eframe::egui::{
     self, Align, Align2, Button, Color32, ComboBox, CursorIcon, FontFamily, FontId, Key, Layout, Modifiers, Popup,
-    Response, RichText, Sense, TextStyle, Ui, pos2, vec2,
+    PopupCloseBehavior, Response, RichText, Sense, TextStyle, Ui, pos2, vec2,
 };
 use egui_extras::{Column, TableBuilder, TableRow};
 
@@ -32,6 +33,12 @@ pub struct State {
     pub tags_for: Option<Vec<String>>,
     pub new_tag: String,
     pub new_tag_color: String,
+    /// The proxy being typed in a row's IP popup.
+    proxy_edit: Option<(String, String, Option<String>)>,
+    /// The remark being edited in a row's Remark popup.
+    remark_edit: Option<(String, String)>,
+    /// Proxy checks made from the list: running (`None`) or their answer.
+    pub checks: std::collections::HashMap<String, Option<Result<ProxyCheck, String>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +77,10 @@ enum Act {
     CancelEdit,
     Retag(Vec<String>, Vec<String>, Vec<String>),
     Tags(Vec<String>),
+    CheckProxy(Vec<String>),
+    /// New proxy text for a profile (empty = no proxy).
+    SetProxy(String, String),
+    SaveRemark(String, String),
 }
 
 /// The status column's view of a row: the backend's run state plus what the UI itself is doing to it.
@@ -550,6 +561,39 @@ impl CitroApp {
                 self.run_op(Vec::new(), String::new(), Refresh::ROWS, move |b| b.retag(&ids, &add, &remove));
             }
             Act::Tags(ids) => self.profiles.tags_for = Some(ids),
+            Act::CheckProxy(ids) => {
+                for id in ids {
+                    self.check_row_proxy(id, None);
+                }
+            }
+            Act::SetProxy(id, text) => {
+                let cfg = if text.trim().is_empty() {
+                    ProxyConfig { proxy_soft: Some("no_proxy".into()), ..Default::default() }
+                } else {
+                    match crate::proxy::parse(text.trim()) {
+                        Ok(pp) => crate::proxy::to_config(&pp, crate::proxy::ProxyKind::Http),
+                        Err(e) => {
+                            if let Some(pe) = self.profiles.proxy_edit.as_mut().filter(|pe| pe.0 == id) {
+                                pe.2 = Some(e);
+                            }
+                            return;
+                        }
+                    }
+                };
+                self.profiles.proxy_edit = None;
+                self.check_row_proxy(id, Some(cfg));
+            }
+            Act::SaveRemark(id, text) => {
+                let text = text.trim_end().to_owned();
+                self.profiles.remark_edit = None;
+                if self.row(&id).is_some_and(|r| r.profile.remark == text) {
+                    return;
+                }
+                for r in self.rows.iter_mut().filter(|r| r.id() == id) {
+                    r.profile.remark = text.clone();
+                }
+                self.run_op(Vec::new(), "Remark saved".into(), Refresh::ROWS, move |b| b.set_remark(&id, &text));
+            }
             Act::Remark(ids) => {
                 let text = if ids.len() == 1 {
                     self.row(&ids[0]).map(|r| r.profile.remark.clone()).unwrap_or_default()
@@ -576,6 +620,51 @@ impl CitroApp {
         }
     }
 
+    /// Check a profile's proxy from the list; with `new`, save that proxy first. A working proxy's exit IP and
+    /// country are kept on the profile (the IP column and the persona's language and time zone follow them).
+    fn check_row_proxy(&mut self, id: String, new: Option<ProxyConfig>) {
+        self.profiles.checks.insert(id.clone(), None);
+        self.tasks.spawn(true, move |w| {
+            let result = (|| {
+                let mut p = w.backend.profile(&id)?;
+                if let Some(cfg) = new {
+                    p.user_proxy_config = cfg;
+                    p.ip.clear();
+                    w.backend.save_profile(p)?;
+                    // the saved copy may be redacted: read the full one back for the check
+                    p = w.backend.profile(&id)?;
+                }
+                if p.user_proxy_config.hop().is_none() {
+                    return Err(crate::backend::BackendError::Invalid(
+                        "No proxy: the browser connects directly".into(),
+                    ));
+                }
+                let r = w.backend.check_proxy(&p.user_proxy_config)?;
+                let cc = r.country.trim().to_ascii_lowercase();
+                if r.ok && (p.ip != r.ip || (!cc.is_empty() && p.country != cc)) {
+                    p.ip = r.ip.clone();
+                    if !cc.is_empty() {
+                        p.country = cc;
+                    }
+                    w.backend.save_profile(p)?;
+                }
+                Ok(r)
+            })();
+            w.send(super::tasks::Msg::RowProxyChecked { id, result });
+        });
+    }
+
+    pub fn row_proxy_checked(&mut self, id: String, result: crate::backend::BResult<ProxyCheck>) {
+        let name = self.name_of(&id);
+        match &result {
+            Ok(r) if r.ok => self.toast(ToastKind::Ok, format!("{name}: proxy works ({}, {} ms)", r.ip, r.latency_ms)),
+            Ok(r) => self.toast(ToastKind::Warn, format!("{name}: {}", r.message)),
+            Err(e) => self.toast(ToastKind::Warn, format!("{name}: {e}")),
+        }
+        self.profiles.checks.insert(id, Some(result.map_err(|e| e.to_string())));
+        self.refresh_rows();
+    }
+
     fn table(&mut self, ui: &mut Ui) {
         let p = self.pal;
         let (now, offset) = (self.now, self.offset);
@@ -586,7 +675,7 @@ impl CitroApp {
         let mut acts: Vec<Act> = Vec::new();
         {
             let CitroApp { rows, groups, tags, busy, last_error, profiles, .. } = &mut *self;
-            let State { view, selection, query: q, inline, .. } = profiles;
+            let State { view, selection, query: q, inline, proxy_edit, remark_edit, checks, .. } = profiles;
             let view: &Vec<usize> = view;
             let all_selected = {
                 let ids: Vec<String> = view.iter().map(|&i| rows[i].id().to_owned()).collect();
@@ -595,7 +684,9 @@ impl CitroApp {
             let some_selected = !selection.is_empty();
             let body_h = (ui.available_height() - FOOTER_H).max(140.0);
             ui.allocate_ui(vec2(ui.available_width(), body_h), |ui| {
-                egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
+                {
+                    // no sideways scrolling: the tick boxes on the left and Open on the right always stay in view,
+                    // and the columns in between share the width (drag a header edge to resize one)
                     ui.spacing_mut().item_spacing.x = 4.0;
                     // the table reads a notch smaller than the rest of the app
                     if let Some(f) = ui.style_mut().text_styles.get_mut(&TextStyle::Body) {
@@ -604,21 +695,21 @@ impl CitroApp {
                     TableBuilder::new(ui)
                         .id_salt("profiles-table")
                         .striped(true)
-                        .resizable(false)
+                        .resizable(true)
                         .sense(Sense::click())
                         .cell_layout(Layout::left_to_right(Align::Center))
                         .min_scrolled_height(120.0)
-                        .column(Column::exact(28.0))
-                        .column(Column::exact(42.0))
-                        .column(Column::exact(72.0))
-                        .column(Column::initial(150.0).at_least(110.0).clip(true))
-                        .column(Column::initial(92.0).at_least(70.0).clip(true))
-                        .column(Column::initial(118.0).at_least(90.0).clip(true))
-                        .column(Column::initial(140.0).at_least(110.0).clip(true))
-                        .column(Column::remainder().at_least(110.0).clip(true))
-                        .column(Column::exact(80.0))
-                        .column(Column::exact(96.0))
-                        .column(Column::exact(112.0))
+                        .column(Column::exact(28.0).resizable(false))
+                        .column(Column::initial(42.0).at_least(30.0).clip(true))
+                        .column(Column::initial(72.0).at_least(40.0).clip(true))
+                        .column(Column::initial(160.0).at_least(80.0).clip(true))
+                        .column(Column::initial(92.0).at_least(56.0).clip(true))
+                        .column(Column::initial(118.0).at_least(56.0).clip(true))
+                        .column(Column::initial(160.0).at_least(100.0).clip(true))
+                        .column(Column::remainder().at_least(80.0).clip(true))
+                        .column(Column::initial(80.0).at_least(60.0).clip(true))
+                        .column(Column::initial(96.0).at_least(70.0).clip(true))
+                        .column(Column::exact(112.0).resizable(false))
                         .header(HEAD_H, |mut header| {
                             header.col(|ui| {
                                 let tip = if all_selected { "Select none" } else { "Select all (Ctrl+A)" };
@@ -776,7 +867,8 @@ impl CitroApp {
                                         }
                                     });
                                 });
-                                // IP: the exit address (the proxy's until a check or a launch knows better), the country
+                                // IP: the exit address (the proxy's until a check or a launch knows better), the
+                                // country; a click opens the proxy: change it, check it
                                 cell(&mut row, |ui| {
                                     let hop = pr.user_proxy_config.hop();
                                     let ip = if !pr.ip.trim().is_empty() {
@@ -790,39 +882,153 @@ impl CitroApp {
                                         (false, Some(n)) => format!("{cc} - {n}"),
                                         (false, None) => cc.clone(),
                                     };
-                                    let tip = match &hop {
+                                    let current = match &hop {
                                         Some(h) if h.account.is_empty() => {
                                             format!("{}://{}:{}", h.scheme, h.host, h.port)
                                         }
                                         Some(h) => format!("{}://{}:***@{}:{}", h.scheme, h.account, h.host, h.port),
                                         None => "No proxy: the browser connects directly".to_owned(),
                                     };
-                                    ui.vertical(|ui| {
-                                        ui.spacing_mut().item_spacing.y = 2.0;
-                                        ui.horizontal(|ui| {
-                                            ui.spacing_mut().item_spacing.x = 6.0;
-                                            let (tag, col) = match &hop {
-                                                Some(h) => (h.scheme.to_uppercase(), p.accent_hover),
-                                                None => ("DIRECT".to_owned(), p.dim),
-                                            };
-                                            ui.label(
-                                                RichText::new(tag)
-                                                    .size(9.5)
-                                                    .family(theme::semibold_family())
-                                                    .color(col),
-                                            );
-                                            let main = if ip.is_empty() {
-                                                dim(&p, "\u{2013}")
-                                            } else {
-                                                RichText::new(&ip).color(p.strong)
-                                            };
-                                            ui.add(egui::Label::new(main).truncate()).on_hover_text(tip);
-                                        });
-                                        if !place.is_empty() {
-                                            ui.add(egui::Label::new(small_dim(&p, place)).truncate());
-                                        }
-                                    });
+                                    let check = checks.get(&id);
+                                    let resp = ui
+                                        .vertical(|ui| {
+                                            ui.spacing_mut().item_spacing.y = 2.0;
+                                            ui.horizontal(|ui| {
+                                                ui.spacing_mut().item_spacing.x = 6.0;
+                                                match check {
+                                                    Some(None) => {
+                                                        ui.add(egui::Spinner::new().size(10.0));
+                                                    }
+                                                    Some(Some(Ok(c))) if c.ok => widgets::dot(ui, p.ok, false),
+                                                    Some(Some(_)) => widgets::dot(ui, p.err, false),
+                                                    None => {}
+                                                }
+                                                let (tag, col) = match &hop {
+                                                    Some(h) => (h.scheme.to_uppercase(), p.accent_hover),
+                                                    None => ("DIRECT".to_owned(), p.dim),
+                                                };
+                                                ui.label(
+                                                    RichText::new(tag)
+                                                        .size(9.5)
+                                                        .family(theme::semibold_family())
+                                                        .color(col),
+                                                );
+                                                let main = if ip.is_empty() {
+                                                    dim(&p, "\u{2013}")
+                                                } else {
+                                                    RichText::new(&ip).color(p.strong)
+                                                };
+                                                ui.add(egui::Label::new(main).truncate());
+                                            });
+                                            if !place.is_empty() {
+                                                ui.add(egui::Label::new(small_dim(&p, &place)).truncate());
+                                            }
+                                        })
+                                        .response
+                                        .interact(Sense::click())
+                                        .on_hover_cursor(CursorIcon::PointingHand)
+                                        .on_hover_text(format!("{current}\nClick to change or check the proxy"));
+                                    Popup::menu(&resp).close_behavior(PopupCloseBehavior::CloseOnClickOutside).show(
+                                        |ui| {
+                                            ui.set_width(380.0);
+                                            ui.spacing_mut().item_spacing.y = 8.0;
+                                            ui.label(widgets::semibold("Proxy", 14.0));
+                                            ui.add(egui::Label::new(dim(&p, &current)).wrap());
+                                            match check {
+                                                Some(None) => {
+                                                    ui.horizontal(|ui| {
+                                                        ui.add(egui::Spinner::new().size(12.0));
+                                                        ui.label(dim(&p, "Checking\u{2026}"));
+                                                    });
+                                                }
+                                                Some(Some(Ok(c))) if c.ok => {
+                                                    let place = countries::name(&c.country.to_ascii_lowercase())
+                                                        .map(|n| format!(" \u{b7} {n}"))
+                                                        .unwrap_or_default();
+                                                    ui.label(
+                                                        RichText::new(format!(
+                                                            "\u{2713} Works: exit IP {}{place} \u{b7} {} ms",
+                                                            c.ip, c.latency_ms
+                                                        ))
+                                                        .color(p.ok),
+                                                    );
+                                                }
+                                                Some(Some(Ok(c))) => {
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            RichText::new(format!("\u{2717} {}", c.message))
+                                                                .color(p.err),
+                                                        )
+                                                        .wrap(),
+                                                    );
+                                                }
+                                                Some(Some(Err(e))) => {
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            RichText::new(format!("\u{2717} {e}")).color(p.err),
+                                                        )
+                                                        .wrap(),
+                                                    );
+                                                }
+                                                None => {}
+                                            }
+                                            if hop.is_some()
+                                                && ui
+                                                    .add_enabled(
+                                                        !matches!(check, Some(None)),
+                                                        Button::new("Check this proxy"),
+                                                    )
+                                                    .clicked()
+                                            {
+                                                acts.push(Act::CheckProxy(vec![id.clone()]));
+                                            }
+                                            ui.separator();
+                                            ui.label(small_dim(&p, "New proxy"));
+                                            if proxy_edit.as_ref().is_none_or(|pe| pe.0 != id) {
+                                                *proxy_edit = Some((id.clone(), String::new(), None));
+                                            }
+                                            if let Some(pe) = proxy_edit.as_mut() {
+                                                let r = ui.add(
+                                                    egui::TextEdit::singleline(&mut pe.1)
+                                                        .hint_text(
+                                                            "socks5://user:pass@host:port or host:port:user:pass",
+                                                        )
+                                                        .font(egui::TextStyle::Monospace)
+                                                        .desired_width(f32::INFINITY),
+                                                );
+                                                if r.changed() {
+                                                    pe.2 = None;
+                                                }
+                                                if let Some(e) = &pe.2 {
+                                                    ui.add(
+                                                        egui::Label::new(RichText::new(e).color(p.err).size(12.0))
+                                                            .wrap(),
+                                                    );
+                                                }
+                                                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                                                ui.horizontal(|ui| {
+                                                    let ok = !pe.1.trim().is_empty();
+                                                    if widgets::primary_button(ui, &p, "Save and check", ok).clicked()
+                                                        || (enter && ok)
+                                                    {
+                                                        acts.push(Act::SetProxy(id.clone(), pe.1.clone()));
+                                                    }
+                                                    if hop.is_some() && ui.button("No proxy").clicked() {
+                                                        acts.push(Act::SetProxy(id.clone(), String::new()));
+                                                        ui.close();
+                                                    }
+                                                });
+                                            }
+                                            if matches!(st, St::Open { .. }) {
+                                                ui.label(small_dim(
+                                                    &p,
+                                                    "A new proxy applies the next time the profile opens.",
+                                                ));
+                                            }
+                                        },
+                                    );
                                 });
+                                // Remark: a click shows the whole text to read, select, copy or change
                                 cell(&mut row, |ui| {
                                     if inline_edit(ui, inline, &id, Field::Remark, &mut acts) {
                                         return;
@@ -833,14 +1039,43 @@ impl CitroApp {
                                     } else {
                                         two_lines(ui, RichText::new(text).color(p.text))
                                     };
-                                    let r = r.on_hover_text(if text.is_empty() {
-                                        "Double-click to write a remark".to_owned()
-                                    } else {
-                                        format!("{text}\nDouble-click to edit")
-                                    });
-                                    if r.double_clicked() {
-                                        acts.push(Act::StartEdit(id.clone(), Field::Remark, pr.remark.clone()));
-                                    }
+                                    let r = r
+                                        .interact(Sense::click())
+                                        .on_hover_cursor(CursorIcon::PointingHand)
+                                        .on_hover_text(if text.is_empty() {
+                                            "Click to write a remark".to_owned()
+                                        } else {
+                                            format!("{text}\nClick to select, copy or edit")
+                                        });
+                                    Popup::menu(&r).close_behavior(PopupCloseBehavior::CloseOnClickOutside).show(
+                                        |ui| {
+                                            ui.set_width(380.0);
+                                            if remark_edit.as_ref().is_none_or(|re| re.0 != id) {
+                                                *remark_edit = Some((id.clone(), pr.remark.clone()));
+                                            }
+                                            let Some(re) = remark_edit.as_mut() else { return };
+                                            ui.label(widgets::semibold("Remark", 14.0));
+                                            ui.add(
+                                                egui::TextEdit::multiline(&mut re.1)
+                                                    .hint_text("A note about this profile")
+                                                    .desired_rows(5)
+                                                    .desired_width(f32::INFINITY)
+                                                    .char_limit(2000),
+                                            );
+                                            ui.horizontal(|ui| {
+                                                if widgets::primary_button(ui, &p, "Save", true).clicked() {
+                                                    acts.push(Act::SaveRemark(id.clone(), re.1.clone()));
+                                                    ui.close();
+                                                }
+                                                if ui.button("Copy all").clicked() {
+                                                    ui.ctx().copy_text(re.1.clone());
+                                                }
+                                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                                    ui.label(small_dim(&p, format!("{} / 2000", re.1.chars().count())));
+                                                });
+                                            });
+                                        },
+                                    );
                                 });
                                 cell(&mut row, |ui| {
                                     if pr.created_time > 0 {
@@ -958,6 +1193,10 @@ impl CitroApp {
                                         acts.push(Act::Duplicate(id.clone()));
                                         ui.close();
                                     }
+                                    if ui.button(many("Check proxy")).clicked() {
+                                        acts.push(Act::CheckProxy(targets.clone()));
+                                        ui.close();
+                                    }
                                     if ui.button(many("Set remark…")).clicked() {
                                         acts.push(Act::Remark(targets.clone()));
                                         ui.close();
@@ -1003,7 +1242,7 @@ impl CitroApp {
                                 }
                             });
                         });
-                });
+                }
             });
         }
         ui.add_space(6.0);

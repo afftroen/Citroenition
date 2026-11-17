@@ -378,6 +378,8 @@ impl Backend for LocalBackend {
         let copy = store::locked(&self.home, |s| {
             let mut p = s.get(id)?.clone();
             p.name = format!("{} (copy)", p.name);
+            // a copy is another machine: it gets its own seed (the new profile id) instead of sharing one
+            p.fingerprint_config.0.remove("seed");
             p.last_open_time = 0;
             p.last_close_time = 0;
             s.create(p)
@@ -548,6 +550,18 @@ impl Backend for LocalBackend {
             format!("imported {} profiles ({} skipped, {} new groups)", r.created, r.skipped, r.groups_created),
         );
         Ok(r)
+    }
+
+    fn probe(&self, p: &Profile) -> BResult<citro_core::probe::Probe> {
+        let k = self.kernel()?;
+        Ok(citro_core::probe::probe(&self.home, &k, p)?)
+    }
+
+    fn live_cookies(&self, id: &str) -> BResult<String> {
+        let r = launch::running(&self.home, id).ok_or_else(|| {
+            BackendError::Invalid("open the profile first: its cookies are read from the browser".into())
+        })?;
+        citro_core::cookies::export_live(&r.ws).map_err(BackendError::Invalid)
     }
 
     fn move_data(&self, to: &str) -> BResult<()> {

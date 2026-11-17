@@ -158,6 +158,53 @@ pub fn import(ws: &str, cookies: &[Value]) -> Result<usize, String> {
     Ok(cookies.len())
 }
 
+/// DevTools cookies (`Network.Cookie`) -> the JSON that Cookie-Editor and other antidetect browsers export, one
+/// cookie per line, so the text can be read, copied and pasted back in as it is.
+pub fn to_json(cookies: &[Value]) -> String {
+    let lines: Vec<String> = cookies
+        .iter()
+        .filter_map(|c| {
+            let domain = c.get("domain")?.as_str()?;
+            let session = c.get("session").and_then(Value::as_bool).unwrap_or(false);
+            let mut o = serde_json::Map::new();
+            o.insert("domain".into(), json!(domain));
+            if !session && let Some(e) = c.get("expires").and_then(Value::as_f64).filter(|e| *e > 0.0) {
+                o.insert("expirationDate".into(), json!(e.trunc() as i64));
+            }
+            o.insert("hostOnly".into(), json!(!domain.starts_with('.')));
+            o.insert("httpOnly".into(), json!(c.get("httpOnly").and_then(Value::as_bool).unwrap_or(false)));
+            o.insert("name".into(), c.get("name").cloned().unwrap_or(json!("")));
+            o.insert("path".into(), c.get("path").cloned().unwrap_or(json!("/")));
+            let same = match c.get("sameSite").and_then(Value::as_str) {
+                Some("None") => "no_restriction",
+                Some("Lax") => "lax",
+                Some("Strict") => "strict",
+                _ => "unspecified",
+            };
+            o.insert("sameSite".into(), json!(same));
+            o.insert("secure".into(), json!(c.get("secure").and_then(Value::as_bool).unwrap_or(false)));
+            o.insert("session".into(), json!(session));
+            o.insert("value".into(), c.get("value").cloned().unwrap_or(json!("")));
+            Some(Value::Object(o).to_string())
+        })
+        .collect();
+    if lines.is_empty() { String::new() } else { format!("[\n{}\n]", lines.join(",\n")) }
+}
+
+/// Every cookie of the browser whose DevTools browser endpoint is `ws`, as [`to_json`] text.
+pub fn export_live(ws: &str) -> Result<String, String> {
+    let mut cdp = Cdp::connect(ws).map_err(|e| format!("cannot reach the browser: {e}"))?;
+    let r =
+        cdp.call("Storage.getCookies", json!({})).map_err(|e| format!("the browser did not give its cookies: {e}"))?;
+    let list = r.get("cookies").and_then(Value::as_array).cloned().unwrap_or_default();
+    Ok(to_json(&list))
+}
+
+/// The same cookies, whatever their layout: `a` and `b` parse to the same list.
+pub fn same(a: &str, b: &str) -> bool {
+    a.trim() == b.trim() || matches!((parse(a, "x.invalid"), parse(b, "x.invalid")), (Ok(x), Ok(y)) if x == y)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,6 +228,23 @@ mod tests {
         // milliseconds are turned into seconds
         let ms = parse(r#"[{"name":"n","value":"v","domain":"x.com","expires":1999999999000}]"#, "").unwrap();
         assert_eq!(ms[0]["expires"], 1999999999.0);
+    }
+
+    #[test]
+    fn devtools_cookies_round_trip_through_the_json_text() {
+        let live = vec![
+            json!({"name":"sid","value":"abc","domain":".example.com","path":"/","expires":1999999999.25,"httpOnly":true,"secure":true,"session":false,"sameSite":"None"}),
+            json!({"name":"s","value":"1","domain":"www.example.com","path":"/","expires":-1,"httpOnly":false,"secure":false,"session":true}),
+        ];
+        let text = to_json(&live);
+        assert_eq!(text.lines().count(), 4, "one cookie per line: {text}");
+        let back = parse(&text, "").unwrap();
+        assert_eq!(back.len(), 2);
+        assert_eq!((back[0]["expires"].as_f64(), back[0]["sameSite"].as_str()), (Some(1999999999.0), Some("None")));
+        assert!(back[1].get("expires").is_none());
+        let compact: String = text.lines().map(str::trim).collect();
+        assert!(same(&text, &compact) && !same(&text, "[]"));
+        assert_eq!(to_json(&[]), "");
     }
 
     #[test]

@@ -65,6 +65,21 @@ pub enum Msg {
         token: u64,
         result: BResult<ProxyCheck>,
     },
+    /// The editor's fingerprint, read from the browser.
+    Probed {
+        key: String,
+        result: BResult<citro_core::probe::Probe>,
+    },
+    /// The cookies of an open browser, for the editor.
+    LiveCookies {
+        id: String,
+        result: BResult<String>,
+    },
+    /// A proxy checked from the profile list.
+    RowProxyChecked {
+        id: String,
+        result: BResult<ProxyCheck>,
+    },
     Exported {
         path: String,
         rows: usize,
