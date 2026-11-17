@@ -717,3 +717,105 @@ pub fn paint_icon_scaled(g: &Painter, c: Pos2, icon: Icon, col: Color32, s: f32)
         }
     }
 }
+
+// ------------------------------------------------------------------------------------------------------------------
+// segmented control, switch, logo
+
+/// A row of mutually exclusive choices in one rounded track (AdsPower's "Based on IP | Real | Custom"). Returns
+/// `true` when the value changed.
+pub fn segmented<T: PartialEq + Clone>(ui: &mut Ui, p: &Palette, value: &mut T, choices: &[(T, &str)]) -> bool {
+    let font = FontId::new(13.5, FontFamily::Proportional);
+    let active_font = FontId::new(13.5, theme::medium_family());
+    let widths: Vec<f32> = choices
+        .iter()
+        .map(|(_, l)| ui.painter().layout_no_wrap((*l).to_owned(), active_font.clone(), p.text).size().x + 30.0)
+        .collect();
+    let (h, pad) = (34.0, 3.0);
+    let total = widths.iter().sum::<f32>() + pad * 2.0;
+    let base = ui.next_auto_id();
+    let (track, _) = ui.allocate_exact_size(vec2(total, h), Sense::hover());
+    let mut changed = false;
+    if ui.is_rect_visible(track) {
+        ui.painter().rect_filled(track, CornerRadius::same(9), p.raised);
+        ui.painter().rect_stroke(track, CornerRadius::same(9), Stroke::new(1.0, p.border), StrokeKind::Inside);
+    }
+    let mut x = track.left() + pad;
+    for (i, ((v, label), w)) in choices.iter().zip(widths).enumerate() {
+        let r = Rect::from_min_size(pos2(x, track.top() + pad), vec2(w, h - pad * 2.0));
+        x += w;
+        let resp = ui.interact(r, base.with(("seg", i)), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
+        let on = *value == *v;
+        if resp.clicked() && !on {
+            *value = v.clone();
+            changed = true;
+        }
+        let fill = if on {
+            p.active
+        } else if resp.hovered() {
+            p.hover
+        } else {
+            Color32::TRANSPARENT
+        };
+        ui.painter().rect_filled(r, CornerRadius::same(7), fill);
+        let (f, col) = if on { (active_font.clone(), p.strong) } else { (font.clone(), p.text) };
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, *label, f, col);
+    }
+    changed
+}
+
+/// An iOS-style switch with a label after it. Returns `true` when flipped.
+pub fn switch(ui: &mut Ui, p: &Palette, on: &mut bool, label: &str) -> bool {
+    let font = FontId::new(13.5, FontFamily::Proportional);
+    let tw = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), p.text).size().x;
+    let (rect, resp) = ui.allocate_exact_size(vec2(38.0 + 9.0 + tw, 24.0), Sense::click());
+    let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
+    if resp.clicked() {
+        *on = !*on;
+    }
+    let t = ui.ctx().animate_bool_responsive(resp.id, *on);
+    let track = Rect::from_min_size(pos2(rect.left(), rect.center().y - 10.0), vec2(38.0, 20.0));
+    let fill = if *on { p.accent } else { p.active };
+    ui.painter().rect_filled(track, CornerRadius::same(10), fill);
+    let cx = egui::lerp((track.left() + 10.0)..=(track.right() - 10.0), t);
+    ui.painter().circle_filled(pos2(cx, track.center().y), 7.5, Color32::WHITE);
+    let col = if resp.hovered() { p.strong } else { p.text };
+    ui.painter().text(pos2(track.right() + 9.0, rect.center().y), Align2::LEFT_CENTER, label, font, col);
+    resp.clicked()
+}
+
+const LOGO_PNG: &[u8] = include_bytes!("../../assets/logo/citroenition-128.png");
+
+/// The lemon logo as straight RGBA: `(width, height, pixels)`. Also used for the window icon.
+pub fn logo_rgba() -> Option<(u32, u32, Vec<u8>)> {
+    let mut dec = png::Decoder::new(std::io::Cursor::new(LOGO_PNG));
+    dec.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = dec.read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    buf.truncate(info.buffer_size());
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => buf,
+        png::ColorType::Rgb => buf.chunks(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect(),
+        _ => return None,
+    };
+    Some((info.width, info.height, rgba))
+}
+
+/// Paint the logo into `rect` (the texture is uploaded once per context).
+pub fn logo(ui: &mut Ui, size: f32) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
+    let id = egui::Id::unique("citroenition-logo-texture");
+    let tex: Option<egui::TextureHandle> = ui.ctx().data(|d| d.get_temp(id));
+    let tex = tex.or_else(|| {
+        let (w, h, px) = logo_rgba()?;
+        let img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &px);
+        let t = ui.ctx().load_texture("citroenition-logo", img, egui::TextureOptions::LINEAR);
+        ui.ctx().data_mut(|d| d.insert_temp(id, t.clone()));
+        Some(t)
+    });
+    if let Some(t) = tex {
+        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        ui.painter().image(t.id(), rect, uv, Color32::WHITE);
+    }
+    resp
+}

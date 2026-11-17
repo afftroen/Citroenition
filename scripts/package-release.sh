@@ -62,6 +62,7 @@ if [ "$platform" = aarch64-macos ]; then
     mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
     install -m 0755 "$bins/citro-gui" "$app/Contents/MacOS/citro-gui"
     cp "$root/crates/citro-gui/assets/fonts/Inter-LICENSE.txt" "$app/Contents/Resources/LICENSE-Inter.txt"
+    cp "$root/crates/citro-gui/assets/logo/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
     cat > "$app/Contents/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -73,6 +74,7 @@ if [ "$platform" = aarch64-macos ]; then
     <key>CFBundleIdentifier</key><string>io.github.afftroen.citroenition</string>
     <key>CFBundleExecutable</key><string>citro-gui</string>
     <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleShortVersionString</key><string>${version}</string>
     <key>CFBundleVersion</key><string>${version}</string>
     <key>LSMinimumSystemVersion</key><string>12.0</string>

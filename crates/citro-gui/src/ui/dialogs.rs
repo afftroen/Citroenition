@@ -64,8 +64,6 @@ impl CitroApp {
             self.move_modal(ctx);
         } else if self.remark_dlg.is_some() {
             self.remark_modal(ctx);
-        } else if self.edit.is_some() {
-            self.edit_modal(ctx);
         } else if self.export.is_some() {
             self.export_modal(ctx);
         }

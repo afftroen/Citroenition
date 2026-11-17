@@ -527,7 +527,21 @@ impl CitroApp {
                                     ui.add(egui::Label::new(t).truncate());
                                 });
                                 cell(&mut row, |ui| {
-                                    ui.vertical(|ui| {
+                                    let cc = pr.country.trim();
+                                    let country = countries::name(cc).unwrap_or(cc);
+                                    let place = match (country.is_empty(), pr.ip.is_empty()) {
+                                        (true, true) => String::new(),
+                                        (false, true) => country.to_owned(),
+                                        (true, false) => pr.ip.clone(),
+                                        (false, false) => format!("{country} · {}", pr.ip),
+                                    };
+                                    // one line sits on the row's centre like every other cell; two lines stack
+                                    let layout = if place.is_empty() {
+                                        Layout::left_to_right(Align::Center)
+                                    } else {
+                                        Layout::top_down(Align::Min)
+                                    };
+                                    ui.with_layout(layout, |ui| {
                                         ui.spacing_mut().item_spacing.y = 1.0;
                                         match proxy_parts(&pr.user_proxy_config) {
                                             Some((scheme, addr)) => {
@@ -557,14 +571,6 @@ impl CitroApp {
                                                 ui.label(dim(&p, "Direct"));
                                             }
                                         }
-                                        let cc = pr.country.trim();
-                                        let country = countries::name(cc).unwrap_or(cc);
-                                        let place = match (country.is_empty(), pr.ip.is_empty()) {
-                                            (true, true) => String::new(),
-                                            (false, true) => country.to_owned(),
-                                            (true, false) => pr.ip.clone(),
-                                            (false, false) => format!("{country} · {}", pr.ip),
-                                        };
                                         if !place.is_empty() {
                                             ui.add(egui::Label::new(small_dim(&p, place)).truncate());
                                         }

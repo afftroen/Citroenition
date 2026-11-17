@@ -28,15 +28,7 @@ impl CitroApp {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.add_space(2.0);
-                    let (r, _) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::hover());
-                    ui.painter().circle_filled(r.center(), 14.0, Color32::from_rgb(0xf2, 0xc9, 0x4c));
-                    ui.painter().text(
-                        r.center(),
-                        Align2::CENTER_CENTER,
-                        "C",
-                        FontId::new(17.0, theme::semibold_family()),
-                        Color32::from_rgb(0x3a, 0x2f, 0x00),
-                    );
+                    widgets::logo(ui, 34.0);
                     ui.label(semibold("Citroenition", 19.0));
                 });
                 ui.add_space(18.0);

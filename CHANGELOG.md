@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+**A profile editor like AdsPower's, and a logo.**
+
+* **New and Edit profile** is now a full page instead of a small dialog: five sections (General, Proxy, Platform,
+  Fingerprint, Advanced) with tabs that jump between them, roomier rows, a footer that stays put, and a live
+  **Overview** of what sites will see, computed by the launcher's own persona code.
+* **Many more options**, each one an AdsPower `fingerprint_config` key the launcher already applies: browser brand,
+  custom user agent, WebRTC, time zone, location, languages, display language, screen resolution, canvas and WebGL
+  image noise, WebGL vendor and renderer, CPU cores, memory and the fingerprint seed (with **New fingerprint**). Also
+  cookie, platform domain / username / password and launch arguments.
+* **The lemon logo** in the sidebar, as the window icon and as the macOS app icon (`Citroenition.app` gets
+  `AppIcon.icns`).
+* The Proxy column of the profile table keeps a one-line value (*Direct*) on the row's centre line.
+
 ## 0.1.1 (2026-11-17)
 
 **macOS on Apple silicon.** The programs and the kernel now run on a Mac (M1 or newer, macOS 12 or newer). The release

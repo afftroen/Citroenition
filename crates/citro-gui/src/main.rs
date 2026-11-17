@@ -63,6 +63,10 @@ fn main() -> eframe::Result {
         .with_app_id("citroenition")
         .with_inner_size([w, h])
         .with_min_inner_size([960.0_f32.min(w), 600.0_f32.min(h)]);
+    let viewport = match citro_gui::ui::widgets::logo_rgba() {
+        Some((width, height, rgba)) => viewport.with_icon(egui::IconData { rgba, width, height }),
+        None => viewport,
+    };
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     let opts =
         AppOptions { backend, settings, settings_path, start: args.page, screenshot: args.screenshot, demo_failing };

@@ -102,7 +102,7 @@ reloads everything.
 
 | Key | What it does |
 |---|---|
-| Ctrl/Cmd + N | new profile (goes to Profiles and opens the dialog) |
+| Ctrl/Cmd + N | new profile (goes to Profiles and opens the editor) |
 | Ctrl/Cmd + F | focus the search box (goes to Profiles) |
 | F5 | refresh everything, the logs included |
 | Ctrl/Cmd + A | select all visible profiles |
@@ -119,7 +119,7 @@ The page you work in. Its card starts with the *Profiles | Groups* tabs and, at 
 [export dialog](#export-to-csv)). Under that are the filters: a **group filter** (*All groups*, *Ungrouped* or one
 group), the **search box** (name, remark and proxy; the ✕ or Esc clears it) and a **status filter** (*All*, *Open*,
 *Closed*, *Locked*). **New profile** is the blue button at the top of the sidebar; it opens the
-[New dialog](#new-and-edit).
+[profile editor](#new-and-edit).
 
 Below the filters is the action bar: a blue **Open** button, then square icon buttons (hover one for its name) and, at
 the right, how many rows are selected and a reload button.
@@ -186,41 +186,68 @@ terminal; a filter that matches nothing offers **Clear filters**.
 ## New and edit
 
 **New profile** in the sidebar (or Ctrl/Cmd + N), the **Edit** button above the table, or *Edit…* in a row's menu open
-the same dialog. It scrolls, and has three sections. **Create profile** / **Save changes**, or Ctrl/Cmd + Enter
-(Enter in the name field works too); Esc cancels.
+the profile editor. It takes the place of the page (**‹ Back** or **Cancel** returns to the list), like AdsPower's
+editor: one long form in five sections, with tabs at the top that jump to a section and follow the scrolling, and an
+**Overview** card on the right. **Create profile** / **Save changes** sit in a footer that never scrolls away;
+Ctrl/Cmd + Enter saves too (Enter in the name field as well). Esc leaves only a form you have not touched. When Save
+finds a problem the page jumps to the first section that has one.
 
-![The New profile dialog](screenshots/new.png)
+The Overview shows what sites will see: it is computed live from the form by the same code the launcher uses
+(`citro_core::fingerprint::Resolved`), so it never shows a value the kernel would not apply. **New fingerprint** (top
+right, or **New** next to the seed) picks a fresh seed, which changes every derived value at once.
+
+![The New profile page](screenshots/new.png)
 
 **General.**
 
 * *Name*: required, at most 100 characters (for example *Vinted FR - Camille*).
-* *Group*: a group, or *Ungrouped*; **+ New group** creates one without leaving the dialog.
-* *Remark*: a note that appears in the list.
+* *Browser*: Chrome, Microsoft Edge, Opera or Vivaldi (`brand`): the name and version tokens the browser reports.
+* *OS*: *Auto* (this computer's OS), *Windows*, *macOS* or *Linux*. The Linux and macOS personas pass iphey.com at
+  100 % ([the evidence](../docs.md#12-verification-how-we-know-it-works)); the Windows persona is currently flagged on
+  Linux hosts, which the hint says when it is chosen.
+* *User-Agent*: empty = automatic. A custom one (`ua`) picks the OS and brand; the version is the installed kernel's.
+* *Group*: a group, or *Ungrouped*; **+ New group** creates one without leaving the page.
+* *Cookie*: JSON, Netscape or `name=value`. Kept with the profile (masked like a password) and synced through the hub.
+* *Remark*: a note that appears in the list, up to 2000 characters.
 
 **Proxy.**
 
-* *Proxy URL*: paste `socks5://user:pass@host:port`, `host:port` or `host:port:user:pass`; the three fields below stay
-  in sync with it. The password is always shown as `***` in this box.
-* *Server*: the type (*No proxy (direct)*, `http`, `https`, `socks4` or `socks5`), the host and the port. A bad host or a port
-  outside 1 to 65535 is reported on the field.
-* *Login*: user and password, both optional. When a password is stored the field says *saved – type to replace*, and
-  **Forget** removes it. The dialog never holds the real password: saving sends the mask back and the stored value
-  stays.
+* *Quick paste*: `socks5://user:pass@host:port`, `host:port` or `host:port:user:pass`; the fields below stay in sync
+  with it. The password is always shown as `***` in this box.
+* *Proxy type* (*No proxy (direct)*, `http`, `https`, `socks4`, `socks5`), *Host : Port*, *Proxy username* and *Proxy
+  password*. A stored password shows *saved – type to replace*, and **Forget** removes it. The page never holds the real
+  password: saving sends the mask back and the stored value stays.
 * **Check proxy** connects through the proxy and reports *Works · exit IP 203.0.113.21 · France · 184 ms*, with a
   button **Use FR as country**, or the reason it failed.
-
-**Identity.**
-
-* *OS persona*: *Auto (this computer's OS)*, *Windows*, *macOS* or *Linux*. The Linux and macOS personas pass
-  iphey.com at 100 % ([the evidence](../docs.md#12-verification-how-we-know-it-works)); the Windows persona is
-  currently flagged on Linux hosts, which the dialog says next to the choice.
 * *Country*: *Auto (from the proxy IP)* or a country; the hint shows the language and time zone that follow
   ([why](../docs.md#8-language-time-zone-and-location-follow-the-proxy)).
-* *Start URLs*: one per line; a line without a scheme gets `https://`; `about:` pages stay as they are.
-* *Fingerprint seed*: read-only. It is the profile id, so one profile always shows one identity, however often it is
-  opened and on whichever device. **Copy** copies it.
 
-![The Edit profile dialog](screenshots/edit.png)
+**Platform.**
+
+* *Platform* (`domain_name`): opened on start when there are no start URLs. *Username* / *Password*: the account on
+  that platform, stored (the password masked) and shared with the team, never typed in for you.
+* *Start URLs*: one per line; a line without a scheme gets `https://`; `about:` pages stay as they are.
+
+**Fingerprint.** Every control writes an AdsPower `fingerprint_config` key the launcher reads (see the table at the
+top of `crates/citro-core/src/fingerprint.rs`); keys the page does not know are kept.
+
+* *WebRTC*: *Disabled* (leak-proof, the default), *Replace (proxy IP)* or *Real*.
+* *Timezone*, *Language*: *Based on IP* or *Custom* (a time zone such as `Europe/Paris`; a list such as `fr-FR, en`).
+* *Location*: *Not set* or a custom latitude and longitude.
+* *Display language*: *Based on language* or a custom UI locale.
+* *Screen resolution*: *Based on seed* or a custom size, with common presets.
+* *Hardware noise*: **Canvas** and **WebGL image** switches. AudioContext, ClientRects, media devices and speech voices
+  always come from the seed.
+* *WebGL metadata*: *Based on seed*, *Real* (this computer's GPU) or *Custom* vendor and renderer, with presets.
+* *CPU cores*, *Memory*: *Based on seed* or a fixed value.
+* *Fingerprint seed*: empty = the profile id, so a profile keeps one identity however often and wherever it is
+  opened. **New** generates one, **Copy** copies the seed in use.
+
+**Advanced.**
+
+* *Launch arguments*: extra Chromium switches, one per line, each starting with `--`.
+
+![The Edit profile page](screenshots/edit.png)
 
 For a profile that belongs to the team the change is written through to the hub when you save, and refused while
 somebody has the profile open.

@@ -521,6 +521,10 @@ impl eframe::App for CitroApp {
                     .inner_margin(Margin { left: 24, right: 24, top: 6, bottom: 14 })
                     .show(ui, |ui| {
                         ui.set_min_size(ui.available_size());
+                        if self.edit.is_some() {
+                            self.edit_page(ui);
+                            return;
+                        }
                         match self.page {
                             Page::Profiles => self.profiles_page(ui),
                             Page::Groups => self.groups_page(ui),
