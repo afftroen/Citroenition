@@ -92,20 +92,29 @@ jobs:
       - name: Run what is in the archive
         id: pack
         run: |
-          set -eu
-          (cd dist && shasum -a 256 -c SHA256SUMS)
-          mkdir check && tar xzf dist/citroenition-v"$VERSION"-aarch64-macos.tar.gz -C check
-          d=check/citroenition-v"$VERSION"-aarch64-macos
-          for p in citro citro-gui citro-hub citro-install; do
-            "$d/$p" --version
-          done
-          lipo -archs "$d/citro" "$d/Citroenition.app/Contents/MacOS/citro-gui"
-          for p in citro citro-hub citro-install Citroenition.app/Contents/MacOS/citro-gui; do
-            printf '%s: ' "$p"; otool -l "$d/$p" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print "minos " $2; exit}'
-          done
-          codesign --verify --deep --strict --verbose=2 "$d/Citroenition.app"
-          ls -l "$d" "$d/Citroenition.app/Contents" "$d/Citroenition.app/Contents/MacOS"
-          ls "$d/docs"
+          set -u
+          fail=0
+          # every check runs, whatever the one before it said, and the output is kept (archive.log)
+          inspect() {
+            (cd dist && shasum -a 256 -c SHA256SUMS) || fail=1
+            mkdir check && tar xzf dist/citroenition-v"$VERSION"-aarch64-macos.tar.gz -C check || fail=1
+            d=check/citroenition-v"$VERSION"-aarch64-macos
+            for p in citro citro-gui citro-hub citro-install; do
+              "$d/$p" --version || { echo "FAIL: $p --version"; fail=1; }
+            done
+            for p in citro citro-hub citro-install Citroenition.app/Contents/MacOS/citro-gui; do
+              printf '%s: ' "$p"
+              lipo -archs "$d/$p" || fail=1
+              otool -l "$d/$p" | awk '/LC_BUILD_VERSION/ {f=1} f && /minos/ && !seen {print "  minos " $2; seen=1}'
+            done
+            codesign --verify --deep --strict --verbose=2 "$d/Citroenition.app" || { echo "FAIL: codesign --verify"; fail=1; }
+            codesign -dvv "$d/Citroenition.app" 2>&1 | grep -E 'Identifier|Format|Signature|flags|TeamIdentifier' || true
+            ls -l "$d" "$d/Citroenition.app/Contents" "$d/Citroenition.app/Contents/MacOS"
+            ls "$d/docs"
+          }
+          inspect > archive.log 2>&1
+          cat archive.log
+          test "$fail" = 0
 
       - name: The real kernel, headless (install, open, ask the browser, close)
         env:
@@ -133,6 +142,17 @@ jobs:
             --demo --screenshot gui-profiles.png --page profiles --theme dark 2>&1 | tee gui.log
           ls -l gui-profiles.png | tee -a gui.log
 
+      - name: The app opens through LaunchServices (does not gate the release)
+        if: ${{ !cancelled() && steps.pack.conclusion != 'skipped' }}
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          # the way a double-click starts it: through the bundle's Info.plist, not the program inside it
+          open -n -W check/citroenition-v"$VERSION"-aarch64-macos/Citroenition.app \
+            --args --demo --screenshot "$PWD/app-open.png" --page profiles --theme light 2>&1 | tee open.log
+          ls -l app-open.png | tee -a open.log
+
       - name: The tests must have passed
         if: ${{ !cancelled() && steps.tests.outcome == 'failure' }}
         run: |
@@ -146,7 +166,7 @@ jobs:
         run: |
           set -eu
           d=$(mktemp -d)
-          for f in test.log smoke.log smoke-window.log gui.log gui-profiles.png; do
+          for f in test.log archive.log smoke.log smoke-window.log gui.log open.log gui-profiles.png app-open.png; do
             if [ -e "$f" ]; then cp "$f" "$d/"; fi
           done
           cd "$d"
