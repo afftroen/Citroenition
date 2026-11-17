@@ -111,9 +111,10 @@ printf '%s\n%s\n' PORT /devtools/browser/test-guid > "$ud/DevToolsActivePort"
 sleep 600 &
 wait"#
         .replace("PORT", &port.to_string());
-    let dir = kernel::kernels_dir(home).join("clearcote-151.0.7922.108");
-    fs::create_dir_all(&dir).expect("kernel dir");
-    let binary = dir.join("chrome");
+    // in the layout this platform's installer leaves, so that discovery finds it: `chrome`, or the app bundle's
+    // executable on a Mac
+    let binary = kernel::kernels_dir(home).join("clearcote-151.0.7922.108").join(kernel::BINARY);
+    fs::create_dir_all(binary.parent().expect("kernel dir")).expect("kernel dir");
     fs::write(&binary, format!("#!/bin/sh\n{body}\n")).expect("kernel");
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).expect("chmod");
     listener

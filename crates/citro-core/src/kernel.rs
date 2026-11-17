@@ -173,11 +173,12 @@ mod tests {
         p
     }
 
+    /// A kernel in the layout this platform's installer leaves (`chrome`, or the app bundle's executable).
     fn install(home: &Home, version: &str) -> PathBuf {
-        let dir = kernels_dir(home).join(format!("{DIR_PREFIX}{version}"));
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join(BINARY), b"\0proxy-auth\0").unwrap();
-        dir.join(BINARY)
+        let binary = kernels_dir(home).join(format!("{DIR_PREFIX}{version}")).join(BINARY);
+        fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        fs::write(&binary, b"\0proxy-auth\0").unwrap();
+        binary
     }
 
     #[test]
@@ -252,9 +253,12 @@ mod tests {
         let bundle = Path::new("/k/clearcote-1.2.3/Chromium.app/Contents/MacOS/Chromium");
         assert_eq!(app_bundle(bundle), Some(Path::new("/k/clearcote-1.2.3/Chromium.app")));
         assert_eq!(install_dir(bundle), Path::new("/k/clearcote-1.2.3"));
-        // a flat install still has everything next to the binary, whatever its name
+        // a flat install still has everything next to the binary, whatever its name (and whatever this platform's own
+        // layout is: the file is made by hand)
         let root = tmp("flat");
-        let flat = install(&Home { root: root.clone() }, "151.0.7922.108");
+        let flat = root.join("clearcote-151.0.7922.108").join("chrome");
+        fs::create_dir_all(flat.parent().unwrap()).unwrap();
+        fs::write(&flat, b"\0proxy-auth\0").unwrap();
         let k = Kernel::from_path(&flat).unwrap();
         assert_eq!((k.dir(), k.engine_image()), (flat.parent().unwrap(), flat.clone()));
         let _ = fs::remove_dir_all(&root);

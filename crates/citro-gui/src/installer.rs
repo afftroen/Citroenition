@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn a_host_without_a_prebuilt_kernel_is_told_what_to_do_instead() {
-        let e = fail(citro_install::Error::UnsupportedPlatform { os: "macos".into(), arch: "aarch64".into() });
+        let e = fail(citro_install::Error::UnsupportedPlatform { os: "freebsd".into(), arch: "x86_64".into() });
         assert!(matches!(&e, BackendError::Unsupported(m) if m.contains("CITRO_KERNEL")), "{e:?}");
         let e = fail(citro_install::Error::Network { url: "https://example.invalid/x".into(), message: "down".into() });
         assert!(matches!(e, BackendError::Other(_)));

@@ -936,17 +936,18 @@ mod tests {
         assert!(st.installed.is_none() && st.all.is_empty());
         assert!(st.error.as_deref().is_some_and(|e| e.contains("citro kernel install")), "{:?}", st.error);
 
+        // in the layout this platform's installer leaves: `chrome`, or the app bundle's executable on a Mac
+        let bin = |v: &str| t.0.root.join("kernels").join(format!("clearcote-{v}")).join(citro_core::kernel::BINARY);
         for v in ["150.0.1.2", "151.0.7922.108"] {
-            let dir = t.0.root.join("kernels").join(format!("clearcote-{v}"));
-            fs::create_dir_all(&dir).unwrap();
-            fs::write(dir.join("chrome"), "#!/bin/sh\n").unwrap();
+            fs::create_dir_all(bin(v).parent().unwrap()).unwrap();
+            fs::write(bin(v), "#!/bin/sh\n").unwrap();
         }
         let st = b.kernel_status().unwrap();
         assert_eq!(st.installed.as_ref().map(|k| k.version.as_str()), Some("151.0.7922.108"));
         assert_eq!(st.all.len(), 2);
         assert!(st.error.is_none());
 
-        let pinned = t.0.root.join("kernels/clearcote-150.0.1.2/chrome");
+        let pinned = bin("150.0.1.2");
         b.set_kernel_override(Some(pinned.display().to_string()));
         let st = b.kernel_status().unwrap();
         assert_eq!(st.installed.unwrap().version, "150.0.1.2");

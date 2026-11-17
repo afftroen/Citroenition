@@ -74,18 +74,23 @@ jobs:
       - name: GNU tar (the archive is reproducible)
         run: command -v gtar > /dev/null || brew install gnu-tar
 
-      - name: Build
-        run: cargo build --release --locked -p citro -p citro-hub -p citro-gui -p citro-install
-
-      - name: Tests, on a Mac
+      # A failing test does not stop the job here: the packaged programs still meet the real kernel below, so that one
+      # run reports everything. The step "The tests must have passed" fails the job (and so the release) at the end.
+      - name: Tests, on a Mac (a debug build: the same code, a far shorter compile than a release one)
+        id: tests
+        continue-on-error: true
         run: |
           set -o pipefail
-          cargo test --release --locked --workspace 2>&1 | tee test.log
+          cargo test --locked --workspace --no-fail-fast 2>&1 | tee test.log
+
+      - name: Build
+        run: cargo build --release --locked -p citro -p citro-hub -p citro-gui -p citro-install
 
       - name: Package
         run: scripts/package-release.sh "$VERSION" target/release dist aarch64-macos
 
       - name: Run what is in the archive
+        id: pack
         run: |
           set -eu
           (cd dist && shasum -a 256 -c SHA256SUMS)
@@ -110,6 +115,7 @@ jobs:
           scripts/smoke-kernel.sh check/citroenition-v"$VERSION"-aarch64-macos headless 2>&1 | tee smoke.log
 
       - name: The real kernel with a window (does not gate the release)
+        if: ${{ !cancelled() && steps.pack.conclusion != 'skipped' }}
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -118,6 +124,7 @@ jobs:
           scripts/smoke-kernel.sh check/citroenition-v"$VERSION"-aarch64-macos window 2>&1 | tee smoke-window.log
 
       - name: The desktop app draws a window (does not gate the release)
+        if: ${{ !cancelled() && steps.pack.conclusion != 'skipped' }}
         continue-on-error: true
         timeout-minutes: 3
         run: |
@@ -125,6 +132,12 @@ jobs:
           check/citroenition-v"$VERSION"-aarch64-macos/Citroenition.app/Contents/MacOS/citro-gui \
             --demo --screenshot gui-profiles.png --page profiles --theme dark 2>&1 | tee gui.log
           ls -l gui-profiles.png | tee -a gui.log
+
+      - name: The tests must have passed
+        if: ${{ !cancelled() && steps.tests.outcome == 'failure' }}
+        run: |
+          echo "the test suite failed on the Mac: see test.log (branch ci-logs-macos)"
+          exit 1
 
       - name: Keep the logs (branch ci-logs-macos)
         if: ${{ !cancelled() && (failure() || github.ref_type != 'tag') }}
