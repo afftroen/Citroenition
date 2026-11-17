@@ -129,9 +129,6 @@ const BASE_FLAGS: &[&str] = &[
     "--disable-renderer-backgrounding",
     // the Privacy Sandbox APIs a stock profile would expose and a persona should not
     "--disable-features=Translate,BrowsingTopics,BrowsingTopicsDocumentAPI,Fledge,InterestGroupStorage,PrivateAggregationApi,SharedStorageAPI,FencedFrames",
-    // Clearcote is built with DCHECKs (developer self-checks) that are fatal: a failed one turns the tab into "Aw, Snap!
-    // Error code: 6" (TikTok Ads, Gmail). Stable Chrome has none; with this they are only written to the log.
-    "--disable-features=DcheckIsFatal",
 ];
 
 const LIST_FLAGS: [&str; 4] =
@@ -608,6 +605,12 @@ pub fn start(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) ->
         return Err(Error::HubBound(p.profile_id.clone()));
     }
     let start_time = now();
+    // macOS kernel: DCHECKs that kill tabs ("Aw, Snap! Error code: 6") become log lines; once per kernel
+    let patch_note = match crate::kernel_patch::ensure(kernel) {
+        Ok(crate::kernel_patch::Outcome::Patched(n)) => Some(format!("made {n} DCHECK functions non-fatal")),
+        Ok(_) => None,
+        Err(e) => Some(format!("could not make DCHECKs non-fatal: {e}")),
+    };
     let mut prep = prepare(home, kernel, p, opts)?;
     let _ = fs::remove_file(prep.data_dir.join("DevToolsActivePort"));
 
@@ -619,6 +622,9 @@ pub fn start(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) ->
         let note = |m: String| {
             let _ = writeln!(&log, "citroenition: {m}");
         };
+        if let Some(m) = patch_note {
+            note(m);
+        }
         // the search engine Citroenition was told to use (first launch, or after the choice changed)
         match crate::browser_prefs::apply_search_choice(&prep.data_dir, &pdir.join("search-engine"), &p.search_engine) {
             Ok(true) => note(format!(

@@ -160,6 +160,7 @@ pub fn probe(home: &Home, kernel: &Kernel, p: &Profile) -> Result<Probe> {
 }
 
 fn run(tmp: &Home, kernel: &Kernel, q: &Profile) -> Result<Probe> {
+    let _ = crate::kernel_patch::ensure(kernel);
     let opts = LaunchOptions { headless: true, last_opened_tabs: false, ..LaunchOptions::default() };
     let prep = launch::prepare(tmp, kernel, q, &opts)?;
     let mut cmd = Command::new(&kernel.binary);

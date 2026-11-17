@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.12 (2026-11-18)
+
+* **"Aw, Snap! Error code: 6" fixed for real.** The switch in 0.1.11 does nothing in Clearcote's macOS build: its
+  DCHECKs (Chromium's developer self-checks) are compiled in as fatal. The crash on TikTok Ads Manager came from one of
+  them tripping while the mouse is over a part of the page that is being rebuilt. Citroenition now patches its copy of
+  the browser once, the first time a profile opens: the three functions that report a failed DCHECK say "error"
+  instead of "fatal", so the check is written to the browser log and the page keeps working, as in stable Chrome.
+  CHECKs, which guard against real memory errors, stay fatal. The patch is made on a copy that is re-signed and
+  swapped in, so open browsers are not disturbed. `citro kernel patch` does it by hand. Reopen your profiles after
+  updating.
+
 ## 0.1.11 (2026-11-18)
 
 * **No more "Aw, Snap! Error code: 6".** The Clearcote browser is built with Chromium's developer self-checks

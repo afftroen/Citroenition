@@ -170,6 +170,8 @@ enum KernelCmd {
     /// List the installed kernels, newest first
     #[command(visible_alias = "ls")]
     List,
+    /// macOS: make the kernel's DCHECKs non-fatal ("Aw, Snap! Error code: 6"); done automatically on launch
+    Patch,
     /// Download the Clearcote kernel, verify it (pinned OpenPGP key + SHA-256) and install it
     #[command(disable_version_flag = true)] // `--version` here selects the kernel, not the citro version
     Install {
@@ -1031,6 +1033,16 @@ fn run(cli: Cli) -> Result<()> {
             println!("version       {}", if k.version.is_empty() { "unknown" } else { &k.version });
             println!("chrome major  {}", k.major);
             println!("chromedriver  {}", k.chromedriver().map_or("-".to_owned(), |p| p.display().to_string()));
+        }
+        Cmd::Kernel { cmd: Some(KernelCmd::Patch) } => {
+            let k = Kernel::discover(&home, cli.kernel.as_deref())?;
+            match citro_core::kernel_patch::ensure(&k)? {
+                citro_core::kernel_patch::Outcome::NotApplicable => println!("nothing to patch in this kernel"),
+                citro_core::kernel_patch::Outcome::AlreadyDone => println!("already patched: DCHECKs are not fatal"),
+                citro_core::kernel_patch::Outcome::Patched(n) => {
+                    println!("patched {n} DCHECK functions: DCHECKs are logged, no longer fatal")
+                }
+            }
         }
         Cmd::Kernel { cmd: Some(KernelCmd::List) } => {
             let found = Kernel::installed(&home);

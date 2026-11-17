@@ -17,6 +17,7 @@ pub mod fingerprint;
 pub mod import;
 pub mod kernel;
 pub mod kernel_env;
+pub mod kernel_patch;
 pub mod launch;
 pub mod locale;
 pub mod probe;
