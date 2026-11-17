@@ -76,7 +76,7 @@ jobs:
 
       # A failing test does not stop the job here: the packaged programs still meet the real kernel below, so that one
       # run reports everything. The step "The tests must have passed" fails the job (and so the release) at the end.
-      - name: Tests, on a Mac (a debug build: the same code, a far shorter compile than a release one)
+      - name: Tests, on a Mac (a debug build, same code, far shorter compile than a release one)
         id: tests
         continue-on-error: true
         run: |
