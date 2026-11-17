@@ -117,8 +117,7 @@ pub fn check_hop(hop: &ProxyHop, echo: &Echo, timeout: Duration) -> ProxyCheck {
     if let Err(e) = stream.write_all(request.as_bytes()) {
         return fail(format!("{target} closed the connection: {}", io_reason(&e)));
     }
-    let mut raw = Vec::new();
-    let _ = stream.take(64 * 1024).read_to_end(&mut raw);
+    let raw = read_answer(&mut stream, started + timeout);
     let text = String::from_utf8_lossy(&raw);
     let Some((head, body)) = text.split_once("\r\n\r\n") else {
         return fail(format!("{target} did not answer with HTTP"));
@@ -149,6 +148,62 @@ pub fn check_hop(hop: &ProxyHop, echo: &Echo, timeout: Duration) -> ProxyCheck {
         )),
         Err(_) => fail("the IP service sent an unexpected answer".into()),
     }
+}
+
+/// Read one HTTP answer and stop as soon as it is complete. Many proxies keep the tunnel open after the IP service
+/// has answered (`Connection: close` notwithstanding), so waiting for the end of the stream would sit out the whole
+/// timeout on every check. Complete = `Content-Length` bytes of body, the last chunk of a chunked body, or (no length
+/// given) a JSON object whose braces balance.
+fn read_answer(s: &mut TcpStream, deadline: Instant) -> Vec<u8> {
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 8192];
+    while raw.len() < 64 * 1024 {
+        if answer_complete(&raw) {
+            break;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        let _ = s.set_read_timeout(Some(left));
+        match s.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => raw.extend_from_slice(&buf[..n]),
+        }
+    }
+    raw
+}
+
+fn answer_complete(raw: &[u8]) -> bool {
+    let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else { return false };
+    let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
+    let body = &raw[end + 4..];
+    let header = |name: &str| {
+        head.lines().find_map(|l| l.split_once(':').filter(|(k, _)| k.trim() == name).map(|(_, v)| v.trim().to_owned()))
+    };
+    if let Some(n) = header("content-length").and_then(|v| v.parse::<usize>().ok()) {
+        return body.len() >= n;
+    }
+    if header("transfer-encoding").is_some_and(|v| v.contains("chunked")) {
+        return body.windows(5).any(|w| w == b"0\r\n\r\n");
+    }
+    // no length: a whole JSON object is enough
+    let mut depth = 0i32;
+    let mut seen = false;
+    for &b in body {
+        match b {
+            b'{' => {
+                depth += 1;
+                seen = true;
+            }
+            b'}' => depth -= 1,
+            _ => {}
+        }
+        if seen && depth == 0 {
+            return true;
+        }
+    }
+    false
 }
 
 fn io_reason(e: &std::io::Error) -> String {
@@ -362,6 +417,38 @@ mod tests {
             format!("{}|{req}", String::from_utf8_lossy(&name[..name.len() - 2]))
         });
         (port, h)
+    }
+
+    /// A proxy that answers at once but keeps the tunnel open: the check must not wait for it to close.
+    #[test]
+    fn a_proxy_that_keeps_the_connection_open_does_not_slow_the_check() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let srv = std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            read_request(&mut s);
+            s.write_all(http_ok(BODY).as_bytes()).unwrap();
+            let _ = rx.recv_timeout(Duration::from_secs(10)); // hold the connection open
+        });
+        let t = Instant::now();
+        let r = check_hop(&hop("http", port, "", ""), &Echo::default(), Duration::from_secs(8));
+        assert!(t.elapsed() < Duration::from_secs(2), "took {:?}", t.elapsed());
+        assert!(r.ok, "{r:?}");
+        assert_eq!((r.ip.as_str(), r.country.as_str()), ("198.51.100.23", "de"));
+        let _ = tx.send(());
+        srv.join().unwrap();
+    }
+
+    #[test]
+    fn complete_answers_are_recognised() {
+        let ok = |b: &str| answer_complete(b.as_bytes());
+        assert!(ok("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"));
+        assert!(!ok("HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\n{\"a\""));
+        assert!(ok("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n"));
+        assert!(ok("HTTP/1.1 200 OK\r\n\r\n{\"a\":{\"b\":1}}"));
+        assert!(!ok("HTTP/1.1 200 OK\r\n\r\n{\"a\":{\"b\":1}"));
+        assert!(!ok("HTTP/1.1 200 OK\r\nContent-Le"));
     }
 
     #[test]

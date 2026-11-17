@@ -482,7 +482,7 @@ fn find<'a>(st: &'a State, id: &str) -> BResult<&'a Profile> {
 
 fn run_state(st: &State, id: &str) -> RunState {
     if let Some((pid, since)) = st.running.get(id) {
-        RunState::Open { pid: *pid, since: *since }
+        RunState::Open { pid: *pid, since: *since, port: 9222 + (*pid % 100) as u16 }
     } else if let Some(l) = st.locks.get(id) {
         RunState::LockedElsewhere { user: l.user.clone(), device: l.device.clone(), since: l.since }
     } else {

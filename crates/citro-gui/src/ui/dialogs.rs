@@ -66,6 +66,8 @@ impl CitroApp {
             self.remark_modal(ctx);
         } else if self.proxy_dlg.is_some() {
             self.proxy_modal(ctx);
+        } else if self.bulk_dlg.is_some() {
+            self.bulk_modal(ctx);
         } else if self.profiles.tags_for.is_some() {
             self.tags_modal(ctx);
         } else if self.update.dialog {

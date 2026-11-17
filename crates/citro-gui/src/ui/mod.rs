@@ -2,6 +2,7 @@
 //! draws + returns what the user asked for. Blocking backend work goes through `tasks`.
 
 pub mod app;
+pub mod bulk;
 pub mod dialogs;
 pub mod edit;
 pub mod export;

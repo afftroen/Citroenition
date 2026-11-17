@@ -91,12 +91,13 @@ enum Act {
     Tags(Vec<String>),
     CheckProxy(Vec<String>),
     EditProxy(String),
+    Bulk(Vec<String>),
     SaveRemark(String, String),
 }
 
 /// The status column's view of a row: the backend's run state plus what the UI itself is doing to it.
 enum St {
-    Open { pid: u32, since: i64 },
+    Open { pid: u32, since: i64, port: u16 },
     Closed,
     Busy(&'static str),
     Locked { user: String, device: String, since: i64 },
@@ -111,7 +112,7 @@ fn status_of(r: &Row, busy: Option<Busy>, failure: Option<&String>) -> St {
         (_, RunState::LockedElsewhere { user, device, since }) => {
             St::Locked { user: user.clone(), device: device.clone(), since: *since }
         }
-        (_, RunState::Open { pid, since }) => St::Open { pid: *pid, since: *since },
+        (_, RunState::Open { pid, since, port }) => St::Open { pid: *pid, since: *since, port: *port },
         (_, RunState::Closed) => match failure {
             Some(e) => St::Failed(e.clone()),
             None => St::Closed,
@@ -164,28 +165,26 @@ const OS_MACOS: &[u8] = include_bytes!("../../assets/os/macos.png");
 const OS_WINDOWS: &[u8] = include_bytes!("../../assets/os/windows.png");
 const OS_LINUX: &[u8] = include_bytes!("../../assets/os/linux.png");
 
-/// The mark of the OS the profile presents (Simple Icons, CC0), in the accent blue like other antidetect browsers'; "Auto" is a
-/// ring with an A.
-fn os_mark(ui: &mut Ui, p: &Palette, os: &str) {
+/// The mark of the OS the profile presents (Simple Icons, CC0), in the accent blue like other antidetect browsers'.
+/// "Auto" shows the OS it resolves to: the user agent's, else this computer's.
+fn os_mark(ui: &mut Ui, p: &Palette, pr: &citro_core::profile::Profile) {
+    use citro_core::fingerprint::Os;
+    let auto = pr.persona_os.trim().is_empty();
+    let os = Os::from_name(&pr.persona_os)
+        .or_else(|| pr.fingerprint_config.str("ua").as_deref().and_then(Os::from_ua))
+        .unwrap_or_else(Os::host);
     let tint = p.accent_hover;
     let resp = match os {
-        "windows" => widgets::tinted_png(ui, "os-windows", OS_WINDOWS, 15.0, tint),
-        "macos" => widgets::tinted_png(ui, "os-macos", OS_MACOS, 16.0, tint),
-        "linux" => widgets::tinted_png(ui, "os-linux", OS_LINUX, 18.0, tint),
-        _ => {
-            let (rect, resp) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
-            let c = rect.center();
-            ui.painter().circle_stroke(c, 7.0, egui::Stroke::new(1.3, p.dim));
-            ui.painter().text(c, Align2::CENTER_CENTER, "A", FontId::new(9.0, theme::semibold_family()), p.dim);
-            resp
-        }
+        Os::Windows => widgets::tinted_png(ui, "os-windows", OS_WINDOWS, 15.0, tint),
+        Os::Mac => widgets::tinted_png(ui, "os-macos", OS_MACOS, 16.0, tint),
+        Os::Linux => widgets::tinted_png(ui, "os-linux", OS_LINUX, 18.0, tint),
     };
-    resp.on_hover_text(match os {
-        "windows" => "Windows persona",
-        "macos" => "macOS persona",
-        "linux" => "Linux persona",
-        _ => "Auto: this computer's OS",
-    });
+    let name = match os {
+        Os::Windows => "Windows",
+        Os::Mac => "macOS",
+        Os::Linux => "Linux",
+    };
+    resp.on_hover_text(if auto { format!("{name} (Auto)") } else { format!("{name} persona") });
 }
 
 #[allow(dead_code)]
@@ -450,8 +449,9 @@ impl CitroApp {
             if widgets::icon_button(ui, &p, Icon::Stop, "Close the selected browsers", can_close, false).clicked() {
                 acts.push(Act::Close(sel.clone()));
             }
-            if widgets::icon_button(ui, &p, Icon::Edit, "Edit the selected profile…", one, false).clicked() {
-                acts.push(Act::Edit(sel[0].clone()));
+            let tip = if sel.len() > 1 { "Bulk edit the selected profiles…" } else { "Edit the selected profile…" };
+            if widgets::icon_button(ui, &p, Icon::Edit, tip, any, false).clicked() {
+                acts.push(if one { Act::Edit(sel[0].clone()) } else { Act::Bulk(sel.clone()) });
             }
             if widgets::icon_button(ui, &p, Icon::MoveTo, "Move to group…", any, false).clicked() {
                 acts.push(Act::Move(sel.clone()));
@@ -598,6 +598,7 @@ impl CitroApp {
                 }
             }
             Act::EditProxy(id) => self.open_proxy_dialog(&id),
+            Act::Bulk(ids) => self.open_bulk(ids),
             Act::SaveRemark(id, text) => {
                 let text = text.trim_end().to_owned();
                 self.profiles.remark_edit = None;
@@ -880,7 +881,7 @@ impl CitroApp {
                                 // Name: the OS mark, then the name on up to two lines
                                 row.col(|ui| {
                                     ui.spacing_mut().item_spacing.x = 8.0;
-                                    os_mark(ui, &p, &pr.persona_os);
+                                    os_mark(ui, &p, pr);
                                     if r.team.is_some() {
                                         widgets::team_mark(ui, p.accent_hover).on_hover_text(
                                             "Shared through the team hub: it opens on one device at a time",
@@ -1248,6 +1249,10 @@ impl CitroApp {
                                         acts.push(Act::Edit(id.clone()));
                                         ui.close();
                                     }
+                                    if ui.add_enabled(n > 1, Button::new(many("Bulk edit…"))).clicked() {
+                                        acts.push(Act::Bulk(targets.clone()));
+                                        ui.close();
+                                    }
                                     if ui.add_enabled(n == 1, Button::new("Duplicate")).clicked() {
                                         acts.push(Act::Duplicate(id.clone()));
                                         ui.close();
@@ -1413,10 +1418,32 @@ impl RowCells<'_, '_> {
 
 fn status_cell(ui: &mut Ui, p: &Palette, st: &St, now: i64, offset: i32) {
     match st {
-        St::Open { pid, since } => {
-            widgets::dot(ui, p.ok, true);
-            ui.label(RichText::new("Open").color(p.ok))
-                .on_hover_text(format!("Open since {} (pid {pid})", timefmt::since(now, *since, offset)));
+        St::Open { pid, since, port } => {
+            // two lines: Open, then the port automation tools connect to (click to copy)
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.horizontal(|ui| {
+                    widgets::dot(ui, p.ok, true);
+                    ui.label(RichText::new("Open").color(p.ok))
+                        .on_hover_text(format!("Open since {} (pid {pid})", timefmt::since(now, *since, offset)));
+                });
+                if *port > 0 {
+                    let addr = format!("127.0.0.1:{port}");
+                    let r = ui
+                        .add(
+                            egui::Label::new(RichText::new(format!("Port {port}")).size(11.5).color(p.accent_hover))
+                                .sense(Sense::click()),
+                        )
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .on_hover_text(format!(
+                            "DevTools port: Puppeteer, Playwright and Selenium connect to {addr}\n\
+                             (ws:// address: http://{addr}/json/version). Click to copy {addr}"
+                        ));
+                    if r.clicked() {
+                        ui.ctx().copy_text(addr);
+                    }
+                }
+            });
         }
         St::Closed => {
             widgets::dot(ui, p.idle, false);

@@ -91,9 +91,9 @@ impl HubState {
 
 /// The status column of a team profile. The browser running here wins; then "the browser is gone and its data is
 /// still going up"; then somebody else's lock.
-pub(super) fn run_state(running: Option<(u32, i64)>, syncing: bool, lock: Option<&LockRow>) -> RunState {
-    if let Some((pid, since)) = running {
-        return RunState::Open { pid, since };
+pub(super) fn run_state(running: Option<(u32, i64, u16)>, syncing: bool, lock: Option<&LockRow>) -> RunState {
+    if let Some((pid, since, port)) = running {
+        return RunState::Open { pid, since, port };
     }
     if syncing {
         return RunState::Closing;
@@ -409,8 +409,8 @@ mod tests {
     fn the_status_column_of_a_team_profile() {
         let other = lock(false);
         assert_eq!(
-            run_state(Some((7, 5)), true, Some(&other)),
-            RunState::Open { pid: 7, since: 5 },
+            run_state(Some((7, 5, 0)), true, Some(&other)),
+            RunState::Open { pid: 7, since: 5, port: 0 },
             "the browser here wins"
         );
         assert_eq!(run_state(None, true, Some(&other)), RunState::Closing, "its data is still going up");

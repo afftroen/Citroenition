@@ -762,33 +762,57 @@ pub fn start(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) ->
 /// The tabs that were open when the user closed the last window; the next launch opens them.
 const REOPEN_TABS: &str = "reopen-tabs.json";
 
-/// Quit the browser `pid` once it has no window left: poll its page targets, and when none is left for two
-/// looks in a row (after it had one), save the cookies and close it the way Chrome's own Quit does
-/// (`Browser.close`), which writes the cookies and the session to disk.
+/// Quit the browser `pid` once it has no window left. On macOS the window server is asked (the red button closes
+/// the window but leaves the app running in the Dock, and pages such as an extension's can outlive the window);
+/// elsewhere the browser's page targets are counted. Before quitting, the cookies and the open tabs are kept, then
+/// the browser is closed the way Chrome's own Quit does (`Browser.close`), which writes everything to disk.
 fn watch_windows(home: Home, id: String, ws: String, pid: u32) {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    static WATCHED: Mutex<Option<HashSet<u32>>> = Mutex::new(None);
+    if !WATCHED.lock().map(|mut w| w.get_or_insert_with(HashSet::new).insert(pid)).unwrap_or(false) {
+        return; // already watched
+    }
     let _ = std::thread::Builder::new().name(format!("windows-{pid}")).spawn(move || {
-        let Ok(mut cdp) = crate::cdp::Cdp::connect(&ws) else { return };
         let (mut seen, mut empty, mut polls) = (false, 0, 0u32);
         // without a page the browser no longer hands out its cookies, so a recent copy is kept while it has one
         let mut last = String::new();
-        // and the tabs: a window closed tab by tab or with its close button leaves an empty session behind
+        // and the tabs: a window closed with its close button leaves an empty session behind
         let mut tabs: Vec<String> = Vec::new();
+        let mut cdp: Option<crate::cdp::Cdp> = None;
         loop {
             polls += 1;
             std::thread::sleep(Duration::from_millis(700));
-            let Ok(r) = cdp.call("Target.getTargets", serde_json::json!({})) else { return }; // it is gone
-            let pages = r["targetInfos"].as_array().map_or(0, |t| t.iter().filter(|t| t["type"] == "page").count());
-            if pages > 0 {
+            if !process_alive(pid) {
+                break;
+            }
+            if cdp.is_none() {
+                cdp = crate::cdp::Cdp::connect(&ws).ok();
+            }
+            let Some(c) = cdp.as_mut() else { continue };
+            let targets = match c.call("Target.getTargets", serde_json::json!({})) {
+                Ok(r) => r["targetInfos"].as_array().cloned().unwrap_or_default(),
+                Err(_) => {
+                    cdp = None; // a slow or dropped answer: connect again next time
+                    continue;
+                }
+            };
+            let pages: Vec<&serde_json::Value> = targets.iter().filter(|t| t["type"] == "page").collect();
+            let open = match crate::windows::has_window(pid) {
+                Some(w) => w,
+                None => !pages.is_empty(),
+            };
+            if open {
                 (seen, empty) = (true, 0);
-                tabs = r["targetInfos"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|t| t["type"] == "page")
+                let now: Vec<String> = pages
+                    .iter()
                     .filter_map(|t| t["url"].as_str())
                     .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
                     .map(str::to_owned)
                     .collect();
+                if !now.is_empty() {
+                    tabs = now;
+                }
                 if polls % 3 == 1
                     && let Ok(t) = crate::cookies::export_live(&ws)
                 {
@@ -798,6 +822,9 @@ fn watch_windows(home: Home, id: String, ws: String, pid: u32) {
             }
             empty += 1;
             if seen && empty >= 2 {
+                if let Ok(t) = crate::cookies::export_live(&ws) {
+                    last = t; // still possible while a background page is alive
+                }
                 keep_cookies(&home, &id, &last);
                 if !tabs.is_empty() {
                     let _ = fs::write(
@@ -805,11 +832,31 @@ fn watch_windows(home: Home, id: String, ws: String, pid: u32) {
                         serde_json::to_vec(&tabs).unwrap_or_default(),
                     );
                 }
-                let _ = cdp.call("Browser.close", serde_json::json!({}));
-                return;
+                let _ = c.call("Browser.close", serde_json::json!({}));
+                break;
             }
         }
+        if let Ok(mut w) = WATCHED.lock()
+            && let Some(set) = w.as_mut()
+        {
+            set.remove(&pid);
+        }
     });
+}
+
+/// Watch the windows of every browser that is open now (ones opened before this program started, or by the
+/// command line), so closing their last window quits them too. Cheap to call often.
+pub fn watch_open_browsers(home: &Home) {
+    for r in list_running(home) {
+        if !r.headless {
+            watch_windows(home.clone(), r.profile_id.clone(), r.ws.clone(), r.pid);
+        }
+    }
+}
+
+fn process_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 only checks that the process exists.
+    unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
 /// Put the profile's `cookie` field into the browser, once per change of the field (a digest in `cookies-imported`

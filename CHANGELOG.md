@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.10 (2026-11-17)
+
+* **The red close button really closes the browser.** Citroenition now asks macOS whether the browser still has a
+  window (pages such as an extension's can outlive it), instead of counting tabs; a second after the last window
+  closes it saves the cookies and the open tabs and quits the browser, and the tabs come back next time. Browsers
+  that were already open when Citroenition started are watched too.
+* **Bulk edit**: with several profiles ticked, the edit button (or right-click -> Bulk edit) changes them all at once:
+  group, proxy (one for all, one per line handed out in order, or none), remark (replace or add a line), tags (add or
+  remove), start URLs (replace or add) and OS. Everything starts on Keep.
+* **Proxy checks take a fraction of a second** instead of about ten: many proxies keep the connection open after the
+  IP service has answered, and the check waited for it to close. It now stops as soon as the answer is complete.
+* **The port of an open profile** is shown under "Open" in the list (click to copy `127.0.0.1:port`): Puppeteer,
+  Playwright and Selenium connect there.
+* Profiles on Auto show the OS they present (from their user agent, else this computer's) instead of an "A"; imports
+  set the OS from the user agent.
+* Long cookie, start URL, bookmark and remark fields stop growing at about a square and scroll inside.
+
 ## 0.1.9 (2026-11-17)
 
 * **Deleting a profile no longer closes the app.** After a delete, the keyboard shortcuts read the profile list before

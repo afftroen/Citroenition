@@ -95,6 +95,8 @@ pub enum RunState {
     Open {
         pid: u32,
         since: i64,
+        /// The DevTools port (Puppeteer / Playwright / Selenium connect to 127.0.0.1:port); 0 when unknown.
+        port: u16,
     },
     /// Open on another device (team lock). It cannot be opened here.
     LockedElsewhere {

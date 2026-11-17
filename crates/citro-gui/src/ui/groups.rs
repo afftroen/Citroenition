@@ -231,7 +231,9 @@ impl CitroApp {
             );
             ui.add_space(8.0);
             widgets::field_label(ui, &p, "Start pages");
-            ui.add(
+            widgets::capped(
+                ui,
+                "tabs_text-box",
                 TextEdit::multiline(&mut r.tabs_text)
                     .hint_text("https://www.tiktok.com/")
                     .margin(egui::Margin::symmetric(10, 8))
@@ -244,7 +246,9 @@ impl CitroApp {
             ));
             ui.add_space(8.0);
             widgets::field_label(ui, &p, "Bookmarks");
-            ui.add(
+            widgets::capped(
+                ui,
+                "bookmarks_text-box",
                 TextEdit::multiline(&mut r.bookmarks_text)
                     .hint_text("TikTok Ads | https://ads.tiktok.com/")
                     .margin(egui::Margin::symmetric(10, 8))

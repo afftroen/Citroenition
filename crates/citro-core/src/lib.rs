@@ -25,5 +25,6 @@ pub mod redact;
 pub mod relay;
 pub mod rng;
 pub mod store;
+pub mod windows;
 
 pub use error::{Error, Result};

@@ -19,7 +19,6 @@ pub struct State {
     pub applying: bool,
 }
 
-
 impl CitroApp {
     fn read_import_file(&mut self) {
         let path = crate::util::expand_tilde(self.import_ui.path.trim().trim_matches('"'), self.home.as_deref());

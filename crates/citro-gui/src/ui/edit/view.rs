@@ -447,7 +447,9 @@ impl EditDialog {
         let mut ch = false;
         let existing = !self.id.is_empty();
         form_row(ui, p, "Cookie", |ui| {
-            let r = ui.add(
+            let r = widgets::capped(
+                ui,
+                "cookie-box",
                 TextEdit::multiline(&mut self.cookie)
                     .font(egui::TextStyle::Monospace)
                     .hint_text(
@@ -503,7 +505,9 @@ impl EditDialog {
             );
         });
         form_row(ui, p, "Remark", |ui| {
-            let r = ui.add(
+            let r = widgets::capped(
+                ui,
+                "remark-box",
                 TextEdit::multiline(&mut self.remark)
                     .hint_text("Optional note, shown in the list")
                     .margin(Margin::symmetric(10, 8))
@@ -659,7 +663,9 @@ impl EditDialog {
             ch |= self.platform_account(ui, p);
         }
         form_row(ui, p, "Start URLs", |ui| {
-            let r = ui.add(
+            let r = widgets::capped(
+                ui,
+                "tabs-box",
                 TextEdit::multiline(&mut self.tabs)
                     .hint_text("https://example.com")
                     .margin(Margin::symmetric(10, 8))
@@ -678,7 +684,9 @@ impl EditDialog {
             }
         });
         form_row(ui, p, "Bookmarks", |ui| {
-            let r = ui.add(
+            let r = widgets::capped(
+                ui,
+                "bookmarks-box",
                 TextEdit::multiline(&mut self.bookmarks)
                     .hint_text("TikTok Ads | https://ads.tiktok.com/")
                     .margin(Margin::symmetric(10, 8))
@@ -967,7 +975,9 @@ impl EditDialog {
     fn advanced(&mut self, ui: &mut Ui, p: &Palette) -> bool {
         let mut ch = false;
         form_row(ui, p, "Launch arguments", |ui| {
-            let r = ui.add(
+            let r = widgets::capped(
+                ui,
+                "launch_args-box",
                 TextEdit::multiline(&mut self.launch_args)
                     .font(egui::TextStyle::Monospace)
                     .hint_text("--disable-features=Translate")

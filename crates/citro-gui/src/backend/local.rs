@@ -76,6 +76,8 @@ impl LocalBackend {
     /// Notices browsers that exited since the last look (closed by the user, crashed, closed by the CLI),
     /// stores their `last_close_time` and logs them. Returns the live browsers.
     fn sync(&self) -> HashMap<String, launch::Running> {
+        // closing a browser's last window quits it, also for browsers opened before this app started
+        launch::watch_open_browsers(&self.home);
         // a team browser closed by its window: its supervisor uploaded the data and gave the lock back; say so once
         for o in citro_sync::take_finished() {
             self.report_outcome(&o, true);
@@ -276,7 +278,7 @@ impl Backend for LocalBackend {
             .iter()
             .map(|p| {
                 let id = &p.profile_id;
-                let run = running.get(id).map(|r| (r.pid, r.started));
+                let run = running.get(id).map(|r| (r.pid, r.started, r.debug_port));
                 match bound.get(id) {
                     Some(team) => Row {
                         run: local_hub::run_state(
@@ -288,7 +290,7 @@ impl Backend for LocalBackend {
                         team: Some(team.clone()),
                     },
                     None => Row {
-                        run: run.map_or(RunState::Closed, |(pid, since)| RunState::Open { pid, since }),
+                        run: run.map_or(RunState::Closed, |(pid, since, port)| RunState::Open { pid, since, port }),
                         profile: redact(p),
                         team: None,
                     },

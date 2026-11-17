@@ -224,6 +224,16 @@ pub fn modal<R>(
         })
 }
 
+/// A multi-line text field that grows with its text up to about a square, then scrolls inside.
+pub fn capped(ui: &mut Ui, id: &str, edit: egui::TextEdit<'_>) -> Response {
+    egui::ScrollArea::vertical()
+        .id_salt(id)
+        .max_height(220.0)
+        .auto_shrink([false, true])
+        .show(ui, |ui| ui.add(edit))
+        .inner
+}
+
 /// Dialog footer: buttons right aligned, the confirming one is added first (so it is the right-most).
 pub fn footer<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     ui.add_space(8.0);

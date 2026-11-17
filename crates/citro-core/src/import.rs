@@ -476,6 +476,12 @@ fn from_rows(rows: Vec<Vec<String>>, out: &mut Parsed) {
         }
         let ua = get(Col::UserAgent);
         if !ua.is_empty() {
+            // no OS column: the user agent says which OS the profile presents
+            if p.persona_os.is_empty()
+                && let Some(o) = crate::fingerprint::Os::from_ua(&ua)
+            {
+                p.persona_os = o.name().to_owned();
+            }
             p.fingerprint_config.0.insert("ua".into(), Value::String(ua));
         }
         let ads_id = get(Col::AdsId);

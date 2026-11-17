@@ -139,7 +139,7 @@ mod tests {
                 "2",
                 "Versand ab Köln",
                 Some("http://198.51.100.7:8080"),
-                RunState::Open { pid: 7, since: 5 },
+                RunState::Open { pid: 7, since: 5, port: 0 },
             ),
             row(3, "Oliver Hughes", "0", "", None, locked()),
             row(
@@ -148,7 +148,7 @@ mod tests {
                 "1",
                 "needs SMS",
                 Some("socks5://203.0.113.11:1081"),
-                RunState::Open { pid: 8, since: 6 },
+                RunState::Open { pid: 8, since: 6, port: 0 },
             ),
             row(5, "Zoé", "", "last", None, RunState::Closed),
         ]
