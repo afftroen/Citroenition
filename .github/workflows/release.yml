@@ -56,9 +56,12 @@ jobs:
           retention-days: 14
 
   macos:
-    # Apple silicon: the only macOS kernel build Clearcote publishes is arm64
-    runs-on: macos-14
+    # Apple silicon: the only macOS kernel build Clearcote publishes is arm64. (macos-14 was retired on 2026-11-02.)
+    runs-on: macos-15
     timeout-minutes: 90
+    env:
+      # the floor the archive promises (Info.plist LSMinimumSystemVersion), whatever the runner's own macOS is
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:
       - uses: actions/checkout@v4
 
@@ -92,6 +95,9 @@ jobs:
             "$d/$p" --version
           done
           lipo -archs "$d/citro" "$d/Citroenition.app/Contents/MacOS/citro-gui"
+          for p in citro citro-hub citro-install Citroenition.app/Contents/MacOS/citro-gui; do
+            printf '%s: ' "$p"; otool -l "$d/$p" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print "minos " $2; exit}'
+          done
           codesign --verify --deep --strict --verbose=2 "$d/Citroenition.app"
           ls -l "$d" "$d/Citroenition.app/Contents" "$d/Citroenition.app/Contents/MacOS"
           ls "$d/docs"
