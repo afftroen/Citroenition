@@ -1,6 +1,6 @@
 [package]
 name = "citro"
-description = "Citroenition CLI and AdsPower-compatible Local API server"
+description = "Citroenition CLI and antidetect-browser-compatible Local API server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

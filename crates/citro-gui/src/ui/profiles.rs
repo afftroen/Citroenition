@@ -6,6 +6,7 @@ use super::theme::{self, Palette};
 use super::widgets::{self, Icon, Pill, dim, small_dim};
 use crate::backend::{Query, Row, RunState, SortKey, StatusFilter, group_label};
 use crate::selection::{Mods, Selection};
+use crate::ui::tasks::Refresh;
 use crate::{countries, query, timefmt};
 use eframe::egui::{
     self, Align, Align2, Button, Color32, ComboBox, CursorIcon, FontFamily, FontId, Key, Layout, Modifiers, Popup,
@@ -25,6 +26,25 @@ pub struct State {
     pub focus_search: bool,
     view: Vec<usize>,
     view_key: Option<(u64, u64, Query)>,
+    /// A name or remark being edited in the list.
+    inline: Option<Inline>,
+    /// The Tags window is open for these profiles.
+    pub tags_for: Option<Vec<String>>,
+    pub new_tag: String,
+    pub new_tag_color: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Field {
+    Name,
+    Remark,
+}
+
+struct Inline {
+    id: String,
+    field: Field,
+    text: String,
+    focused: bool,
 }
 
 /// What the user did this frame; applied after the table has been drawn (the table borrows the app).
@@ -44,6 +64,12 @@ enum Act {
     Sort(SortKey),
     ToggleCheck(String),
     ToggleAll,
+    SetGroup(Vec<String>, String),
+    StartEdit(String, Field, String),
+    CommitEdit,
+    CancelEdit,
+    Retag(Vec<String>, Vec<String>, Vec<String>),
+    Tags(Vec<String>),
 }
 
 /// The status column's view of a row: the backend's run state plus what the UI itself is doing to it.
@@ -71,7 +97,35 @@ fn status_of(r: &Row, busy: Option<Busy>, failure: Option<&String>) -> St {
     }
 }
 
-/// Text on up to two lines, then cut with an ellipsis (AdsPower's name and remark cells).
+fn tag_color(key: &str) -> Color32 {
+    let c = citro_core::profile::tag_rgb(key);
+    Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)
+}
+
+/// The text field of an inline edit, when `id`'s `field` is being edited. Enter or leaving the field saves, Esc
+/// cancels. Returns `false` when this cell is not being edited.
+fn inline_edit(ui: &mut Ui, inline: &mut Option<Inline>, id: &str, field: Field, acts: &mut Vec<Act>) -> bool {
+    let Some(e) = inline.as_mut().filter(|e| e.id == id && e.field == field) else { return false };
+    let r = ui.add(
+        egui::TextEdit::singleline(&mut e.text).desired_width(f32::INFINITY).char_limit(if field == Field::Name {
+            100
+        } else {
+            2000
+        }),
+    );
+    if !e.focused {
+        r.request_focus();
+        e.focused = true;
+    }
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        acts.push(Act::CancelEdit);
+    } else if r.lost_focus() {
+        acts.push(Act::CommitEdit);
+    }
+    true
+}
+
+/// Text on up to two lines, then cut with an ellipsis (the antidetect browser's name and remark cells).
 fn two_lines(ui: &mut Ui, text: RichText) -> Response {
     let w = ui.available_width().max(40.0);
     let style = ui.style().clone();
@@ -90,7 +144,7 @@ const OS_MACOS: &[u8] = include_bytes!("../../assets/os/macos.png");
 const OS_WINDOWS: &[u8] = include_bytes!("../../assets/os/windows.png");
 const OS_LINUX: &[u8] = include_bytes!("../../assets/os/linux.png");
 
-/// The mark of the OS the profile presents (Simple Icons, CC0), in the accent blue like AdsPower's; "Auto" is a
+/// The mark of the OS the profile presents (Simple Icons, CC0), in the accent blue like other antidetect browsers'; "Auto" is a
 /// ring with an A.
 fn os_mark(ui: &mut Ui, p: &Palette, os: &str) {
     let tint = p.accent_hover;
@@ -379,8 +433,8 @@ impl CitroApp {
             if widgets::icon_button(ui, &p, Icon::MoveTo, "Move to group…", any, false).clicked() {
                 acts.push(Act::Move(sel.clone()));
             }
-            if widgets::icon_button(ui, &p, Icon::Tag, "Set remark…", any, false).clicked() {
-                acts.push(Act::Remark(sel.clone()));
+            if widgets::icon_button(ui, &p, Icon::Tag, "Tags…", any, false).clicked() {
+                acts.push(Act::Tags(sel.clone()));
             }
             if hub_on
                 && widgets::icon_button(
@@ -440,6 +494,62 @@ impl CitroApp {
             }
             Act::ClearCache(ids) => self.confirm_clear_cache(ids),
             Act::Move(ids) => self.move_dlg = Some(MoveDialog::new(ids)),
+            Act::SetGroup(ids, gid) => {
+                let name = group_label(&self.groups, &gid);
+                for r in self.rows.iter_mut().filter(|r| ids.iter().any(|i| i == r.id())) {
+                    r.profile.group_id = gid.clone();
+                }
+                let n = ids.len();
+                let what = if n == 1 { self.name_of(&ids[0]) } else { format!("{n} profiles") };
+                self.run_op(Vec::new(), format!("Moved {what} to {name}"), Refresh::ROWS, move |b| {
+                    b.move_to_group(&ids, &gid)
+                });
+            }
+            Act::StartEdit(id, field, text) => {
+                self.profiles.inline = Some(Inline { id, field, text, focused: false });
+            }
+            Act::CancelEdit => self.profiles.inline = None,
+            Act::CommitEdit => {
+                let Some(e) = self.profiles.inline.take() else { return };
+                let Some(row) = self.row(&e.id) else { return };
+                let (id, text) = (e.id.clone(), e.text.trim().to_owned());
+                match e.field {
+                    Field::Name => {
+                        if text.is_empty() || text == row.profile.name {
+                            return;
+                        }
+                        for r in self.rows.iter_mut().filter(|r| r.id() == id) {
+                            r.profile.name = text.clone();
+                        }
+                        self.run_op(Vec::new(), String::new(), Refresh::ROWS, move |b| {
+                            let mut p = b.profile(&id)?;
+                            p.name = text;
+                            b.save_profile(p).map(|_| ())
+                        });
+                    }
+                    Field::Remark => {
+                        if text == row.profile.remark.trim() {
+                            return;
+                        }
+                        for r in self.rows.iter_mut().filter(|r| r.id() == id) {
+                            r.profile.remark = text.clone();
+                        }
+                        self.run_op(Vec::new(), String::new(), Refresh::ROWS, move |b| b.set_remark(&id, &text));
+                    }
+                }
+            }
+            Act::Retag(ids, add, remove) => {
+                for r in self.rows.iter_mut().filter(|r| ids.iter().any(|i| i == r.id())) {
+                    r.profile.tags.retain(|t| !remove.contains(t));
+                    for a in &add {
+                        if !r.profile.tags.contains(a) {
+                            r.profile.tags.push(a.clone());
+                        }
+                    }
+                }
+                self.run_op(Vec::new(), String::new(), Refresh::ROWS, move |b| b.retag(&ids, &add, &remove));
+            }
+            Act::Tags(ids) => self.profiles.tags_for = Some(ids),
             Act::Remark(ids) => {
                 let text = if ids.len() == 1 {
                     self.row(&ids[0]).map(|r| r.profile.remark.clone()).unwrap_or_default()
@@ -475,8 +585,8 @@ impl CitroApp {
         let selected_n = self.profiles.selection.len();
         let mut acts: Vec<Act> = Vec::new();
         {
-            let CitroApp { rows, groups, busy, last_error, profiles, .. } = &mut *self;
-            let State { view, selection, query: q, .. } = profiles;
+            let CitroApp { rows, groups, tags, busy, last_error, profiles, .. } = &mut *self;
+            let State { view, selection, query: q, inline, .. } = profiles;
             let view: &Vec<usize> = view;
             let all_selected = {
                 let ids: Vec<String> = view.iter().map(|&i| rows[i].id().to_owned()).collect();
@@ -501,10 +611,11 @@ impl CitroApp {
                         .column(Column::exact(28.0))
                         .column(Column::exact(42.0))
                         .column(Column::exact(72.0))
-                        .column(Column::initial(160.0).at_least(120.0).clip(true))
-                        .column(Column::initial(96.0).at_least(70.0).clip(true))
-                        .column(Column::initial(150.0).at_least(120.0).clip(true))
-                        .column(Column::remainder().at_least(120.0).clip(true))
+                        .column(Column::initial(150.0).at_least(110.0).clip(true))
+                        .column(Column::initial(92.0).at_least(70.0).clip(true))
+                        .column(Column::initial(118.0).at_least(90.0).clip(true))
+                        .column(Column::initial(140.0).at_least(110.0).clip(true))
+                        .column(Column::remainder().at_least(110.0).clip(true))
                         .column(Column::exact(80.0))
                         .column(Column::exact(96.0))
                         .column(Column::exact(112.0))
@@ -520,6 +631,7 @@ impl CitroApp {
                             head(&mut header, &p, q, "ID", None, &mut acts);
                             head(&mut header, &p, q, "Name", Some(SortKey::Name), &mut acts);
                             head(&mut header, &p, q, "Group", Some(SortKey::Group), &mut acts);
+                            head(&mut header, &p, q, "Tags", None, &mut acts);
                             head(&mut header, &p, q, "IP", Some(SortKey::Proxy), &mut acts);
                             head(&mut header, &p, q, "Remark", Some(SortKey::Remark), &mut acts);
                             head(&mut header, &p, q, "Created", Some(SortKey::Created), &mut acts);
@@ -557,15 +669,21 @@ impl CitroApp {
                                             "Shared through the team hub: it opens on one device at a time",
                                         );
                                     }
-                                    two_lines(
-                                        ui,
-                                        RichText::new(&pr.name)
-                                            .size(13.5)
-                                            .family(theme::medium_family())
-                                            .color(p.strong),
-                                    )
-                                    .on_hover_text(&pr.name);
+                                    if !inline_edit(ui, inline, &id, Field::Name, &mut acts) {
+                                        let r = two_lines(
+                                            ui,
+                                            RichText::new(&pr.name)
+                                                .size(13.5)
+                                                .family(theme::medium_family())
+                                                .color(p.strong),
+                                        )
+                                        .on_hover_text(format!("{}\nDouble-click to rename", pr.name));
+                                        if r.double_clicked() {
+                                            acts.push(Act::StartEdit(id.clone(), Field::Name, pr.name.clone()));
+                                        }
+                                    }
                                 });
+                                // Group: click to move the profile (or the selection it is part of)
                                 cell(&mut row, |ui| {
                                     let label = group_label(groups, &pr.group_id);
                                     let t = if label == "Ungrouped" {
@@ -573,7 +691,90 @@ impl CitroApp {
                                     } else {
                                         RichText::new(label).color(p.strong)
                                     };
-                                    ui.add(egui::Label::new(t).truncate());
+                                    let resp = ui
+                                        .add(egui::Label::new(t).truncate().sense(Sense::click()))
+                                        .on_hover_cursor(CursorIcon::PointingHand)
+                                        .on_hover_text("Click to change the group");
+                                    let targets = if selected {
+                                        selection
+                                            .ordered(&view.iter().map(|&i| rows[i].id().to_owned()).collect::<Vec<_>>())
+                                    } else {
+                                        vec![id.clone()]
+                                    };
+                                    let cur = if pr.group_id.is_empty() { "0".to_owned() } else { pr.group_id.clone() };
+                                    Popup::menu(&resp).show(|ui| {
+                                        ui.set_min_width(170.0);
+                                        if targets.len() > 1 {
+                                            ui.label(small_dim(&p, format!("Move {} profiles to", targets.len())));
+                                        }
+                                        let mut opts: Vec<(String, String)> = vec![("0".into(), "Ungrouped".into())];
+                                        opts.extend(groups.iter().map(|g| (g.group_id.clone(), g.group_name.clone())));
+                                        for (gid, name) in opts {
+                                            if ui.selectable_label(gid == cur, name).clicked() {
+                                                acts.push(Act::SetGroup(targets.clone(), gid));
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                });
+                                // Tags: colored chips; click to tick tags
+                                cell(&mut row, |ui| {
+                                    ui.spacing_mut().item_spacing.x = 4.0;
+                                    let mine: Vec<&crate::backend::Tag> =
+                                        pr.tags.iter().filter_map(|t| tags.iter().find(|x| &x.id == t)).collect();
+                                    let resp = ui
+                                        .horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 4.0;
+                                            if mine.is_empty() {
+                                                ui.label(dim(&p, "+ Tag"));
+                                            }
+                                            // as many chips as fit, then "+N"
+                                            let mut shown = 0;
+                                            for t in &mine {
+                                                let room = ui.available_width();
+                                                let need = t.name.chars().count() as f32 * 6.6 + 18.0;
+                                                if shown > 0 && need + 24.0 > room {
+                                                    break;
+                                                }
+                                                widgets::badge(ui, &t.name, tag_color(&t.color));
+                                                shown += 1;
+                                            }
+                                            if mine.len() > shown {
+                                                ui.label(small_dim(&p, format!("+{}", mine.len() - shown)));
+                                            }
+                                        })
+                                        .response
+                                        .interact(Sense::click())
+                                        .on_hover_cursor(CursorIcon::PointingHand)
+                                        .on_hover_text(if mine.is_empty() {
+                                            "Click to add tags".to_owned()
+                                        } else {
+                                            mine.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")
+                                        });
+                                    Popup::menu(&resp).show(|ui| {
+                                        ui.set_min_width(190.0);
+                                        for t in tags.iter() {
+                                            let mut on = pr.tags.contains(&t.id);
+                                            ui.horizontal(|ui| {
+                                                if ui.checkbox(&mut on, "").changed() {
+                                                    let (add, rem) = if on {
+                                                        (vec![t.id.clone()], vec![])
+                                                    } else {
+                                                        (vec![], vec![t.id.clone()])
+                                                    };
+                                                    acts.push(Act::Retag(vec![id.clone()], add, rem));
+                                                }
+                                                widgets::badge(ui, &t.name, tag_color(&t.color));
+                                            });
+                                        }
+                                        if !tags.is_empty() {
+                                            ui.separator();
+                                        }
+                                        if ui.button("New tag / manage\u{2026}").clicked() {
+                                            acts.push(Act::Tags(vec![id.clone()]));
+                                            ui.close();
+                                        }
+                                    });
                                 });
                                 // IP: the exit address (the proxy's until a check or a launch knows better), the country
                                 cell(&mut row, |ui| {
@@ -623,11 +824,22 @@ impl CitroApp {
                                     });
                                 });
                                 cell(&mut row, |ui| {
+                                    if inline_edit(ui, inline, &id, Field::Remark, &mut acts) {
+                                        return;
+                                    }
                                     let text = pr.remark.trim();
-                                    if text.is_empty() {
-                                        ui.label(dim(&p, "\u{2013}"));
+                                    let r = if text.is_empty() {
+                                        ui.add(egui::Label::new(dim(&p, "\u{2013}")).sense(Sense::click()))
                                     } else {
-                                        two_lines(ui, RichText::new(text).color(p.text)).on_hover_text(text);
+                                        two_lines(ui, RichText::new(text).color(p.text))
+                                    };
+                                    let r = r.on_hover_text(if text.is_empty() {
+                                        "Double-click to write a remark".to_owned()
+                                    } else {
+                                        format!("{text}\nDouble-click to edit")
+                                    });
+                                    if r.double_clicked() {
+                                        acts.push(Act::StartEdit(id.clone(), Field::Remark, pr.remark.clone()));
                                     }
                                 });
                                 cell(&mut row, |ui| {
@@ -781,9 +993,6 @@ impl CitroApp {
                                     let mods =
                                         ctx.input(|i| Mods { ctrl: i.modifiers.command, shift: i.modifiers.shift });
                                     acts.push(Act::Click(vi, mods));
-                                }
-                                if resp.double_clicked() && !working {
-                                    acts.push(Act::Open(vec![id.clone()]));
                                 }
                                 resp.context_menu(|ui| menu(ui, &mut acts));
                                 if let Some(m) = &more {

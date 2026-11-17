@@ -1,16 +1,16 @@
-# How the AdsPower formats were learnt
+# How the antidetect browser formats were learnt
 
-Citroenition's profile model, `fingerprint_config` field names and Local API are **AdsPower-compatible** so that
+Citroenition's profile model, `fingerprint_config` field names and Local API are **antidetect-browser-compatible** so that
 existing scripts, spreadsheets and habits keep working. This page records where that compatibility comes from, how it
 was measured, and what is deliberately *not* carried over. Nothing here is needed to use Citroenition; it is the
 evidence trail for the code in `crates/citro-core` and `crates/citro`.
 
-Scope: formats and behaviour needed for **interoperability**. No AdsPower source file, binary or asset is part of
+Scope: formats and behaviour needed for **interoperability**. No the antidetect browser source file, binary or asset is part of
 this repository, and the browser kernel is a different, open-source one ([KERNEL.md](KERNEL.md)).
 
 ## Method
 
-1. **Read what the app writes.** A local AdsPower install keeps per-profile config blobs under its `source/cache/`
+1. **Read what the app writes.** A local the antidetect browser install keeps per-profile config blobs under its `source/cache/`
    directory, one file per profile named by a 32-hex-digit hash. `tools/re-scripts/decode_cfg.py` decodes them and
    prints each profile's keys with every secret-looking value (`pass`, `account`, `token`, `cookie`, `key`,
    `proxyuser`, `address`, …) replaced by its length.
@@ -31,12 +31,12 @@ Every blob the app hands to the kernel is RFC 4648 base64 with the 64 symbols pe
 
 ```
 standard : ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/
-adspower : hTy1bfRJz4nLPcBCO7WtmNIaGvVeul5Zo8kq32UxrYw_-0gsjp96SDFXQiEMKdHA
+reference : hTy1bfRJz4nLPcBCO7WtmNIaGvVeul5Zo8kq32UxrYw_-0gsjp96SDFXQiEMKdHA
 ```
 
 Symbol *i* of the standard alphabet is replaced by symbol *i* of the second line. Real files start with `{"C…` and
-therefore begin with `5941`, which is the unit test `matches_prefix_seen_in_real_adspower_config_files`
-(`crates/citro-core/src/codec.rs`). The codec is kept in `citro-core` so AdsPower configs can still be read.
+therefore begin with `5941`, which is the unit test `matches_prefix_seen_in_real_config_files`
+(`crates/citro-core/src/codec.rs`). The codec is kept in `citro-core` so the antidetect browser configs can still be read.
 
 ## 2. A profile reaches the kernel through one inline argument and three files
 
@@ -94,14 +94,14 @@ the JA3 toggle) are history; the *field names* survive as the input of the perso
 
 The Local API's shapes (default address `127.0.0.1:50325`, v1 query-string and v2 JSON routes, the
 `{"code", "msg", "data"}` envelope, `ws.puppeteer` / `ws.selenium` / `debug_port` / `webdriver` in the start reply,
-the `local_api` address file) follow AdsPower's public Local API documentation and the behaviour of the app. They are
-specified route by route in [API.md](API.md). Where AdsPower accepts a loose input (numbers as strings, a list as a
-JSON string) so does Citroenition; where AdsPower has a feature Citroenition does not (saved proxies, RPA, extension
+the `local_api` address file) follow the antidetect browser's public Local API documentation and the behaviour of the app. They are
+specified route by route in [API.md](API.md). Where the antidetect browser accepts a loose input (numbers as strings, a list as a
+JSON string) so does Citroenition; where the antidetect browser has a feature Citroenition does not (saved proxies, RPA, extension
 management) the request is refused loudly instead of being half-honoured.
 
 ## 5. Reproducing the measurements
 
-The scripts need a SunBrowser kernel (the one an AdsPower install downloads), so they are evidence, not part of the
+The scripts need a SunBrowser kernel (the one an antidetect browser install downloads), so they are evidence, not part of the
 build. Each takes the kernel path from `KERNEL=…`:
 
 ```sh

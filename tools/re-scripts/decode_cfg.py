@@ -11,7 +11,7 @@ def scrub(v, k=""):
         return [scrub(x, k) for x in v][:4]
     if sens.search(k) and isinstance(v, str) and v: return "<redacted:%d>" % len(v)
     return v if not isinstance(v, str) or len(v) < 90 else v[:90] + "…(%d)" % len(v)
-root = os.path.expanduser("~/.adspowerCli/source/cache")
+root = os.environ["CACHE_DIR"]
 for d in sorted(glob.glob(root + "/*/")):
     print("\n#####", os.path.basename(d.rstrip('/')))
     for f in sorted(os.listdir(d)):

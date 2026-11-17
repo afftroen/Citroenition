@@ -1,7 +1,7 @@
-//! The AdsPower Local API (`http://127.0.0.1:50325`), served by Citroenition.
+//! The antidetect browser Local API (`http://127.0.0.1:50325`), served by Citroenition.
 //!
-//! Automation written against AdsPower (Selenium / Puppeteer / Playwright scripts, the SDKs) can point at
-//! this server unchanged. Like AdsPower, every reply is HTTP 200 with `{"code": 0|-1, "data": ..., "msg": ...}`;
+//! Automation written against the antidetect browser (Selenium / Puppeteer / Playwright scripts, the SDKs) can point at
+//! this server unchanged. Like the antidetect browser, every reply is HTTP 200 with `{"code": 0|-1, "data": ..., "msg": ...}`;
 //! the only exceptions are 401 (bad API key) and 404 (unknown route).
 //!
 //! Implemented: `/status`; v1 + v2 browser start / stop / active / local-active; profile create / update /
@@ -172,6 +172,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/user/delete", post(delete_v1))
         .route("/api/v1/group/list", get(group_list))
         .route("/api/v1/group/create", post(group_create))
+        .route("/api/v1/user/regroup", post(regroup))
+        .route("/api/v2/browser-profile/delete-cache", post(delete_cache))
+        .route("/api/v2/browser-profile/cookies", get(cookies_get))
         // v2
         .route("/api/v2/browser-profile/start", post(start_post))
         .route("/api/v2/browser-profile/stop", post(stop_post))
@@ -345,7 +348,7 @@ async fn local_active(State(st): State<AppState>) -> Reply {
 // ---------------------------------------------------------------------------------------------------
 // profiles
 
-/// Copy the fields present in `m` onto `p` (AdsPower field names, v1 and v2 spellings).
+/// Copy the fields present in `m` onto `p` (the antidetect browser field names, v1 and v2 spellings).
 fn apply_body(p: &mut Profile, m: &Map<String, Value>) -> Result<(), String> {
     let set = |dst: &mut String, keys: &[&str]| {
         if let Some(v) = keys.iter().find_map(|k| field(m, k)) {
@@ -503,6 +506,80 @@ async fn delete_v2(State(st): State<AppState>, body: Bytes) -> Reply {
     }
 }
 
+/// Move profiles to a group: `user_ids` (or `profile_id`), `group_id` ("0" = ungrouped).
+async fn regroup(State(st): State<AppState>, body: Bytes) -> Reply {
+    let m = match body_map(&body) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    let keys: Vec<String> =
+        ["user_ids", "profile_id", "user_id"].iter().filter_map(|k| m.get(*k)).flat_map(str_list).collect();
+    let Some(gid) = field(&m, "group_id") else { return fail("group_id is required") };
+    if keys.is_empty() {
+        return fail("user_ids (a list of profile ids) is required");
+    }
+    run(move || {
+        citro_core::store::locked(&st.home, |s| {
+            if gid != "0" && !s.groups().iter().any(|g| g.group_id == gid) {
+                return Err(Error::Invalid(format!("no group {gid}")));
+            }
+            for k in &keys {
+                s.update(k, |p| p.group_id = gid.clone())?;
+            }
+            Ok(json!({}))
+        })
+    })
+    .await
+}
+
+/// Delete kinds of browser data of closed profiles: `profile_id` (list), `type` (list of cookie, local_storage,
+/// indexeddb, extension_cache, history, image_file).
+async fn delete_cache(State(st): State<AppState>, body: Bytes) -> Reply {
+    let m = match body_map(&body) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    let keys: Vec<String> = ["profile_id", "user_id"].iter().filter_map(|k| m.get(*k)).flat_map(str_list).collect();
+    let kinds: Vec<String> = m.get("type").map(str_list).unwrap_or_default();
+    if keys.is_empty() || kinds.is_empty() {
+        return fail("profile_id and type (lists) are required");
+    }
+    run(move || {
+        let s = Store::open(&st.home)?;
+        for k in &keys {
+            let id = s.get(k)?.profile_id.clone();
+            launch::clear_data(&st.home, &id, &kinds).map_err(|e| {
+                Error::Invalid(format!(
+                    "There are currently open browsers, please close them before deleting the cache ({e})"
+                ))
+            })?;
+        }
+        Ok(json!({}))
+    })
+    .await
+}
+
+/// A profile's cookies, as a JSON text: from the running browser when it is open, else the ones Citroenition will
+/// put in at the next launch.
+async fn cookies_get(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Reply {
+    let m = qmap(q);
+    let Some(key) = field(&m, "profile_id").or_else(|| field(&m, "user_id")).or_else(|| field(&m, "profile_no")) else {
+        return fail("profile_id is required");
+    };
+    run(move || {
+        let s = Store::open(&st.home)?;
+        let p = s.get(&key)?.clone();
+        if let Some(r) = launch::running(&st.home, &p.profile_id)
+            && let Ok(mut c) = citro_core::cdp::Cdp::connect(&r.ws)
+            && let Ok(v) = c.call("Storage.getCookies", json!({}))
+        {
+            return Ok(json!({ "cookies": v.get("cookies").cloned().unwrap_or(json!([])).to_string() }));
+        }
+        Ok(json!({ "cookies": p.cookie }))
+    })
+    .await
+}
+
 fn row(s: &Store, p: &Profile) -> Value {
     json!({
         "serial_number": p.serial_number.to_string(),
@@ -524,6 +601,8 @@ fn row(s: &Store, p: &Profile) -> Value {
         "ip": p.ip,
         "ip_country": p.country,
         "user_proxy_config": p.user_proxy_config.redacted(),
+        "profile_tags": p.tags.iter().filter_map(|t| s.tags().iter().find(|x| &x.id == t))
+            .map(|t| json!({"id": t.id, "name": t.name, "color": t.color})).collect::<Vec<_>>(),
     })
 }
 
@@ -566,7 +645,7 @@ fn list_profiles(st: &AppState, m: &Map<String, Value>, v2: bool) -> CoreResult<
     if desc {
         rows.reverse();
     }
-    // AdsPower's documented default page size is 1 (max 100)
+    // The antidetect browser's documented default page size is 1 (max 100)
     let page = int(m, "page").unwrap_or(1).max(1);
     let size = int(m, "page_size").or_else(|| int(m, "limit")).unwrap_or(1).clamp(1, 100);
     let list: Vec<Value> = rows.iter().skip((page - 1) * size).take(size).map(|p| row(&s, p)).collect();
@@ -662,7 +741,7 @@ pub async fn serve(state: AppState, bind: SocketAddr) -> anyhow::Result<()> {
     let _ = tokio::task::spawn_blocking(move || adopt_orphans(&home)).await;
     let listener = tokio::net::TcpListener::bind(bind).await.with_context(|| format!("cannot listen on {bind}"))?;
     let addr = listener.local_addr()?;
-    // AdsPower publishes its address in a `local_api` file; so do we
+    // The antidetect browser publishes its address in a `local_api` file; so do we
     let local_api = state.home.root.join("local_api");
     std::fs::create_dir_all(&state.home.root)?;
     let shown = if addr.ip().is_unspecified() { "127.0.0.1".to_owned() } else { addr.ip().to_string() };
@@ -721,8 +800,64 @@ mod tests {
         (status, serde_json::from_str(payload).unwrap_or(Value::Null))
     }
 
+    #[tokio::test]
+    async fn regroup_cookies_tags_and_delete_cache() {
+        let root = std::env::temp_dir().join(format!("citro-api-more-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = Home { root: root.join("home") };
+        let (pid, gid) = store::locked(&home, |s| {
+            let g = s.create_group("TikTok", "")?;
+            let t = s.save_tag(citro_core::profile::Tag {
+                name: "Ready".into(),
+                color: "green".into(),
+                ..Default::default()
+            })?;
+            let p =
+                s.create(Profile { name: "a".into(), cookie: "[]".into(), tags: vec![t.id], ..Default::default() })?;
+            Ok((p.profile_id, g.group_id))
+        })
+        .unwrap();
+        let state = AppState::new(home.clone(), None, Some("k".into()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(axum::serve(listener, router(state)).into_future());
+        let k = Some("k");
+        let (_, r) =
+            http(addr, "POST", "/api/v1/user/regroup", k, Some(json!({"user_ids": [pid], "group_id": gid}))).await;
+        assert_eq!(r["code"], 0, "{r}");
+        let (_, l) = http(addr, "POST", "/api/v2/browser-profile/list", k, Some(json!({"limit": 5}))).await;
+        assert_eq!(l["data"]["list"][0]["group_name"], "TikTok");
+        assert_eq!(l["data"]["list"][0]["profile_tags"][0]["name"], "Ready");
+        let (_, c) = http(addr, "GET", &format!("/api/v2/browser-profile/cookies?profile_id={pid}"), k, None).await;
+        assert_eq!(c["data"]["cookies"], "[]");
+        // a closed profile's cookies and history go
+        let base = home.profile_dir(&pid).join("data/Default");
+        std::fs::create_dir_all(base.join("Local Storage")).unwrap();
+        std::fs::write(base.join("Cookies"), b"x").unwrap();
+        let (_, d) = http(
+            addr,
+            "POST",
+            "/api/v2/browser-profile/delete-cache",
+            k,
+            Some(json!({"profile_id": [pid], "type": ["cookie", "local_storage"]})),
+        )
+        .await;
+        assert_eq!(d["code"], 0, "{d}");
+        assert!(!base.join("Cookies").exists() && !base.join("Local Storage").exists());
+        let (_, bad) = http(
+            addr,
+            "POST",
+            "/api/v2/browser-profile/delete-cache",
+            k,
+            Some(json!({"profile_id": [pid], "type": ["everything"]})),
+        )
+        .await;
+        assert_eq!(bad["code"], -1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
-    async fn adspower_compatible_api_end_to_end() {
+    async fn local_api_end_to_end() {
         let root = std::env::temp_dir().join(format!("citro-api-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (kernel, _kernel_port) = fake_kernel(&root);
@@ -809,7 +944,7 @@ mod tests {
         let (_, l3) = http(addr, "POST", "/api/v2/browser-profile/list", k, Some(json!({"profile_no": ["1"]}))).await;
         assert_eq!(l3["data"]["list"][0]["name"], "alpha2");
 
-        // open: endpoints in AdsPower's shape; second open is idempotent
+        // open: endpoints in the antidetect browser's shape; second open is idempotent
         let (_, o) =
             http(addr, "POST", "/api/v2/browser-profile/start", k, Some(json!({"profile_id": pid, "headless": "1"})))
                 .await;

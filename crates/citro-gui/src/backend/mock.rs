@@ -43,6 +43,7 @@ struct State {
     /// The profiles that belong to the team hub (the others are private to this device).
     shared: HashSet<String>,
     extensions: Vec<super::Extension>,
+    tags: Vec<super::Tag>,
 }
 
 pub struct MockBackend {
@@ -369,6 +370,12 @@ impl MockBackend {
             ev(7 * MIN, Level::Warn, None, "proxy check 203.0.113.62:1080: timed out"),
             ev(3 * MIN, Level::Info, Some(0), "opened Vinted FR - Camille (pid 46218)"),
         ];
+        // a few tags, as a real list has them
+        for (i, t) in [(0usize, &["1"][..]), (1, &["2", "1"][..]), (3, &["1"][..]), (5, &["3"][..])] {
+            if let Some(p) = profiles.get_mut(i) {
+                p.tags = t.iter().map(|x| (*x).to_owned()).collect();
+            }
+        }
         let shared: HashSet<String> = profiles
             .iter()
             .filter(|p| p.group_id == "1" || locks.contains_key(&p.profile_id))
@@ -429,6 +436,11 @@ impl MockBackend {
                 teams,
                 shared,
                 extensions: demo_extensions(now),
+                tags: vec![
+                    super::Tag { id: "1".into(), name: "Ready".into(), color: "green".into() },
+                    super::Tag { id: "2".into(), name: "In review".into(), color: "orange".into() },
+                    super::Tag { id: "3".into(), name: "Banned".into(), color: "red".into() },
+                ],
             }),
             latency: Duration::from_millis(900),
             kind: BackendKind::Demo,
@@ -692,6 +704,48 @@ impl Backend for MockBackend {
                 p.last_close_time = now_ts();
             }
             Self::log(&mut st, Level::Info, Some(id), format!("closed {name}"));
+        }
+        Ok(())
+    }
+
+    fn tags(&self) -> BResult<Vec<super::Tag>> {
+        Ok(self.state.lock().unwrap_or_else(|e| e.into_inner()).tags.clone())
+    }
+
+    fn save_tag(&self, mut t: super::Tag) -> BResult<super::Tag> {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        t.name = t.name.trim().chars().take(citro_core::profile::TAG_MAX).collect();
+        if t.name.is_empty() {
+            return Err(BackendError::Invalid("a tag needs a name".into()));
+        }
+        if t.id.is_empty() {
+            t.id = (st.tags.len() + 1 + st.tags.iter().filter_map(|x| x.id.parse::<usize>().ok()).max().unwrap_or(0))
+                .to_string();
+            st.tags.push(t.clone());
+        } else if let Some(x) = st.tags.iter_mut().find(|x| x.id == t.id) {
+            *x = t.clone();
+        }
+        Ok(t)
+    }
+
+    fn delete_tag(&self, id: &str) -> BResult<()> {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.tags.retain(|t| t.id != id);
+        for p in &mut st.profiles {
+            p.tags.retain(|t| t != id);
+        }
+        Ok(())
+    }
+
+    fn retag(&self, ids: &[String], add: &[String], remove: &[String]) -> BResult<()> {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        for p in st.profiles.iter_mut().filter(|p| ids.contains(&p.profile_id)) {
+            p.tags.retain(|t| !remove.contains(t));
+            for a in add {
+                if !p.tags.contains(a) {
+                    p.tags.push(a.clone());
+                }
+            }
         }
         Ok(())
     }

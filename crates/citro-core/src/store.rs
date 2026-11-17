@@ -9,7 +9,7 @@
 //! run/<id>.json              pid + debug endpoint of a running browser
 //! ```
 
-use crate::profile::{Group, Profile};
+use crate::profile::{Group, Profile, TAG_COLORS, TAG_MAX, Tag};
 use crate::rng::Rng;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -124,6 +124,8 @@ struct StoreFile {
     next_serial: u64,
     groups: Vec<Group>,
     profiles: Vec<Profile>,
+    #[serde(default)]
+    tags: Vec<Tag>,
 }
 
 #[derive(Debug)]
@@ -275,6 +277,75 @@ impl Store {
         self.update(key, |p| p.last_close_time = p.last_close_time.max(at)).map(|_| ())
     }
 
+    pub fn tags(&self) -> &[Tag] {
+        &self.data.tags
+    }
+
+    /// Create (empty `id`) or rename / recolor a tag. Names are trimmed, at most 50 characters, unique ignoring case.
+    pub fn save_tag(&mut self, mut t: Tag) -> Result<Tag> {
+        t.name = t.name.split_whitespace().collect::<Vec<_>>().join(" ");
+        if t.name.is_empty() {
+            return Err(Error::Invalid("a tag needs a name".into()));
+        }
+        if t.name.chars().count() > TAG_MAX {
+            return Err(Error::Invalid(format!("a tag name is at most {TAG_MAX} characters")));
+        }
+        if !TAG_COLORS.iter().any(|(k, _)| *k == t.color) {
+            t.color = TAG_COLORS[self.data.tags.len() % TAG_COLORS.len()].0.to_owned();
+        }
+        if self.data.tags.iter().any(|x| x.id != t.id && x.name.eq_ignore_ascii_case(&t.name)) {
+            return Err(Error::Invalid(format!("a tag called `{}` already exists", t.name)));
+        }
+        if t.id.is_empty() {
+            let next = self.data.tags.iter().filter_map(|x| x.id.parse::<u64>().ok()).max().unwrap_or(0) + 1;
+            t.id = next.to_string();
+            self.data.tags.push(t.clone());
+        } else {
+            let slot = self
+                .data
+                .tags
+                .iter_mut()
+                .find(|x| x.id == t.id)
+                .ok_or_else(|| Error::Invalid(format!("no tag {}", t.id)))?;
+            *slot = t.clone();
+        }
+        self.save()?;
+        Ok(t)
+    }
+
+    /// The tag called `name` (any case), created with the next color when missing.
+    pub fn tag_id_for(&mut self, name: &str) -> Result<String> {
+        let name = name.trim();
+        if let Some(t) = self.data.tags.iter().find(|t| t.name.eq_ignore_ascii_case(name)) {
+            return Ok(t.id.clone());
+        }
+        let short: String = name.chars().take(TAG_MAX).collect();
+        Ok(self.save_tag(Tag { name: short, ..Default::default() })?.id)
+    }
+
+    /// Delete a tag; profiles lose it.
+    pub fn delete_tag(&mut self, id: &str) -> Result<()> {
+        self.data.tags.retain(|t| t.id != id);
+        for p in &mut self.data.profiles {
+            p.tags.retain(|t| t != id);
+        }
+        self.save()
+    }
+
+    /// Add `add` and remove `remove` (tag ids) on the profiles `keys`.
+    pub fn retag(&mut self, keys: &[String], add: &[String], remove: &[String]) -> Result<()> {
+        let ids: Vec<String> = keys.iter().filter_map(|k| self.find(k).map(|p| p.profile_id.clone())).collect();
+        for p in self.data.profiles.iter_mut().filter(|p| ids.contains(&p.profile_id)) {
+            p.tags.retain(|t| !remove.contains(t));
+            for a in add {
+                if !p.tags.contains(a) {
+                    p.tags.push(a.clone());
+                }
+            }
+        }
+        self.save()
+    }
+
     pub fn groups(&self) -> &[Group] {
         &self.data.groups
     }
@@ -370,6 +441,42 @@ fn move_data_with(home: &Home, to: &Path, pointer: &Path) -> Result<()> {
     }
     fs::write(pointer, format!("{}\n", to.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tag_tests {
+    use super::*;
+
+    #[test]
+    fn tags_have_rules_and_follow_profiles() {
+        let root = std::env::temp_dir().join(format!("citro-tags-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let home = Home { root: root.clone() };
+        locked(&home, |s| {
+            let a = s.create(Profile { name: "a".into(), ..Default::default() })?;
+            let t = s.save_tag(Tag { name: "  TikTok   ads ".into(), color: "nope".into(), ..Default::default() })?;
+            assert_eq!(
+                (t.name.as_str(), t.color.as_str()),
+                ("TikTok ads", "blue"),
+                "trimmed; unknown color -> palette"
+            );
+            assert!(
+                s.save_tag(Tag { name: "tiktok ADS".into(), ..Default::default() }).is_err(),
+                "unique ignoring case"
+            );
+            assert!(s.save_tag(Tag { name: "x".repeat(51), ..Default::default() }).is_err(), "50 characters at most");
+            assert_eq!(s.tag_id_for("TIKTOK ADS")?, t.id);
+            let b = s.tag_id_for("Banned")?;
+            s.retag(std::slice::from_ref(&a.profile_id), &[t.id.clone(), b.clone()], &[])?;
+            s.retag(std::slice::from_ref(&a.profile_id), &[], std::slice::from_ref(&t.id))?;
+            assert_eq!(s.get(&a.profile_id)?.tags, std::slice::from_ref(&b));
+            s.delete_tag(&b)?;
+            assert!(s.get(&a.profile_id)?.tags.is_empty() && s.tags().len() == 1);
+            Ok(())
+        })
+        .unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
 }
 
 #[cfg(test)]

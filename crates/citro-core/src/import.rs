@@ -1,7 +1,7 @@
 //! Reading profiles from other tools, forgivingly.
 //!
 //! [`parse_file`] takes whatever a person is likely to have: a CSV (comma, semicolon or tab separated, with or
-//! without a byte-order mark), an Excel `.xlsx` (AdsPower's export and import template), a JSON list (AdsPower's API
+//! without a byte-order mark), an Excel `.xlsx` (the antidetect browser's export and import template), a JSON list (the antidetect browser's API
 //! shape), or plain text with one proxy per line. Columns are recognised by many names ("Proxy Host", `proxy_host`,
 //! "IP", "server" ...), proxies in every common notation, OS and country in loose spellings.
 //!
@@ -19,9 +19,11 @@ pub struct Incoming {
     /// Group by name ("" = ungrouped); created when missing.
     pub group: String,
     pub warnings: Vec<String>,
-    /// The file could not hold its cookies (AdsPower writes "Cookie too large ..." instead): they are fetched from
-    /// AdsPower's API by the profile's AdsPower id ([`crate::adspower::fill_cookies`]).
+    /// The file could not hold its cookies (the antidetect browser writes "Cookie too large ..." instead): they are fetched from
+    /// The antidetect browser's API by the profile's the antidetect browser id ([`crate::antidetect::fill_cookies`]).
     pub cookies_elsewhere: bool,
+    /// Tag names (created when missing).
+    pub tags: Vec<String>,
 }
 
 /// What a file held.
@@ -30,7 +32,7 @@ pub struct Parsed {
     pub profiles: Vec<Incoming>,
     /// About the file as a whole (ignored columns, the format guessed).
     pub notes: Vec<String>,
-    /// Groups to create even when no profile is in them (AdsPower's).
+    /// Groups to create even when no profile is in them (the antidetect browser's).
     pub groups: Vec<String>,
 }
 
@@ -65,12 +67,12 @@ enum Col {
     Cookie,
     TwoFa,
     Ip,
-    /// AdsPower's profile id (`id` in its export): where cookies are fetched from, and what an import matches on.
+    /// The antidetect browser's profile id (`id` in its export): where cookies are fetched from, and what an import matches on.
     AdsId,
-    /// AdsPower's serial (`acc_id`).
+    /// The antidetect browser's serial (`acc_id`).
     AdsSerial,
     Tags,
-    /// AdsPower's saved-proxy id: not in the file, so the proxy cannot come along.
+    /// The antidetect browser's saved-proxy id: not in the file, so the proxy cannot come along.
     SavedProxy,
     Skip,
 }
@@ -126,7 +128,7 @@ fn column(header: &str) -> Option<Col> {
     } else if is(&["proxyid", "savedproxyid"]) {
         Col::SavedProxy
     } else if is(&[
-        // AdsPower's `proxyurl` is the proxy's "change IP" link, not the proxy
+        // The antidetect browser's `proxyurl` is the proxy's "change IP" link, not the proxy
         "proxyurl",
         "ipchecker",
         "id",
@@ -343,7 +345,7 @@ fn urls(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// AdsPower's text in place of cookies that did not fit an Excel cell.
+/// The antidetect browser's text in place of cookies that did not fit an Excel cell.
 fn cookies_left_out(text: &str) -> bool {
     let t = text.to_lowercase();
     !t.trim_start().starts_with('[') && (t.contains("too large") || t.contains("too long") || t.contains("exceeds"))
@@ -400,18 +402,20 @@ fn table(text: &str) -> Vec<Vec<String>> {
 /// Rows with a header line -> profiles.
 fn from_rows(rows: Vec<Vec<String>>, out: &mut Parsed) {
     let Some((header, body)) = rows.split_first() else { return };
-    // AdsPower's export (`acc_id`, `id`, `proxytype`, ...): `id` is its profile id, `acc_id` its serial
-    let adspower = header.iter().any(|h| norm(h) == "accid") || header.iter().any(|h| norm(h) == "ipchecker");
+    // The antidetect browser's export (`acc_id`, `id`, `proxytype`, ...): `id` is its profile id, `acc_id` its serial
+    let api_export = header.iter().any(|h| norm(h) == "accid") || header.iter().any(|h| norm(h) == "ipchecker");
     let cols: Vec<Option<Col>> = header
         .iter()
         .map(|h| match norm(h).as_str() {
-            "id" | "userid" | "profileid" if adspower => Some(Col::AdsId),
-            "accid" | "serialnumber" if adspower => Some(Col::AdsSerial),
+            "id" | "userid" | "profileid" if api_export => Some(Col::AdsId),
+            "accid" | "serialnumber" if api_export => Some(Col::AdsSerial),
             _ => column(h),
         })
         .collect();
-    if adspower {
-        out.notes.push("This is an AdsPower export: profiles are matched to AdsPower by their id.".into());
+    if api_export {
+        out.notes.push(
+            "This is an antidetect browser export: profiles are matched to the antidetect browser by their id.".into(),
+        );
     }
     if cols.iter().all(Option::is_none) {
         // no header at all: maybe one proxy per line
@@ -476,7 +480,7 @@ fn from_rows(rows: Vec<Vec<String>>, out: &mut Parsed) {
         }
         let ads_id = get(Col::AdsId);
         if !ads_id.is_empty() {
-            p.source = format!("adspower:{ads_id}");
+            p.source = format!("api:{ads_id}");
         }
         let mut cookies_elsewhere = false;
         let cookie = get(Col::Cookie);
@@ -484,7 +488,7 @@ fn from_rows(rows: Vec<Vec<String>>, out: &mut Parsed) {
             cookies_elsewhere = true;
             if ads_id.is_empty() {
                 warnings.push(
-                    "the file left the cookies out (too large for Excel) and has no AdsPower id to fetch them".into(),
+                    "the file left the cookies out (too large for Excel) and has no the antidetect browser id to fetch them".into(),
                 );
             }
         } else if !cookie.is_empty() {
@@ -496,11 +500,13 @@ fn from_rows(rows: Vec<Vec<String>>, out: &mut Parsed) {
         let tags = get(Col::Tags);
         let serial = get(Col::AdsSerial);
         let mut extra: Vec<String> = Vec::new();
-        if !tags.is_empty() {
-            extra.push(format!("Tags: {tags}"));
-        }
+        let tag_names: Vec<String> = tags
+            .split([',', ';', '|', '\n'])
+            .map(|t| t.trim().chars().take(crate::profile::TAG_MAX).collect::<String>())
+            .filter(|t| !t.is_empty())
+            .collect();
         if !serial.is_empty() {
-            extra.push(format!("AdsPower #{serial}"));
+            extra.push(format!("Imported #{serial}"));
         }
         if !extra.is_empty() {
             let tail = extra.join(" \u{b7} ");
@@ -509,14 +515,20 @@ fn from_rows(rows: Vec<Vec<String>>, out: &mut Parsed) {
         let saved = get(Col::SavedProxy);
         if !saved.is_empty() && saved != "0" && p.user_proxy_config.is_direct() {
             warnings.push(format!(
-                "uses AdsPower's saved proxy #{saved}, which the file does not contain: set the proxy by hand"
+                "uses the antidetect browser's saved proxy #{saved}, which the file does not contain: set the proxy by hand"
             ));
         }
         p.name = one_line(&p.name);
         if p.name.is_empty() {
             p.name = if p.username.is_empty() { format!("Imported {}", i + 1) } else { p.username.clone() };
         }
-        out.profiles.push(Incoming { profile: p, group: get(Col::Group), warnings, cookies_elsewhere });
+        out.profiles.push(Incoming {
+            profile: p,
+            group: get(Col::Group),
+            warnings,
+            cookies_elsewhere,
+            tags: tag_names,
+        });
     }
 }
 
@@ -529,6 +541,7 @@ fn from_proxy_line(line: &str, n: usize, out: &mut Parsed) {
                 group: String::new(),
                 warnings: Vec::new(),
                 cookies_elsewhere: false,
+                tags: Vec::new(),
             });
         }
         Err(e) if e.is_empty() => {}
@@ -536,7 +549,7 @@ fn from_proxy_line(line: &str, n: usize, out: &mut Parsed) {
     }
 }
 
-/// AdsPower's API shape (`{data:{list:[...]}}` or a list of profile objects) -> profiles.
+/// The antidetect browser's API shape (`{data:{list:[...]}}` or a list of profile objects) -> profiles.
 pub fn from_json(v: &Value, groups: &[(String, String)], out: &mut Parsed) {
     let list = v.pointer("/data/list").or_else(|| v.get("list")).unwrap_or(v);
     let Some(items) = list.as_array() else {
@@ -544,7 +557,7 @@ pub fn from_json(v: &Value, groups: &[(String, String)], out: &mut Parsed) {
         return;
     };
     for (i, item) in items.iter().enumerate() {
-        // AdsPower writes numbers as text ("381"): the fields re-assigned on import are dropped before reading
+        // The antidetect browser writes numbers as text ("381"): the fields re-assigned on import are dropped before reading
         let mut clean = item.clone();
         if let Some(o) = clean.as_object_mut() {
             for k in [
@@ -566,7 +579,7 @@ pub fn from_json(v: &Value, groups: &[(String, String)], out: &mut Parsed) {
         let mut warnings = Vec::new();
         let source_id = item.get("user_id").or_else(|| item.get("profile_id")).and_then(Value::as_str).unwrap_or("");
         if !source_id.is_empty() {
-            p.source = format!("adspower:{source_id}");
+            p.source = format!("api:{source_id}");
         }
         let serial = item
             .get("serial_number")
@@ -591,7 +604,7 @@ pub fn from_json(v: &Value, groups: &[(String, String)], out: &mut Parsed) {
         if let Some(s) = serial
             && !s.is_empty()
         {
-            let tag = format!("AdsPower #{s}");
+            let tag = format!("Imported #{s}");
             p.remark = if p.remark.trim().is_empty() { tag } else { format!("{} ({tag})", p.remark.trim()) };
         }
         let gid = item
@@ -610,7 +623,20 @@ pub fn from_json(v: &Value, groups: &[(String, String)], out: &mut Parsed) {
         if p.name.is_empty() {
             p.name = format!("Imported {}", i + 1);
         }
-        out.profiles.push(Incoming { profile: p, group, warnings, cookies_elsewhere: false });
+        // The antidetect browser's v2 list: `profile_tags` = [{name, color, id}] or names
+        let tags: Vec<String> = item
+            .get("profile_tags")
+            .or_else(|| item.get("tags"))
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|t| t.get("name").and_then(Value::as_str).or_else(|| t.as_str()))
+                    .map(|t| t.trim().chars().take(crate::profile::TAG_MAX).collect::<String>())
+                    .filter(|t| !t.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.profiles.push(Incoming { profile: p, group, warnings, cookies_elsewhere: false, tags });
     }
 }
 
@@ -720,6 +746,11 @@ pub fn parse_file(bytes: &[u8], name: &str) -> Result<Parsed, String> {
     Ok(out)
 }
 
+/// Two import sources name the same profile.
+fn same_source(a: &str, b: &str) -> bool {
+    !a.trim().is_empty() && a.trim() == b.trim()
+}
+
 /// What an import did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
@@ -754,6 +785,11 @@ fn fill_in(old: &mut Profile, new: &Profile, new_group: Option<String>) -> bool 
     if old.bookmarks.is_empty() {
         old.bookmarks = new.bookmarks.clone();
     }
+    for t in &new.tags {
+        if !old.tags.contains(t) {
+            old.tags.push(t.clone());
+        }
+    }
     if old.user_proxy_config.is_direct() && !new.user_proxy_config.is_direct() {
         old.user_proxy_config = new.user_proxy_config.clone();
     }
@@ -781,10 +817,18 @@ pub fn apply(home: &crate::store::Home, parsed: &Parsed) -> crate::Result<Report
         }
         for inc in &parsed.profiles {
             let src = inc.profile.source.clone();
-            if let Some(existing) = s.profiles().iter().find(|p| !src.is_empty() && p.source == src).cloned() {
+            let mut tag_ids = Vec::new();
+            for t in &inc.tags {
+                tag_ids.push(s.tag_id_for(t)?);
+            }
+            if let Some(existing) =
+                s.profiles().iter().find(|p| !src.is_empty() && same_source(&p.source, &src)).cloned()
+            {
                 let group = if inc.group.trim().is_empty() { None } else { Some(s.group_id_for(&inc.group)?) };
                 let mut merged = existing.clone();
-                if fill_in(&mut merged, &inc.profile, group) {
+                let mut with_tags = inc.profile.clone();
+                with_tags.tags = tag_ids.clone();
+                if fill_in(&mut merged, &with_tags, group) {
                     s.update(&existing.profile_id, |p| *p = merged)?;
                     r.updated += 1;
                 } else {
@@ -793,6 +837,7 @@ pub fn apply(home: &crate::store::Home, parsed: &Parsed) -> crate::Result<Report
                 continue;
             }
             let mut p = inc.profile.clone();
+            p.tags = tag_ids;
             p.group_id = if inc.group.trim().is_empty() { "0".into() } else { s.group_id_for(&inc.group)? };
             s.create(p)?;
             r.created += 1;
@@ -873,7 +918,7 @@ mod tests {
     }
 
     #[test]
-    fn adspower_api_json() {
+    fn local_api_json() {
         let v: Value = serde_json::from_str(r#"{"code":0,"data":{"list":[
             {"user_id":"k1","serial_number":"381","name":"Flow","group_id":"9","group_name":"","remark":"main","domain_name":"google.com",
              "ip_country":"cz","user_proxy_config":{"proxy_soft":"other","proxy_type":"socks5","proxy_host":"1.2.3.4","proxy_port":"1080","proxy_user":"u","proxy_password":"p"},
@@ -884,9 +929,9 @@ mod tests {
         let a = &out.profiles[0];
         assert_eq!(
             (a.group.as_str(), a.profile.country.as_str(), a.profile.source.as_str()),
-            ("TikTok Ads", "cz", "adspower:k1")
+            ("TikTok Ads", "cz", "api:k1")
         );
-        assert_eq!(a.profile.remark, "main (AdsPower #381)");
+        assert_eq!(a.profile.remark, "main (Imported #381)");
         assert_eq!(a.profile.user_proxy_config.hop().unwrap().password, "p");
         assert!(a.profile.profile_id.is_empty() && a.profile.serial_number == 0);
         let b = &out.profiles[1];
@@ -900,15 +945,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let home = crate::store::Home { root: root.clone() };
         let mut parsed = parse_file(SAMPLE_CSV.as_bytes(), "s.csv").unwrap();
-        parsed.profiles[0].profile.source = "adspower:k1".into();
+        parsed.profiles[0].profile.source = "api:k1".into();
         parsed.groups.push("Empty group".into());
         let r = apply(&home, &parsed).unwrap();
-        assert_eq!(r, Report { created: 3, skipped: 0, groups_created: 4 });
+        assert_eq!(r, Report { created: 3, updated: 0, skipped: 0, groups_created: 4 });
         let r = apply(&home, &parsed).unwrap();
-        assert_eq!((r.created, r.skipped, r.groups_created), (2, 1, 0), "the AdsPower one is not imported twice");
+        assert_eq!(
+            (r.created, r.skipped, r.groups_created),
+            (2, 1, 0),
+            "The antidetect browser one is not imported twice"
+        );
         let s = crate::store::Store::open(&home).unwrap();
         let ids: std::collections::HashSet<_> = s.profiles().iter().map(|p| p.profile_id.clone()).collect();
         assert_eq!(ids.len(), 5, "every profile gets its own id (its fingerprint seed)");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_export_fills_in_profiles_imported_from_the_api() {
+        let root = std::env::temp_dir().join(format!("citro-import-fill-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = crate::store::Home { root: root.clone() };
+        // first the API import: cookies, no start pages
+        let mut api = Parsed::default();
+        from_json(
+            &serde_json::json!([{"user_id":"k1agm2ox","serial_number":"2","name":"Hosting","cookie":"[{\"name\":\"a\",\"value\":\"1\",\"domain\":\".x.com\"}]"}]),
+            &[],
+            &mut api,
+        );
+        apply(&home, &api).unwrap();
+        // then the .xlsx-style export: start pages (an OAuth link with commas, then a second page), UA, tags, and
+        // the cookies left out
+        let csv = "acc_id,id,group,name,remark,tags,tab,cookie,proxytype,ipchecker,proxyurl,countrycode,ua\n\
+                   2,k1agm2ox,,Hosting,,\"Ready, TikTok\",\"https://login.live.com/oauth?a=1,2&b=3,https://outlook.live.com/\",Cookie too large and exceeds Excel's grid limits,noproxy,ip2location,https://change.example/ip,nl,Mozilla/5.0 X\n";
+        let file = parse_file(csv.as_bytes(), "export.csv").unwrap();
+        let inc = &file.profiles[0];
+        assert!(inc.cookies_elsewhere && inc.warnings.is_empty(), "{:?}", inc.warnings);
+        assert_eq!(inc.profile.source, "api:k1agm2ox");
+        assert_eq!(inc.profile.tabs, ["https://login.live.com/oauth?a=1,2&b=3", "https://outlook.live.com/"]);
+        assert!(inc.profile.user_proxy_config.is_direct(), "proxyurl is a change-IP link, not a proxy");
+        let r = apply(&home, &file).unwrap();
+        assert_eq!((r.created, r.updated), (0, 1), "filled in, not duplicated");
+        let st = crate::store::Store::open(&home).unwrap();
+        let p = &st.profiles()[0];
+        assert_eq!(st.profiles().len(), 1);
+        assert_eq!(p.tabs.len(), 2);
+        assert!(p.cookie.contains("x.com"), "the API's cookies stay");
+        assert_eq!(p.fingerprint_config.str("ua").as_deref(), Some("Mozilla/5.0 X"));
+        assert_eq!(p.tags.len(), 2);
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -1,4 +1,4 @@
-//! Persona model: AdsPower's `fingerprint_config` (plus the profile's country, proxy exit IP and OS) -> the
+//! Persona model: the antidetect browser's `fingerprint_config` (plus the profile's country, proxy exit IP and OS) -> the
 //! command-line switches the Clearcote kernel reads.
 //!
 //! Clearcote is an open-source Chromium build whose identity surface lives in the engine, not in page
@@ -6,7 +6,7 @@
 //! noise all derive from the seed. What must *follow the proxy* -- language, time zone, location, the WebRTC
 //! address -- is passed as explicit switches. See `docs/KERNEL.md`.
 //!
-//! Field mapping (AdsPower API name -> effect):
+//! Field mapping (the antidetect browser API name -> effect):
 //!
 //! | `fingerprint_config`                         | effect                                                        |
 //! |----------------------------------------------|---------------------------------------------------------------|
@@ -30,7 +30,7 @@ use crate::locale;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// AdsPower's `fingerprint_config`, kept as raw JSON so unknown keys round-trip untouched.
+/// The antidetect browser's `fingerprint_config`, kept as raw JSON so unknown keys round-trip untouched.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct FingerprintConfig(pub Map<String, Value>);
@@ -201,7 +201,7 @@ fn parse_u32(s: Option<String>) -> Option<u32> {
     s.and_then(|s| s.trim().parse().ok()).filter(|v| *v > 0)
 }
 
-/// The OS named by AdsPower's `random_ua.ua_system_version` list.
+/// The OS named by the antidetect browser's `random_ua.ua_system_version` list.
 fn os_hint(fp: &FingerprintConfig) -> Option<Os> {
     let list = fp.obj("random_ua")?.get("ua_system_version")?.as_array()?;
     let all = list.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ").to_ascii_lowercase();

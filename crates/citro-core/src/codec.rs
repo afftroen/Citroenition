@@ -1,6 +1,6 @@
-//! AdsPower's obfuscated base64.
+//! The antidetect browser's obfuscated base64.
 //!
-//! Every config blob the AdsPower desktop app hands to the SunBrowser kernel
+//! Every config blob the antidetect browser desktop app hands to the SunBrowser kernel
 //! (`--extended-parameters`, and the `StaticConfig` / `DynamicConfig` files it
 //! points at) is plain RFC 4648 base64 whose alphabet has been swapped for a
 //! shuffled one (`encodeBase64` in the app's main bundle). `=` padding is kept
@@ -86,7 +86,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn matches_prefix_seen_in_real_adspower_config_files() {
+    fn matches_prefix_seen_in_real_config_files() {
         // Real StaticConfig files start with `{"C...` and begin with "5941".
         assert_eq!(encode("{\"C"), "5941");
     }

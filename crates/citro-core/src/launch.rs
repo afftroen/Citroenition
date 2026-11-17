@@ -28,12 +28,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[derive(Debug, Clone)]
 pub struct LaunchOptions {
     pub headless: bool,
-    /// Extra kernel flags. When non-empty they replace the profile's own `launch_args` (AdsPower: the
+    /// Extra kernel flags. When non-empty they replace the profile's own `launch_args` (the antidetect browser: the
     /// API's flags win).
     pub launch_args: Vec<String>,
     /// Reopen the tabs of the previous session instead of the profile's start pages.
     pub last_opened_tabs: bool,
-    /// Keep Chromium's sandbox. Off by default, as in AdsPower: the sandbox needs user namespaces, which
+    /// Keep Chromium's sandbox. Off by default, as in other antidetect browsers: the sandbox needs user namespaces, which
     /// containers and many servers lack.
     pub sandbox: bool,
     /// Keep the persona and the proxy credentials on the command line even when the engine can take them
@@ -226,7 +226,7 @@ pub fn prepare(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) 
     args.extend(BASE_FLAGS.iter().map(|s| (*s).to_owned()));
     // On macOS Chromium keeps the key that encrypts cookies and saved passwords in the login keychain and asks for
     // the user's password ("Chromium Safe Storage") on first use; `--password-store=basic` only means something on
-    // Linux. The mock keychain uses a fixed key instead, as AdsPower's launcher does.
+    // Linux. The mock keychain uses a fixed key instead, as other antidetect browsers' launcher does.
     if cfg!(target_os = "macos") {
         args.push("--use-mock-keychain".into());
     }
@@ -481,6 +481,50 @@ pub fn running(home: &Home, id: &str) -> Option<Running> {
         }
     }
     None
+}
+
+/// What [`clear_data`] can delete, with the Chromium files of each (relative to the profile's `Default/`).
+pub const DATA_KINDS: &[(&str, &[&str])] = &[
+    ("cookie", &["Cookies", "Cookies-journal", "Network/Cookies", "Network/Cookies-journal"]),
+    ("local_storage", &["Local Storage", "Session Storage"]),
+    ("indexeddb", &["IndexedDB"]),
+    (
+        "extension_cache",
+        &[
+            "Local Extension Settings",
+            "Sync Extension Settings",
+            "Extension State",
+            "Extension Rules",
+            "Extension Scripts",
+        ],
+    ),
+    ("history", &["History", "History-journal", "Visited Links", "Top Sites", "Top Sites-journal"]),
+    (
+        "image_file",
+        &["Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache", "Service Worker/CacheStorage"],
+    ),
+];
+
+/// Delete kinds of a closed profile's browser data (the `type`s of the Local API's delete-cache: `cookie`,
+/// `local_storage`, `indexeddb`, `extension_cache`, `history`, `image_file`). Returns how many files and folders went.
+pub fn clear_data(home: &Home, id: &str, kinds: &[String]) -> Result<usize> {
+    if running(home, id).is_some() {
+        return Err(Error::Invalid("close the browser first: its data is in use".into()));
+    }
+    let base = data_dir_of(home, id).join("Default");
+    let mut n = 0;
+    for k in kinds {
+        let k = k.trim().to_ascii_lowercase();
+        let Some((_, files)) = DATA_KINDS.iter().find(|(name, _)| *name == k) else {
+            return Err(Error::Invalid(format!("unknown data type `{k}`")));
+        };
+        for f in *files {
+            let path = base.join(f);
+            let gone = if path.is_dir() { fs::remove_dir_all(&path).is_ok() } else { fs::remove_file(&path).is_ok() };
+            n += usize::from(gone);
+        }
+    }
+    Ok(n)
 }
 
 /// `true` while any browser of this data folder runs.

@@ -1,5 +1,5 @@
 //! The Extensions page: add Chrome extensions from the Chrome Web Store and choose which profiles load them (every
-//! profile, or the profiles of chosen groups), like AdsPower's team extensions.
+//! profile, or the profiles of chosen groups), like other antidetect browsers' team extensions.
 
 use super::app::{CitroApp, ToastKind};
 use super::tasks::{Msg, Refresh};

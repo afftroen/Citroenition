@@ -4,14 +4,14 @@ An open-source **anti-detect browser profile manager**, written in Rust: many is
 its own proxy, its own coherent "machine" (OS, hardware, screen, GPU, language, time zone) and its own cookies,
 opened with one click, one command or one API call.
 
-It speaks the **AdsPower Local API** (`http://127.0.0.1:50325`), so existing Selenium / Puppeteer / Playwright
-automation written for AdsPower points at it unchanged. The browser engine is
+It speaks the **antidetect browser Local API** (`http://127.0.0.1:50325`), so existing Selenium / Puppeteer / Playwright
+automation written for other antidetect browsers points at it unchanged. The browser engine is
 [**Clearcote**](https://github.com/clearcotelabs/clearcote-browser), an open-source Chromium build; Citroenition
 does not bundle a browser, it installs and verifies one for you.
 
 | | |
 |---|---|
-| **`citro`** | the command line + the AdsPower-compatible Local API server (`citro serve`) |
+| **`citro`** | the command line + the antidetect-browser-compatible Local API server (`citro serve`) |
 | **`citro-gui`** | the desktop app (pure Rust, egui): profile table, groups, remarks, last-opened / last-closed, logs, CSV export |
 | **`citro-hub`** | the self-hosted team server: users and teams, cross-device profile locks the server enforces, cookie / profile-data hosting, logs, CSV |
 | **`citro-install`** | downloads, signature-checks and unpacks the Clearcote kernel |
@@ -27,8 +27,8 @@ Download the archive of the [latest release](https://github.com/afftroen/Citroen
 machine (Linux x86-64, or macOS 12+ on Apple silicon), or build the programs yourself:
 
 ```sh
-tar xzf citroenition-v0.1.6-x86_64-linux.tar.gz       # on a Mac: citroenition-v0.1.6-aarch64-macos.tar.gz
-export PATH="$PWD/citroenition-v0.1.6-x86_64-linux:$PATH"
+tar xzf citroenition-v0.1.7-x86_64-linux.tar.gz       # on a Mac: citroenition-v0.1.7-aarch64-macos.tar.gz
+export PATH="$PWD/citroenition-v0.1.7-x86_64-linux:$PATH"
 
 # or, from a clone: needs a recent stable Rust toolchain and a C compiler
 cargo build --release
@@ -42,7 +42,7 @@ citro close 1
 ```
 
 Full manual: **[docs.md](docs.md)**, what changed: [CHANGELOG.md](CHANGELOG.md). More: [kernel & anti-detect model](docs/KERNEL.md), [Local API](docs/API.md),
-[desktop app](docs/GUI.md), [team hub](docs/HUB.md), [how AdsPower was reverse engineered](docs/REVERSE_ENGINEERING.md).
+[desktop app](docs/GUI.md), [team hub](docs/HUB.md), [how the antidetect browser was reverse engineered](docs/REVERSE_ENGINEERING.md).
 
 ## Status
 

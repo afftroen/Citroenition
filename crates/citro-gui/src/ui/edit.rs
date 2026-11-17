@@ -1,9 +1,9 @@
-//! The New / Edit profile page. Like AdsPower's editor it is one long form in five sections (General, Proxy,
+//! The New / Edit profile page. Like the antidetect browser's editor it is one long form in five sections (General, Proxy,
 //! Platform, Fingerprint, Advanced) with tabs that jump between them, and an Overview card that shows the identity
 //! the browser will actually present (computed by `citro_core::fingerprint::Resolved`, the same code the launcher
 //! uses, so the card never shows a value the kernel would not apply).
 //!
-//! Every fingerprint control writes an AdsPower `fingerprint_config` key the core already understands; keys the
+//! Every fingerprint control writes an antidetect browser `fingerprint_config` key the core already understands; keys the
 //! dialog does not know are kept untouched.
 //!
 //! Secrets: the page only ever holds the *redacted* profile. A stored proxy password, platform password or cookie
@@ -145,7 +145,7 @@ fn put(m: &mut Map<String, Value>, key: &str, value: Option<Value>) {
     }
 }
 
-/// `"1440 x 900"`, `"1440x900"` or `"1440_900"` -> AdsPower's `"1440_900"`.
+/// `"1440 x 900"`, `"1440x900"` or `"1440_900"` -> the antidetect browser's `"1440_900"`.
 fn screen_key(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect::<String>().replace(['x', 'X', ','], "_")
 }
@@ -483,7 +483,7 @@ impl EditDialog {
         Resolved::resolve(&Ident { profile_id: id, country: &self.country, ip: &ip, persona_os: &self.os }, &fp)
     }
 
-    /// AdsPower's "New fingerprint": a fresh seed, so every derived value changes at once.
+    /// The antidetect browser's "New fingerprint": a fresh seed, so every derived value changes at once.
     fn new_fingerprint(&mut self) {
         let mut rng = citro_core::rng::Rng::from_entropy();
         self.custom_seed = rng.token(12, b"abcdefghijklmnopqrstuvwxyz0123456789");

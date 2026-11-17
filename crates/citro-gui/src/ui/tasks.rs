@@ -92,6 +92,7 @@ pub enum Msg {
     QuitDone(Vec<String>),
     Extensions(BResult<Vec<crate::backend::Extension>>),
     DataMoved(BResult<()>),
+    Tags(BResult<Vec<crate::backend::Tag>>),
     ImportRead(Result<citro_core::import::Parsed, String>),
     ImportProgress(usize, usize),
     Imported(BResult<citro_core::import::Report>),

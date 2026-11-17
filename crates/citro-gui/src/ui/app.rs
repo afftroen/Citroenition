@@ -151,6 +151,7 @@ pub struct CitroApp {
     pub quit: Quit,
     pub(super) last_slow: Instant,
     pub groups: Vec<Group>,
+    pub tags: Vec<crate::backend::Tag>,
     pub groups_version: u64,
     pub kernel: Option<KernelStatus>,
     pub kernel_error: Option<String>,
@@ -218,6 +219,7 @@ impl CitroApp {
             quit: Quit::Idle,
             last_slow: Instant::now(),
             groups: Vec::new(),
+            tags: Vec::new(),
             groups_version: 0,
             kernel: None,
             kernel_error: None,
@@ -274,7 +276,10 @@ impl CitroApp {
     }
 
     pub fn refresh_groups(&mut self) {
-        self.tasks.spawn(false, |w| w.send(Msg::Groups(w.backend.groups())));
+        self.tasks.spawn(false, |w| {
+            w.send(Msg::Groups(w.backend.groups()));
+            w.send(Msg::Tags(w.backend.tags()));
+        });
     }
 
     pub fn refresh_kernel(&mut self) {
@@ -491,6 +496,7 @@ impl CitroApp {
             || self.move_dlg.is_some()
             || self.remark_dlg.is_some()
             || self.update.dialog
+            || self.profiles.tags_for.is_some()
             || !self.failures.is_empty();
         if modal {
             return;

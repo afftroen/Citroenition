@@ -1,4 +1,4 @@
-//! Profile, proxy and group records. Field names follow AdsPower's Local API.
+//! Profile, proxy and group records. Field names follow the antidetect browser's Local API.
 
 use crate::fingerprint::FingerprintConfig;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -15,7 +15,7 @@ pub fn lenient_string<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>,
     })
 }
 
-/// AdsPower's `user_proxy_config`.
+/// The antidetect browser's `user_proxy_config`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProxyConfig {
@@ -164,10 +164,13 @@ pub struct Profile {
     /// The browser's default search engine (`google`, `bing`, ... see `crate::browser_prefs`); empty = Google,
     /// `browser` = leave it to the browser.
     pub search_engine: String,
+    /// Ids of the profile's tags (`crate::store::Store::tags`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     /// Bookmarks Citroenition keeps on the browser's bookmarks bar (`crate::bookmarks`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub bookmarks: Vec<crate::bookmarks::Bookmark>,
-    /// Where the profile was imported from (`adspower:<user_id>`), so an import run twice adds nothing twice.
+    /// Where the profile was imported from (`api:<profile id>`), so an import run twice adds nothing twice.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub source: String,
     pub created_time: i64,
@@ -175,6 +178,37 @@ pub struct Profile {
     pub last_open_time: i64,
     /// Unix seconds of the last time the browser was closed; `0` = never.
     pub last_close_time: i64,
+}
+
+/// A label a profile can carry (several per profile), with a color. Names are at most [`TAG_MAX`] characters.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Tag {
+    pub id: String,
+    pub name: String,
+    /// One of [`TAG_COLORS`]' keys.
+    pub color: String,
+}
+
+pub const TAG_MAX: usize = 50;
+
+/// The tag palette: key and RGB.
+pub const TAG_COLORS: [(&str, u32); 10] = [
+    ("blue", 0x3b82f6),
+    ("green", 0x22c55e),
+    ("orange", 0xf59e0b),
+    ("red", 0xef4444),
+    ("purple", 0xa855f7),
+    ("teal", 0x14b8a6),
+    ("pink", 0xec4899),
+    ("yellow", 0xeab308),
+    ("indigo", 0x6366f1),
+    ("gray", 0x9ca3af),
+];
+
+/// The RGB of a color key (unknown keys are gray).
+pub fn tag_rgb(color: &str) -> u32 {
+    TAG_COLORS.iter().find(|(k, _)| *k == color.trim().to_ascii_lowercase()).map_or(0x9ca3af, |(_, v)| *v)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

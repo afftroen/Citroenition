@@ -1,7 +1,7 @@
 //! The profile's `cookie` field -> cookies in the browser.
 //!
-//! Three formats are accepted, as AdsPower does:
-//! * **JSON**: an array of cookie objects as browser extensions export them (Cookie-Editor, EditThisCookie, AdsPower):
+//! Three formats are accepted, as other antidetect browsers does:
+//! * **JSON**: an array of cookie objects as browser extensions export them (Cookie-Editor, EditThisCookie, the antidetect browser):
 //!   `name`, `value`, `domain`, `path`, `expirationDate` / `expires` / `expiry`, `secure`, `httpOnly`, `sameSite`,
 //!   `hostOnly`, `session`;
 //! * **Netscape** `cookies.txt`: tab-separated `domain flag path secure expiry name value` lines (`#HttpOnly_`
@@ -62,7 +62,7 @@ fn parse_json(t: &str) -> Result<Vec<Value>, String> {
         let expires = ["expirationDate", "expires", "expiry"]
             .iter()
             .find_map(|k| c.get(*k).and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok())));
-        // a real expiry wins over `session: true` (AdsPower marks every cookie as a session cookie and still gives
+        // a real expiry wins over `session: true` (the antidetect browser marks every cookie as a session cookie and still gives
         // the date); without one the cookie lives until the browser closes
         if let Some(e) = expires.filter(|e| *e > 0.0) {
             // some exporters write milliseconds
@@ -174,7 +174,7 @@ mod tests {
         assert_eq!(c[0]["expires"], 1999999999.5);
         assert_eq!(c[1]["domain"], "www.example.com");
         assert!(c[1].get("expires").is_none(), "a session cookie has no expiry");
-        // AdsPower: `session: true` with a real date keeps the date
+        // The antidetect browser: `session: true` with a real date keeps the date
         let ads = parse(r#"[{"domain":".x.com","name":"n","value":"v","session":true,"expires":1824066717,"sameSite":"unspecified"}]"#, "").unwrap();
         assert_eq!(ads[0]["expires"], 1824066717.0);
         assert!(ads[0].get("sameSite").is_none());

@@ -1,7 +1,7 @@
 //! Browser extensions: unpacked Chrome extensions under `<home>/extensions/<id>/`, and which profiles load them.
 //!
 //! An extension is loaded into **every** profile (`all_profiles`) or into the profiles of the groups it lists, like
-//! AdsPower's team extensions. The launcher passes the folders as `--load-extension`. Downloading one from the Chrome
+//! The antidetect browser's team extensions. The launcher passes the folders as `--load-extension`. Downloading one from the Chrome
 //! Web Store is `citro_install::chrome_store`; this module only keeps the list.
 //!
 //! `<home>/extensions/extensions.json` holds the list; each extension's files are in `<home>/extensions/<id>/`.

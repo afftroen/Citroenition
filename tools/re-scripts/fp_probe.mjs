@@ -1,7 +1,7 @@
 // node fp_probe.mjs <none|inline|file> : launch SunBrowser with params, read fingerprint values over CDP, kill it.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
-const KERNEL = process.env.KERNEL || `${process.env.HOME}/.adspowerCli/chrome_157/SunBrowser`; // override with KERNEL=/path/to/SunBrowser
+const KERNEL = process.env.KERNEL || ""; // override with KERNEL=/path/to/SunBrowser
 const STD = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 const SHF = 'hTy1bfRJz4nLPcBCO7WtmNIaGvVeul5Zo8kq32UxrYw_-0gsjp96SDFXQiEMKdHA';
 const enc = s => Buffer.from(s).toString('base64').split('').map(c => { const i = STD.indexOf(c); return i < 0 ? c : SHF[i]; }).join('');

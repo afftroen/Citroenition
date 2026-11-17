@@ -756,7 +756,7 @@ pub fn paint_icon_scaled(g: &Painter, c: Pos2, icon: Icon, col: Color32, s: f32)
 // ------------------------------------------------------------------------------------------------------------------
 // segmented control, switch, logo
 
-/// A row of mutually exclusive choices in one rounded track (AdsPower's "Based on IP | Real | Custom"). Returns
+/// A row of mutually exclusive choices in one rounded track (the antidetect browser's "Based on IP | Real | Custom"). Returns
 /// `true` when the value changed.
 pub fn segmented<T: PartialEq + Clone>(ui: &mut Ui, p: &Palette, value: &mut T, choices: &[(T, &str)]) -> bool {
     let font = FontId::new(13.5, FontFamily::Proportional);

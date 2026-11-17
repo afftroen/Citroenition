@@ -10,11 +10,11 @@ This is the complete manual. The other documents go deeper on one subject each:
 
 | Read | When you want to |
 |---|---|
-| [docs/API.md](docs/API.md) | drive profiles from Selenium / Puppeteer / Playwright over the AdsPower-compatible Local API |
+| [docs/API.md](docs/API.md) | drive profiles from Selenium / Puppeteer / Playwright over the antidetect-browser-compatible Local API |
 | [docs/KERNEL.md](docs/KERNEL.md) | understand the browser engine, the anti-detect model, the measured WebGL recipe and the verification results |
 | [docs/HUB.md](docs/HUB.md) | run the team server: users, teams, cross-device profile locks, hosted cookies, shared logs, CSV |
 | [docs/GUI.md](docs/GUI.md) | use the desktop app |
-| [docs/REVERSE_ENGINEERING.md](docs/REVERSE_ENGINEERING.md) | see how the AdsPower formats were measured, and the evidence behind them |
+| [docs/REVERSE_ENGINEERING.md](docs/REVERSE_ENGINEERING.md) | see how the antidetect browser formats were measured, and the evidence behind them |
 
 ## Contents
 
@@ -56,7 +56,7 @@ This is the complete manual. The other documents go deeper on one subject each:
 
 * **`citro-core`** is the library under everything. It owns the profile store, turns a profile into a kernel
   command line (the *persona*), starts and stops the browser and tracks it.
-* **`citro`** is the command line, and `citro serve` is the **AdsPower-compatible Local API**.
+* **`citro`** is the command line, and `citro serve` is the **antidetect-browser-compatible Local API**.
 * **`citro-gui`** is the desktop app (egui, pure Rust). It talks to a backend trait with two implementations:
   the local one (this machine's store) and the hub one (a team server).
 * **`citro-install`** downloads, signature-checks and unpacks the Clearcote kernel. `citro kernel install` calls it.
@@ -81,10 +81,10 @@ per platform, each with `citro`, `citro-gui`, `citro-hub` and `citro-install`, a
 both. On Linux (glibc 2.35 or newer: Ubuntu 22.04, Debian 12 or later):
 
 ```sh
-V=0.1.6
+V=0.1.7
 curl -LO https://github.com/afftroen/Citroenition/releases/download/v$V/citroenition-v$V-x86_64-linux.tar.gz
 curl -LO https://github.com/afftroen/Citroenition/releases/download/v$V/SHA256SUMS
-sha256sum -c --ignore-missing SHA256SUMS      # citroenition-v0.1.6-x86_64-linux.tar.gz: OK
+sha256sum -c --ignore-missing SHA256SUMS      # citroenition-v0.1.7-x86_64-linux.tar.gz: OK
 tar xzf citroenition-v$V-x86_64-linux.tar.gz
 export PATH="$PWD/citroenition-v$V-x86_64-linux:$PATH"
 ```
@@ -92,10 +92,10 @@ export PATH="$PWD/citroenition-v$V-x86_64-linux:$PATH"
 On a Mac (Apple silicon, macOS 12 or newer):
 
 ```sh
-V=0.1.6
+V=0.1.7
 curl -LO https://github.com/afftroen/Citroenition/releases/download/v$V/citroenition-v$V-aarch64-macos.tar.gz
 curl -LO https://github.com/afftroen/Citroenition/releases/download/v$V/SHA256SUMS
-grep aarch64-macos SHA256SUMS | shasum -a 256 -c      # citroenition-v0.1.6-aarch64-macos.tar.gz: OK
+grep aarch64-macos SHA256SUMS | shasum -a 256 -c      # citroenition-v0.1.7-aarch64-macos.tar.gz: OK
 tar xzf citroenition-v$V-aarch64-macos.tar.gz
 export PATH="$PWD/citroenition-v$V-aarch64-macos:$PATH"
 open citroenition-v$V-aarch64-macos/Citroenition.app      # the desktop app
@@ -205,7 +205,7 @@ $ citro open 1 --dry-run
     "--proxy-server=socks5://203.0.113.9:1080",
     "--disable-quic",                         <- QUIC is UDP; a TCP proxy cannot carry it
     "--socks5-credentials=<hidden>",
-    "--no-sandbox",                           <- as AdsPower's Linux build; --sandbox keeps it
+    "--no-sandbox",                           <- as other antidetect browsers' Linux build; --sandbox keeps it
     "--test-type",                            <- silences the --no-sandbox infobar
     "--ignore-gpu-blocklist",                 <- keeps WebGL on, see docs/KERNEL.md
     "https://www.example.com"
@@ -343,7 +343,7 @@ launch only, replacing the profile's own), `--timeout SECS` (wait for the DevToo
 You rarely need to set anything: `citro new NAME --proxy … --country fr` gives a profile whose language, time zone,
 Accept-Language header and WebRTC behaviour agree with its proxy and whose hardware agrees with itself.
 
-The profile's `fingerprint_config` object (the AdsPower field names, so existing tools keep working) and its OS
+The profile's `fingerprint_config` object (the antidetect browser field names, so existing tools keep working) and its OS
 choice are mapped to the switches the engine reads:
 
 | `fingerprint_config` / profile field | Effect |
@@ -524,14 +524,14 @@ the engine are verified together. More in [docs/KERNEL.md](docs/KERNEL.md#verifi
 | Symptom | Cause and fix |
 |---|---|
 | `no kernel found` | run `citro kernel install`, or point at one with `--kernel PATH` / `CITRO_KERNEL` |
-| the browser exits at once, error shows `kernel.log` | read the tail printed with the error; the commonest causes are no display (Linux: `DISPLAY` unset, use Xvfb or `--headless`) and a missing sandbox permission (the default is `--no-sandbox` as in AdsPower; `--sandbox` needs unprivileged user namespaces) |
+| the browser exits at once, error shows `kernel.log` | read the tail printed with the error; the commonest causes are no display (Linux: `DISPLAY` unset, use Xvfb or `--headless`) and a missing sandbox permission (the default is `--no-sandbox` as in other antidetect browsers; `--sandbox` needs unprivileged user namespaces) |
 | `timed out waiting for the kernel's DevTools endpoint` | a slow machine or a first start that is building caches: raise `--timeout 90` |
 | a page has **no WebGL** / BrowserScan shows `WebGL exception` | on a host without a GPU WebGL needs `--ignore-gpu-blocklist` (always passed). Do **not** add `--use-angle=gl-egl`: it disables WebGL on display-only hosts |
 | iphey's *Browser* tile is red | you are on a Linux host with `--os windows`; use `--os linux` (or `macos`) |
 | proxy login keeps being asked / pages do not load | check the scheme (`socks5` vs `http`), the credentials, and that the proxy allows your IP; `citro open --dry-run` shows the flags with the login hidden |
 | a hub operation answers `409` with code `locked` (the CLI: *is open on another device: anna on anna-laptop*) | the profile is open on another device; the answer names the holder. Wait for them to close it, or a team owner or admin runs `citro hub unlock` ([HUB.md](docs/HUB.md#troubleshooting)) |
 | macOS: "Citroenition.app" or a program "cannot be opened because Apple cannot check it for malicious software" | the quarantine flag that a browser puts on downloads: `xattr -dr com.apple.quarantine <the folder>`, once. The kernel that `citro kernel install` unpacks never carries it |
-| `address already in use` from `citro serve` | another Local API (or AdsPower itself!) owns `:50325`; use `--bind 127.0.0.1:50326` |
+| `address already in use` from `citro serve` | another Local API (or the antidetect browser itself!) owns `:50325`; use `--bind 127.0.0.1:50326` |
 | two edits seem to overwrite each other | they cannot: every write takes `store.lock`; reload the list |
 
 ## 15. Developing Citroenition
@@ -549,7 +549,7 @@ cargo fmt --all             # rustfmt.toml: max_width 120
 * `tests/e2e/iphey.py` is the real-world proof of [section 12](#12-verification-how-we-know-it-works);
   `tests/e2e/run.py` drives the Local API against a real kernel with a credential-demanding proxy and reads
   back what the page and the origin saw.
-* `tools/re-scripts/` holds the measurement scripts used to learn the AdsPower formats
+* `tools/re-scripts/` holds the measurement scripts used to learn the antidetect browser formats
   ([docs/REVERSE_ENGINEERING.md](docs/REVERSE_ENGINEERING.md)).
 * Rules the code follows: no secrets in logs or error messages, atomic writes for every file another process may
   read, no `unwrap` on user input, one place per concern (the launcher builds the command line, nothing else does).

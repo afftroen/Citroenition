@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """End-to-end proof against a REAL SunBrowser kernel.
 
-    cargo build -p citro && python3 -I tests/e2e/run.py          # needs an AdsPower install (its kernel) and node >= 22
+    cargo build -p citro && python3 -I tests/e2e/run.py          # needs an antidetect browser install (its kernel) and node >= 22
 
 What it does: starts a local HTTP proxy that demands credentials, creates two profiles through `citro`, launches the
 real kernel headless, and reads (a) what the page itself reports over CDP and (b) what the origin saw on the wire.
-Then it drives the AdsPower-compatible Local API (`citro serve`) against the same store.
+Then it drives the antidetect-browser-compatible Local API (`citro serve`) against the same store.
 
 Env: CITRO (binary, default target/debug/citro), NODE (node binary, default: first on PATH).
 Exit status is 0 only if every check passed. Everything runs in a throw-away CITRO_HOME.
@@ -194,7 +194,7 @@ try:
          "is passed through but this headless kernel shows no layout difference (div, text+Range, SVG getBBox)"))
     note(f"WebGL (SwiftShader in headless): A={fa['webgl']} | B={fb['webgl']}")
 
-    # ---- the AdsPower Local API, same store, real kernel -------------------------------------
+    # ---- the antidetect browser Local API, same store, real kernel -------------------------------------
     key, port = "e2e-key", free_port()
     log = open(f"{tmp}/serve.log", "w")
     server = subprocess.Popen([CITRO, "serve", "--bind", f"127.0.0.1:{port}", "--api-key", key], env=env,

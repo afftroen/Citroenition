@@ -12,7 +12,7 @@ fingerprint controls live inside the engine rather than in page scripts.
 | Integrity | every archive has a `.sha256` and an OpenPGP signature; `SHA256SUMS.txt` is signed too |
 | What Citroenition ships | no browser at all. `citro kernel install` downloads it ([docs.md §2.2](../docs.md#22-install-the-browser-kernel)) |
 
-Citroenition replaced AdsPower's proprietary SunBrowser kernel with this one; what was learnt from AdsPower is in
+Citroenition replaced the antidetect browser's proprietary SunBrowser kernel with this one; what was learnt from the antidetect browser is in
 [REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md). Stock Chromium cannot be used instead: it has no persona
 switches, so every property a detector reads (platform, GPU, screen, hardware, language) would be the real host's.
 

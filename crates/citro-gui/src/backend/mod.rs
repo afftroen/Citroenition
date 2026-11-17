@@ -11,6 +11,7 @@
 //! use too, so every way of opening a team profile obeys the hub's lock.
 
 pub use citro_core::extensions::Extension;
+pub use citro_core::profile::Tag;
 use citro_core::profile::{Group, Profile, ProxyConfig};
 use std::fmt;
 
@@ -189,7 +190,7 @@ pub struct Query {
 pub struct OpenOpts {
     /// No window (`--headless=new`).
     pub headless: bool,
-    /// Keep Chromium's sandbox (needs unprivileged user namespaces; off by default as in AdsPower).
+    /// Keep Chromium's sandbox (needs unprivileged user namespaces; off by default as in other antidetect browsers).
     pub sandbox: bool,
 }
 
@@ -450,6 +451,22 @@ pub trait Backend: Send + Sync {
     fn save_group(&self, g: Group) -> BResult<Group>;
     /// The group's profiles move to Ungrouped.
     fn delete_group(&self, id: &str) -> BResult<()>;
+
+    // tags -------------------------------------------------------------------------------------------------
+    fn tags(&self) -> BResult<Vec<Tag>> {
+        Ok(Vec::new())
+    }
+    /// Create (empty id) or rename / recolor.
+    fn save_tag(&self, _t: Tag) -> BResult<Tag> {
+        Err(BackendError::Unsupported("tags".into()))
+    }
+    fn delete_tag(&self, _id: &str) -> BResult<()> {
+        Err(BackendError::Unsupported("tags".into()))
+    }
+    /// Add and remove tag ids on profiles.
+    fn retag(&self, _ids: &[String], _add: &[String], _remove: &[String]) -> BResult<()> {
+        Err(BackendError::Unsupported("tags".into()))
+    }
 
     // extensions -------------------------------------------------------------------------------------------
     fn extensions(&self) -> BResult<Vec<Extension>> {

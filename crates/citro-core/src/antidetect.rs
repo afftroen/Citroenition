@@ -1,7 +1,7 @@
-//! Reading profiles out of a running AdsPower through its Local API (`http://local.adspower.net:50325`, the address
-//! AdsPower shows under API & MCP), for [`crate::import`].
+//! Reading profiles out of a running antidetect browser through its Local API (`http://127.0.0.1:50325`, the address
+//! The antidetect browser shows under API & MCP), for [`crate::import`].
 //!
-//! What AdsPower hands out: name, group, remark, proxy with its login, platform and account, and (one request per
+//! What the antidetect browser hands out: name, group, remark, proxy with its login, platform and account, and (one request per
 //! profile) the cookies. It does not hand out its fingerprint settings, so imported profiles get a fresh Citroenition
 //! persona. The API allows about one request per second; requests are paced, and "too many requests" answers retried.
 //!
@@ -14,7 +14,7 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
-pub const DEFAULT_URL: &str = "http://local.adspower.net:50325";
+pub const DEFAULT_URL: &str = "http://127.0.0.1:50325";
 const GAP: Duration = Duration::from_millis(1100);
 const TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -43,10 +43,10 @@ fn decode_chunked(mut b: &[u8]) -> Vec<u8> {
 impl Client {
     fn new(url: &str, key: &str) -> Result<Client, String> {
         let rest = url.trim().trim_end_matches('/');
-        let rest = rest.strip_prefix("http://").ok_or("the AdsPower address starts with http://")?;
+        let rest = rest.strip_prefix("http://").ok_or("The antidetect browser address starts with http://")?;
         let hostport = rest.split('/').next().unwrap_or(rest);
         let (host, port) = match hostport.rsplit_once(':') {
-            Some((h, p)) => (h.to_owned(), p.parse().map_err(|_| "the AdsPower address has a bad port")?),
+            Some((h, p)) => (h.to_owned(), p.parse().map_err(|_| "The antidetect browser address has a bad port")?),
             None => (hostport.to_owned(), 80),
         };
         Ok(Client { host, port, key: key.trim().to_owned(), last: None })
@@ -66,7 +66,7 @@ impl Client {
             .next()
             .ok_or_else(|| format!("cannot find {}", self.host))?;
         let mut s = TcpStream::connect_timeout(&addr, TIMEOUT).map_err(|_| {
-            "AdsPower does not answer: is it open, with the Local API turned on (API & MCP)?".to_owned()
+            "The antidetect browser does not answer: is it open, with the Local API turned on (API & MCP)?".to_owned()
         })?;
         s.set_read_timeout(Some(TIMEOUT)).map_err(|e| e.to_string())?;
         let auth = if self.key.is_empty() { String::new() } else { format!("Authorization: Bearer {}\r\n", self.key) };
@@ -77,16 +77,16 @@ impl Client {
         )
         .map_err(|e| e.to_string())?;
         let mut raw = Vec::new();
-        s.read_to_end(&mut raw).map_err(|e| format!("AdsPower stopped answering: {e}"))?;
-        let split = raw.windows(4).position(|w| w == b"\r\n\r\n").ok_or("AdsPower sent no answer")?;
+        s.read_to_end(&mut raw).map_err(|e| format!("The antidetect browser stopped answering: {e}"))?;
+        let split = raw.windows(4).position(|w| w == b"\r\n\r\n").ok_or("The antidetect browser sent no answer")?;
         let head = String::from_utf8_lossy(&raw[..split]).to_lowercase();
         let body = &raw[split + 4..];
         let body = if head.contains("transfer-encoding: chunked") { decode_chunked(body) } else { body.to_vec() };
         let status = head.split_whitespace().nth(1).unwrap_or("");
         if status != "200" {
-            return Err(format!("AdsPower answered HTTP {status}"));
+            return Err(format!("The antidetect browser answered HTTP {status}"));
         }
-        serde_json::from_slice(&body).map_err(|_| "AdsPower's answer is not JSON".to_owned())
+        serde_json::from_slice(&body).map_err(|_| "The antidetect browser's answer is not JSON".to_owned())
     }
 
     /// GET a JSON endpoint; `code != 0` is an error, a rate-limit answer is retried.
@@ -107,15 +107,15 @@ impl Client {
                 || lower.contains("unauthor")
                 || lower.contains("token")
             {
-                return Err(format!("AdsPower refused the API key: {msg}"));
+                return Err(format!("The antidetect browser refused the API key: {msg}"));
             }
-            return Err(format!("AdsPower: {msg}"));
+            return Err(format!("The antidetect browser: {msg}"));
         }
-        Err("AdsPower keeps saying \"too many requests\"; try again in a minute".into())
+        Err("The antidetect browser keeps saying \"too many requests\"; try again in a minute".into())
     }
 }
 
-/// The cookies AdsPower keeps for profile `id` (its JSON text), or "" when it has none.
+/// The cookies the antidetect browser keeps for profile `id` (its JSON text), or "" when it has none.
 fn cookies_of(c: &mut Client, id: &str) -> Result<String, String> {
     let v = c.get(&format!("/api/v2/browser-profile/cookies?profile_id={id}"))?;
     let cookies = v.pointer("/data/cookies").cloned().unwrap_or(Value::Null);
@@ -126,8 +126,8 @@ fn cookies_of(c: &mut Client, id: &str) -> Result<String, String> {
     })
 }
 
-/// Fetch, from the AdsPower at `url`, the cookies an export left out (and those of any AdsPower profile without
-/// cookies in `parsed`), by each profile's AdsPower id. Returns how many profiles got cookies.
+/// Fetch, from the antidetect browser at `url`, the cookies an export left out (and those of any the antidetect browser profile without
+/// cookies in `parsed`), by each profile's the antidetect browser id. Returns how many profiles got cookies.
 pub fn fill_cookies(
     url: &str,
     key: &str,
@@ -139,7 +139,7 @@ pub fn fill_cookies(
         .iter()
         .enumerate()
         .filter(|(_, i)| {
-            i.profile.source.starts_with("adspower:") && (i.cookies_elsewhere || i.profile.cookie.trim().is_empty())
+            i.profile.source.starts_with("api:") && (i.cookies_elsewhere || i.profile.cookie.trim().is_empty())
         })
         .map(|(n, _)| n)
         .collect();
@@ -148,13 +148,17 @@ pub fn fill_cookies(
     }
     let mut c = Client::new(url, key)?;
     c.get("/status").map_err(|e| {
-        if e.starts_with("AdsPower") { e } else { format!("{url} does not look like AdsPower's Local API ({e})") }
+        if e.starts_with("The antidetect browser") {
+            e
+        } else {
+            format!("{url} does not look like other antidetect browsers' Local API ({e})")
+        }
     })?;
     let (total, mut got) = (wanted.len(), 0);
     for (done, n) in wanted.into_iter().enumerate() {
         progress(done, total);
         let inc = &mut parsed.profiles[n];
-        let id = inc.profile.source.trim_start_matches("adspower:").to_owned();
+        let id = inc.profile.source.trim_start_matches("api:").to_owned();
         match cookies_of(&mut c, &id) {
             Ok(text) if !text.trim().is_empty() => {
                 inc.profile.cookie = text;
@@ -162,19 +166,23 @@ pub fn fill_cookies(
                 got += 1;
             }
             Ok(_) => inc.cookies_elsewhere = false,
-            Err(e) => inc.warnings.push(format!("cookies not fetched from AdsPower: {e}")),
+            Err(e) => inc.warnings.push(format!("cookies not fetched from the antidetect browser: {e}")),
         }
     }
     progress(total, total);
     Ok(got)
 }
 
-/// Every profile in the AdsPower at `url` (with `key`, its API key), with groups and cookies.
+/// Every profile in the antidetect browser at `url` (with `key`, its API key), with groups and cookies.
 /// `progress(done, total)` follows the per-profile cookie requests.
 pub fn fetch(url: &str, key: &str, progress: &mut dyn FnMut(usize, usize)) -> Result<Parsed, String> {
     let mut c = Client::new(url, key)?;
     c.get("/status").map_err(|e| {
-        if e.starts_with("AdsPower") { e } else { format!("{url} does not look like AdsPower's Local API ({e})") }
+        if e.starts_with("The antidetect browser") {
+            e
+        } else {
+            format!("{url} does not look like other antidetect browsers' Local API ({e})")
+        }
     })?;
     let mut groups: Vec<(String, String)> = Vec::new();
     for page in 1..=50 {
@@ -215,7 +223,7 @@ pub fn fetch(url: &str, key: &str, progress: &mut dyn FnMut(usize, usize)) -> Re
     let used: std::collections::BTreeSet<&str> =
         out.profiles.iter().map(|p| p.group.as_str()).filter(|g| !g.is_empty()).collect();
     out.notes.push(format!(
-        "{} profiles and {} groups in AdsPower ({} used by profiles).",
+        "{} profiles and {} groups in the antidetect browser ({} used by profiles).",
         total,
         groups.len(),
         used.len()
@@ -237,9 +245,9 @@ mod tests {
         assert_eq!(decode_chunked(b"4\r\nWiki\r\n6;x=1\r\npedia \r\n0\r\n\r\n"), b"Wikipedia ");
     }
 
-    /// A fake AdsPower: checks the key, answers status, groups, one page of profiles and their cookies.
+    /// A fake the antidetect browser: checks the key, answers status, groups, one page of profiles and their cookies.
     #[test]
-    fn a_whole_fetch_against_a_fake_adspower() {
+    fn a_whole_fetch_against_a_fake_local_api() {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -267,7 +275,7 @@ mod tests {
                     r#"{"code":0,"data":{"cookies":"[{\"name\":\"n\",\"value\":\"v\",\"domain\":\".x.com\"}]"}}"#
                         .to_owned()
                 };
-                // chunked, as AdsPower sends it
+                // chunked, as other antidetect browsers sends it
                 let chunked = format!("{:x}\r\n{body}\r\n0\r\n\r\n", body.len());
                 let _ = write!(
                     s,
@@ -283,10 +291,7 @@ mod tests {
         let p = fetch(&url, "KEY", &mut |d, t| seen = (d, t)).unwrap();
         assert_eq!(seen, (1, 1));
         assert_eq!(p.profiles.len(), 1);
-        assert_eq!(
-            (p.profiles[0].group.as_str(), p.profiles[0].profile.source.as_str()),
-            ("TikTok Ads", "adspower:k1")
-        );
+        assert_eq!((p.profiles[0].group.as_str(), p.profiles[0].profile.source.as_str()), ("TikTok Ads", "api:k1"));
         assert!(p.profiles[0].profile.cookie.contains("x.com"));
         assert_eq!(p.groups, ["TikTok Ads"]);
     }

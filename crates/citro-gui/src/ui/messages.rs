@@ -26,6 +26,11 @@ impl CitroApp {
                     Err(e) => self.rows_error = Some(e.to_string()),
                 }
             }
+            Msg::Tags(result) => {
+                if let Ok(t) = result {
+                    self.tags = t;
+                }
+            }
             Msg::Groups(result) => {
                 if let Ok(g) = result
                     && g != self.groups
@@ -72,6 +77,7 @@ impl CitroApp {
                     self.busy.remove(id);
                 }
                 match done.result {
+                    Ok(()) if done.ok.is_empty() => {}
                     Ok(()) => self.toast(ToastKind::Ok, done.ok),
                     Err(e) => self.toast(ToastKind::Err, e),
                 }

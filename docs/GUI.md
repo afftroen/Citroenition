@@ -184,10 +184,16 @@ this device and cannot be recovered. For a profile that belongs to the team the 
 An empty install shows *No profiles yet* with a **+ New profile** button and the command to do the same from a
 terminal; a filter that matches nothing offers **Clear filters**.
 
+**Editing in the list.** Click a profile's *Group* to move it (or every selected profile) to another group. Double-click
+its *name* or *remark* to edit it in place: Enter saves, Esc cancels. The *Tags* column shows a profile's tags as
+colored chips; click it to tick tags, or open the Tags window (the tag button above the table, or *New tag / manage…*)
+to tag the selection and create, recolor or delete tags (a name of at most 50 characters, ten colors). Opening a
+profile is the **Open** button (or the right-click menu); a double-click no longer opens it.
+
 ## New and edit
 
 **New profile** in the sidebar (or Ctrl/Cmd + N), the **Edit** button above the table, or *Edit…* in a row's menu open
-the profile editor. It takes the place of the page (**‹ Back** or **Cancel** returns to the list), like AdsPower's
+the profile editor. It takes the place of the page (**‹ Back** or **Cancel** returns to the list), like other antidetect browsers'
 editor: one long form in five sections, with tabs at the top that jump to a section and follow the scrolling, and an
 **Overview** card on the right. **Create profile** / **Save changes** sit in a footer that never scrolls away;
 Ctrl/Cmd + Enter saves too (Enter in the name field as well). Esc leaves only a form you have not touched. When Save
@@ -213,7 +219,7 @@ right, or **New** next to the seed) picks a fresh seed, which changes every deri
   MAC Chromium checks, on the first launch and whenever the choice here changes. A change made in the browser's own
   settings stays until then.
 * *Group*: a group, or *Ungrouped*; **+ New group** creates one without leaving the page.
-* *Cookie*: JSON (Cookie-Editor, EditThisCookie, AdsPower), Netscape `cookies.txt` or `name=value` (for the platform's
+* *Cookie*: JSON (Cookie-Editor, EditThisCookie, the antidetect browser), Netscape `cookies.txt` or `name=value` (for the platform's
   site). Kept with the profile (masked like a password), synced through the hub, and **imported into the browser** the
   next time it opens; again only after the field changes, so cookies sites renew later are not overwritten. The
   profile's `kernel.log` says how many went in.
@@ -239,7 +245,7 @@ right, or **New** next to the seed) picks a fresh seed, which changes every deri
   start pages open first. When the browser restores its last session, start pages that are new or changed since the
   last launch open next to it (before 0.1.5 a restored session ignored edits here).
 
-**Fingerprint.** Every control writes an AdsPower `fingerprint_config` key the launcher reads (see the table at the
+**Fingerprint.** Every control writes an antidetect browser `fingerprint_config` key the launcher reads (see the table at the
 top of `crates/citro-core/src/fingerprint.rs`); keys the page does not know are kept.
 
 * *WebRTC*: *Disabled* (leak-proof, the default), *Replace (proxy IP)* or *Real*.
@@ -332,7 +338,7 @@ When no kernel is found, profiles cannot open and the Kernel entry in the sideba
 
 ## Extensions
 
-Chrome extensions for your profiles, like AdsPower's team extensions.
+Chrome extensions for your profiles, like other antidetect browsers' team extensions.
 
 ![The Extensions page](screenshots/extensions.png)
 
@@ -397,17 +403,17 @@ lock again and supervises it, and says so in a notice.
   version is put back). **Restart now** starts the new version; open browsers keep running and profiles, kernels and
   settings are not touched. This works for an unpacked release folder the app can write to; a development build or an
   app moved out of its folder is told to download the release instead. The demo never goes online.
-* **New profiles**: the defaults a new profile starts with, like AdsPower's Preferences. **Edit defaults…** opens the
+* **New profiles**: the defaults a new profile starts with, like other antidetect browsers' Preferences. **Edit defaults…** opens the
   profile editor without the per-profile parts (name, group, proxy login, platform account, cookies, seed); **Save
   defaults** keeps them in the settings file, **Use built-in defaults** forgets them.
-* **Import profiles** (at the bottom): *From AdsPower* takes the Local API address and API key (AdsPower -> API &
-  MCP; AdsPower must be open) and reads every profile with its group, proxy login, account and cookies, about one
-  request a second. AdsPower does not hand out its fingerprint settings, so imported profiles get fresh ones. *From a
-  file* reads CSV / TSV, Excel `.xlsx` (AdsPower's export), JSON or a list of proxies; dropping a file on the window
+* **Import profiles** (at the bottom): *From another antidetect browser* takes the Local API address and API key (the antidetect browser -> API &
+  MCP; the antidetect browser must be open) and reads every profile with its group, proxy login, account and cookies, about one
+  request a second. The antidetect browser does not hand out its fingerprint settings, so imported profiles get fresh ones. *From a
+  file* reads CSV / TSV, Excel `.xlsx` (the antidetect browser's export), JSON or a list of proxies; dropping a file on the window
   does the same. A preview lists every profile and its warnings before **Import**; a value that is almost right (an
   unreadable proxy, an unknown OS) becomes a warning and is left out, the rest of the row comes in. **Save sample CSV**
-  writes `citroenition-import-sample.csv` to Downloads. Profiles imported before from the same AdsPower profile are
-  skipped. The same from the command line: `citro import adspower` (key in `$ADSPOWER_API_KEY`), `citro import file
+  writes `citroenition-import-sample.csv` to Downloads. Profiles imported before from the same antidetect browser profile are
+  skipped. The same from the command line: `citro import api` (key in `$ANTIDETECT_API_KEY`), `citro import file
   <path>`, `citro import sample`.
 * **Appearance**: *Dark* or *Light*, applied at once.
 * **Opening browsers**:

@@ -263,7 +263,7 @@ impl CitroApp {
         }
     }
 
-    /// Settings -> New profiles: the defaults a new profile starts with (AdsPower's Preferences).
+    /// Settings -> New profiles: the defaults a new profile starts with (like the Preferences of other antidetect browsers).
     fn settings_new_profiles(&mut self, ui: &mut Ui) {
         let p = self.pal;
         let (mut edit, mut reset) = (false, false);

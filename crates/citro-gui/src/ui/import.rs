@@ -1,6 +1,6 @@
-//! Settings -> Import profiles: from a running AdsPower (its Local API) or from a file (CSV, Excel, JSON, a list of
+//! Settings -> Import profiles: from a running antidetect browser (its Local API) or from a file (CSV, Excel, JSON, a list of
 //! proxies), with a preview that shows every warning before anything is added. A file can also be dropped on the
-//! window. The reading is `citro_core::import` / `citro_core::adspower`.
+//! window. The reading is `citro_core::import` / `citro_core::antidetect`.
 
 use super::app::{CitroApp, Page, ToastKind};
 use super::tasks::{Msg, Refresh};
@@ -25,7 +25,7 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         State {
-            ads_url: citro_core::adspower::DEFAULT_URL.to_owned(),
+            ads_url: citro_core::antidetect::DEFAULT_URL.to_owned(),
             ads_key: String::new(),
             path: String::new(),
             reading: false,
@@ -38,11 +38,11 @@ impl Default for State {
 }
 
 impl CitroApp {
-    fn read_adspower(&mut self) {
+    fn read_local_api(&mut self) {
         let (url, key) = (self.import_ui.ads_url.trim().to_owned(), self.import_ui.ads_key.trim().to_owned());
         self.start_reading();
         self.tasks.spawn(true, move |w| {
-            let r = citro_core::adspower::fetch(&url, &key, &mut |d, t| w.send(Msg::ImportProgress(d, t)));
+            let r = citro_core::antidetect::fetch(&url, &key, &mut |d, t| w.send(Msg::ImportProgress(d, t)));
             w.send(Msg::ImportRead(r));
         });
     }
@@ -56,16 +56,16 @@ impl CitroApp {
             let mut r = std::fs::read(&path)
                 .map_err(|e| format!("cannot read {}: {e}", path.display()))
                 .and_then(|b| citro_core::import::parse_file(&b, &name));
-            // an AdsPower export leaves big cookie lists out: fetch them through the API with the key above
+            // an antidetect browser's export leaves big cookie lists out: fetch them through the API with the key above
             if let Ok(p) = r.as_mut()
                 && p.profiles.iter().any(|i| i.cookies_elsewhere)
             {
                 if key.is_empty() {
-                    p.notes.push("AdsPower left the cookies out of this file (too large for Excel). Enter the AdsPower API key above and press Read file again to fetch them.".into());
+                    p.notes.push("The export left the cookies out (too large for Excel). Enter the other browser's Local API address and key above and press Read file again to fetch them.".into());
                 } else {
-                    match citro_core::adspower::fill_cookies(&url, &key, p, &mut |d, t| w.send(Msg::ImportProgress(d, t))) {
-                        Ok(n) => p.notes.push(format!("Fetched the cookies of {n} profile(s) from AdsPower.")),
-                        Err(e) => p.notes.push(format!("Could not fetch the cookies from AdsPower: {e}")),
+                    match citro_core::antidetect::fill_cookies(&url, &key, p, &mut |d, t| w.send(Msg::ImportProgress(d, t))) {
+                        Ok(n) => p.notes.push(format!("Fetched the cookies of {n} profile(s) through the Local API.")),
+                        Err(e) => p.notes.push(format!("Could not fetch the cookies through the Local API: {e}")),
                     }
                 }
             }
@@ -156,12 +156,12 @@ impl CitroApp {
             ));
             ui.add_space(12.0);
 
-            ui.label(semibold("From AdsPower", 13.5));
+            ui.label(semibold("From another antidetect browser", 13.5));
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.add(
                     TextEdit::singleline(&mut self.import_ui.ads_url)
-                        .hint_text(citro_core::adspower::DEFAULT_URL)
+                        .hint_text(citro_core::antidetect::DEFAULT_URL)
                         .margin(Margin::symmetric(10, 8))
                         .desired_width(280.0),
                 );
@@ -178,9 +178,9 @@ impl CitroApp {
             });
             ui.label(small_dim(
                 &p,
-                "AdsPower must be open. Both values are in AdsPower under API & MCP. AdsPower answers about one request \
-                 a second, so reading the cookies takes a second per profile. AdsPower does not hand out its fingerprint \
-                 settings: imported profiles get a fresh one. The key is not saved.",
+                "The other antidetect browser must be open with its Local API turned on; its address and API key are in its API \
+                 settings. It answers about one request a second, so reading the cookies takes a second per profile. \
+                 Fingerprint settings are not handed out by its API, so imported profiles get fresh ones. The key is not saved.",
             ));
             ui.add_space(12.0);
 
@@ -210,7 +210,7 @@ impl CitroApp {
             });
             ui.label(small_dim(
                 &p,
-                "CSV (comma, semicolon or tab), Excel .xlsx (AdsPower's export), JSON, or a list of proxies, one per line. \
+                "CSV (comma, semicolon or tab), Excel .xlsx (an antidetect browser's profile export), JSON, or a list of proxies, one per line. \
                  Columns are found by name: name, group, remark, proxy (or proxy type / host / port / user / password), \
                  platform, username, password, start_urls, os, country, user_agent, cookie.",
             ));
@@ -290,7 +290,7 @@ impl CitroApp {
                     if self.import_ui.applying {
                         ui.add(egui::Spinner::new().size(16.0));
                     }
-                    ui.label(small_dim(&p, "Profiles imported before from the same AdsPower profile are skipped."));
+                    ui.label(small_dim(&p, "Profiles imported before are filled in, not duplicated."));
                 });
             }
         });
@@ -298,7 +298,7 @@ impl CitroApp {
             r.response.scroll_to_me(Some(egui::Align::TOP));
         }
         if ads {
-            self.read_adspower();
+            self.read_local_api();
         }
         if file {
             self.read_import_file();

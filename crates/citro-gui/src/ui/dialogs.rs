@@ -64,6 +64,8 @@ impl CitroApp {
             self.move_modal(ctx);
         } else if self.remark_dlg.is_some() {
             self.remark_modal(ctx);
+        } else if self.profiles.tags_for.is_some() {
+            self.tags_modal(ctx);
         } else if self.update.dialog {
             self.update_modal(ctx);
         } else if self.export.is_some() {

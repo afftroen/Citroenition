@@ -15,6 +15,7 @@ pub mod profiles;
 pub mod settings;
 pub mod shell;
 pub mod shot;
+pub mod tags;
 pub mod tasks;
 pub mod teams;
 pub mod theme;

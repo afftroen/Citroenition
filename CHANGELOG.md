@@ -1,24 +1,45 @@
 # Changelog
 
+## 0.1.7 (2026-11-17)
+
+This release also brings everything listed under 0.1.6 below: that build could not get a macOS runner from GitHub and
+was never published.
+
+* **Tags.** Profiles can carry several tags, each with a name of up to 50 characters and one of ten colors. A Tags
+  column shows them as chips; clicking it ticks tags; the toolbar's tag button opens the Tags window (tick tags for the
+  selection, create, recolor, delete). Imports bring tags along (a `tags` column, or `profile_tags` from a Local API).
+* **Edit in the list.** Click a profile's group to move it (or the whole selection) to another group; double-click its
+  name or remark to edit it in place (Enter saves, Esc cancels). Double-clicking a row no longer opens the browser.
+* **Exports with cookies and start pages.** An antidetect browser's `.xlsx` export, which leaves large cookie lists out
+  ("Cookie too large and exceeds Excel's grid limits"), is matched to the browser by each profile's id and the cookies
+  are fetched through its Local API. Start pages (split only between addresses, so commas inside an OAuth link stay),
+  the user agent and tags come from the file. Importing again over profiles imported before fills in what they lack
+  instead of skipping them.
+* **Local API**: `POST /api/v1/user/regroup`, `POST /api/v2/browser-profile/delete-cache` (cookie, local_storage,
+  indexeddb, extension_cache, history, image_file), `GET /api/v2/browser-profile/cookies`, and `profile_tags` in profile
+  lists.
+* The repository names no other product any more; `citro import adspower` is now `citro import api`
+  (`$ANTIDETECT_API_KEY`), and the importer's default address is `http://127.0.0.1:50325`.
+
 ## 0.1.6 (2026-11-17)
 
-**Import from AdsPower, quitting that really quits, bookmarks, and a profile list like AdsPower's.**
+**Import from the antidetect browser, quitting that really quits, bookmarks, and a profile list like other antidetect browsers'.**
 
-* **Import profiles** (Settings -> Import profiles, or `citro import`): straight from a running AdsPower through its
-  Local API (groups, proxies with their logins, platform accounts and every profile's cookies; AdsPower does not hand
+* **Import profiles** (Settings -> Import profiles, or `citro import`): straight from a running antidetect browser through its
+  Local API (groups, proxies with their logins, platform accounts and every profile's cookies; the antidetect browser does not hand
   out its fingerprints, so imported profiles get fresh ones), or from a file: CSV (comma, semicolon or tab), Excel
   `.xlsx`, JSON or a list of proxies. Drop a file on the window to read it. A preview shows every profile and
   warning first; **Save sample CSV** writes an example with every column. Profiles imported before from the same
-  AdsPower profile are skipped.
+  The antidetect browser profile are skipped.
 * **A forgiving reader**: columns are matched by many names, proxies in every common notation, OS and country in loose
   spellings; a value that is almost right becomes a warning on its row instead of rejecting the file.
 * **Quitting quits**: the red button (or Cmd+Q) closes every open browser the way Chrome quits, so cookies and open
   tabs are saved and come back next time, and then the app exits.
 * **Bookmarks** for profiles and groups (`Name | URL` per line), put on the bookmarks bar before a launch; bookmarks
   added in the browser itself are kept.
-* **The profile list** is laid out like AdsPower's: No., ID, the name with the OS mark and on two lines, group, the
+* **The profile list** is laid out like other antidetect browsers': No., ID, the name with the OS mark and on two lines, group, the
   IP with its country, a wide two-line remark, the creation date, last opened (or what is happening now), Open.
-* Cookies marked as session cookies but carrying a real expiry (AdsPower's) keep their expiry.
+* Cookies marked as session cookies but carrying a real expiry (the antidetect browser's) keep their expiry.
 
 ## 0.1.5 (2026-11-17)
 
@@ -29,7 +50,7 @@
   goes into the manifest), so their data survives a moved data folder. CLI: `citro extension add|ls|rm`.
 * **Group settings.** A group can have its own start pages and extensions (Groups -> Settings), opened and loaded in
   every profile of the group.
-* **Defaults for new profiles** (Settings -> New profiles), like AdsPower's Preferences: the profile editor without
+* **Defaults for new profiles** (Settings -> New profiles), like other antidetect browsers' Preferences: the profile editor without
   the per-profile fields; every new profile starts from them.
 * **A search engine.** Clearcote ships without Google and searches nowhere from the address bar. Profiles now get
   Google by default (or Bing, DuckDuckGo, Brave, Yahoo, Ecosia, Startpage), written into Chromium's protected
@@ -54,7 +75,7 @@
   the relay logs in to the real proxy (host names stay unresolved, so no DNS leak). It ends with the browser. Engines
   that take the login as a switch (Linux) are launched exactly as before. Checked on a Mac with the real kernel and a
   real SOCKS5 proxy with a login: the page sees the proxy's exit IP.
-* **No more keychain prompt on macOS.** Browsers start with `--use-mock-keychain`, as AdsPower's do, so Chromium no
+* **No more keychain prompt on macOS.** Browsers start with `--use-mock-keychain`, as other antidetect browsers' do, so Chromium no
   longer asks for the login keychain password ("Chromium Safe Storage"). `--password-store=basic` only works on Linux.
 
 ## 0.1.3 (2026-11-17)
@@ -71,12 +92,12 @@ are not signed yet, so the trust is TLS to the repository's own release download
 
 ## 0.1.2 (2026-11-17)
 
-**A profile editor like AdsPower's, and a logo.**
+**A profile editor like other antidetect browsers', and a logo.**
 
 * **New and Edit profile** is now a full page instead of a small dialog: five sections (General, Proxy, Platform,
   Fingerprint, Advanced) with tabs that jump between them, roomier rows, a footer that stays put, and a live
   **Overview** of what sites will see, computed by the launcher's own persona code.
-* **Many more options**, each one an AdsPower `fingerprint_config` key the launcher already applies: browser brand,
+* **Many more options**, each one an antidetect browser `fingerprint_config` key the launcher already applies: browser brand,
   custom user agent, WebRTC, time zone, location, languages, display language, screen resolution, canvas and WebGL
   image noise, WebGL vendor and renderer, CPU cores, memory and the fingerprint seed (with **New fingerprint**). Also
   cookie, platform domain / username / password and launch arguments.
@@ -137,8 +158,8 @@ bundle it.
 
 **What is in the archive**
 
-* `citro`: the command line, and `citro serve`, a Local API that is compatible with AdsPower's, so automation written
-  for AdsPower (Selenium, Puppeteer, Playwright) points at it unchanged.
+* `citro`: the command line, and `citro serve`, a Local API that is compatible with other antidetect browsers', so automation written
+  for the antidetect browser (Selenium, Puppeteer, Playwright) points at it unchanged.
 * `citro-gui`: the desktop app: profile table, groups, remarks, last-opened and last-closed times, logs, CSV export,
   the kernel installer, and everything about teams.
 * `citro-hub`: the self-hosted team server.

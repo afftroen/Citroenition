@@ -1,6 +1,6 @@
 # The Local API
 
-`citro serve` implements the **AdsPower Local API**. Scripts written for AdsPower (Selenium, Puppeteer, Playwright,
+`citro serve` implements the **antidetect browser Local API**. Scripts written for the antidetect browser (Selenium, Puppeteer, Playwright,
 the vendor SDKs) point at it unchanged: same paths, same field names, same response envelope.
 
 ```sh
@@ -8,7 +8,7 @@ citro serve                                   # 127.0.0.1:50325, no key (loopbac
 citro serve --bind 0.0.0.0:50325 --api-key "$KEY"   # off loopback a key is mandatory
 ```
 
-On start the server writes its address to `<home>/local_api` and removes the file on exit (AdsPower does the same).
+On start the server writes its address to `<home>/local_api` and removes the file on exit (the antidetect browser does the same).
 Stop it with Ctrl-C or SIGTERM; browsers it opened are separate processes and keep running.
 
 ## Conventions
@@ -120,7 +120,7 @@ Accepted fields: `name` (≤ 100 characters), `group_id`, `remark`, `platform` /
 [docs.md](../docs.md#6-the-persona-what-a-profile-claims-to-be)). Update takes the same fields plus the profile key;
 it validates on a copy first, so a rejected request leaves the stored profile untouched.
 
-**Not supported on purpose:** AdsPower's saved proxies (`proxyid`). The request is rejected with a clear message
+**Not supported on purpose:** the antidetect browser's saved proxies (`proxyid`). The request is rejected with a clear message
 rather than silently ignored, so a profile never ends up connecting directly when you asked for a proxy. Pass
 `user_proxy_config` instead. A `group_id` that does not exist is rejected too (`0` and empty mean *ungrouped*).
 
@@ -145,7 +145,7 @@ curl -s -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
 Filters: `profile_id` / `user_id`, `profile_no` / `serial_number`, `group_id`. Sort: `user_sort` as an object or a JSON
 string, keys `serial_number` (default, newest first), `last_open_time`, `last_close_time`, `created_time`, direction
 `asc` or `desc`. Paging: `page` (from 1) and `page_size` (v1) or `limit` (v2); **the default page size is 1 and the
-maximum 100**, as in AdsPower. A listing first reconciles the run records, so `last_close_time` is current even for
+maximum 100**, as in other antidetect browsers. A listing first reconciles the run records, so `last_close_time` is current even for
 a browser that was closed by hand.
 
 Each row:
@@ -159,7 +159,7 @@ Each row:
                       "proxy_port":"1080","proxy_user":"alice","proxy_password":"********"}}
 ```
 
-`password` is the *account* password you stored for the target platform (AdsPower compatible); if you share the API
+`password` is the *account* password you stored for the target platform (the antidetect browser compatible); if you share the API
 key, do not store account passwords in profiles.
 
 ### Groups
@@ -170,9 +170,9 @@ curl -s … -d '{"group_name":"Shops FR","remark":"french shops"}' -H 'Content-T
 curl -s … "http://127.0.0.1:50325/api/v1/group/list?page=1&page_size=10&group_name=shops"
 ```
 
-## Differences from AdsPower
+## Differences from the antidetect browser
 
-| AdsPower | Citroenition |
+| the antidetect browser | Citroenition |
 |---|---|
 | saved proxies (`proxyid`) | not supported, rejected explicitly; pass `user_proxy_config` |
 | SunBrowser / Orbita kernels | the open-source Clearcote kernel |

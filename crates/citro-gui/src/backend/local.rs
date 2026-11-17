@@ -490,6 +490,23 @@ impl Backend for LocalBackend {
         Ok(())
     }
 
+    // tags ----------------------------------------------------------------------------------------------------
+    fn tags(&self) -> BResult<Vec<super::Tag>> {
+        Ok(Store::open(&self.home)?.tags().to_vec())
+    }
+
+    fn save_tag(&self, t: super::Tag) -> BResult<super::Tag> {
+        Ok(store::locked(&self.home, |s| s.save_tag(t))?)
+    }
+
+    fn delete_tag(&self, id: &str) -> BResult<()> {
+        Ok(store::locked(&self.home, |s| s.delete_tag(id))?)
+    }
+
+    fn retag(&self, ids: &[String], add: &[String], remove: &[String]) -> BResult<()> {
+        Ok(store::locked(&self.home, |s| s.retag(ids, add, remove))?)
+    }
+
     // extensions ----------------------------------------------------------------------------------------------
     fn extensions(&self) -> BResult<Vec<super::Extension>> {
         let mut all = citro_core::extensions::list(&self.home);

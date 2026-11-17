@@ -1,10 +1,10 @@
-//! Citroenition core: an AdsPower-compatible profile model, the persona (fingerprint) model and a launcher
+//! Citroenition core: an antidetect-browser-compatible profile model, the persona (fingerprint) model and a launcher
 //! for the open-source Clearcote (Chromium) kernel.
 //!
-//! The profile and API formats in here were reverse engineered from a local AdsPower install; see
+//! The profile and API formats in here were reverse engineered from a local the antidetect browser install; see
 //! `docs/REVERSE_ENGINEERING.md` in the repository root. The browser itself is Clearcote, see `docs/KERNEL.md`.
 
-pub mod adspower;
+pub mod antidetect;
 pub mod bookmarks;
 pub mod browser_prefs;
 pub mod cdp;

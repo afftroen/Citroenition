@@ -1,4 +1,4 @@
-//! `citro`: manage anti-detect browser profiles from the shell, or serve the AdsPower-compatible Local API.
+//! `citro`: manage anti-detect browser profiles from the shell, or serve the antidetect-browser-compatible Local API.
 
 mod api;
 
@@ -98,7 +98,7 @@ enum Cmd {
         #[command(subcommand)]
         cmd: GroupCmd,
     },
-    /// Import profiles from AdsPower (its Local API) or from a file (CSV, Excel, JSON, a list of proxies)
+    /// Import profiles from the antidetect browser (its Local API) or from a file (CSV, Excel, JSON, a list of proxies)
     Import {
         #[command(subcommand)]
         cmd: ImportCmd,
@@ -119,7 +119,7 @@ enum Cmd {
         #[command(subcommand)]
         cmd: Option<KernelCmd>,
     },
-    /// Serve the AdsPower Local API
+    /// Serve the antidetect browser Local API
     Serve(ServeArgs),
 }
 
@@ -195,13 +195,13 @@ enum GroupCmd {
 
 #[derive(Subcommand)]
 enum ImportCmd {
-    /// Every profile of a running AdsPower, with groups, proxies and cookies (the key: --key or $ADSPOWER_API_KEY)
-    Adspower {
-        /// AdsPower's Local API address (API & MCP in AdsPower)
-        #[arg(long, default_value = citro_core::adspower::DEFAULT_URL)]
+    /// Every profile of a running antidetect browser, with groups, proxies and cookies (the key: --key or $ANTIDETECT_API_KEY)
+    Api {
+        /// The antidetect browser's Local API address (API & MCP in the antidetect browser)
+        #[arg(long, default_value = citro_core::antidetect::DEFAULT_URL)]
         url: String,
-        /// The API key (better: set ADSPOWER_API_KEY, so it does not show in `ps`)
-        #[arg(long, env = "ADSPOWER_API_KEY", hide_env_values = true, default_value = "")]
+        /// The API key (better: set ANTIDETECT_API_KEY, so it does not show in `ps`)
+        #[arg(long, env = "ANTIDETECT_API_KEY", hide_env_values = true, default_value = "")]
         key: String,
         /// Show what would be imported, change nothing
         #[arg(long)]
@@ -309,7 +309,7 @@ struct OpenArgs {
 
 #[derive(Args)]
 struct ServeArgs {
-    /// Address to listen on (AdsPower's own default is 127.0.0.1:50325)
+    /// Address to listen on (the antidetect browser's own default is 127.0.0.1:50325)
     #[arg(long, default_value = "127.0.0.1:50325", value_name = "ADDR")]
     bind: SocketAddr,
     /// Require `Authorization: Bearer <KEY>` on every route but /status (env CITRO_API_KEY). Mandatory off loopback.
@@ -918,9 +918,9 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Import { cmd: ImportCmd::Sample } => print!("{}", citro_core::import::SAMPLE_CSV),
         Cmd::Import { cmd } => {
             let (parsed, dry) = match cmd {
-                ImportCmd::Adspower { url, key, dry_run } => {
-                    eprintln!("reading AdsPower at {url} (about one request per second)...");
-                    let p = citro_core::adspower::fetch(&url, &key, &mut |d, t| {
+                ImportCmd::Api { url, key, dry_run } => {
+                    eprintln!("reading the antidetect browser at {url} (about one request per second)...");
+                    let p = citro_core::antidetect::fetch(&url, &key, &mut |d, t| {
                         if t > 0 {
                             eprint!("\r  cookies {d}/{t}   ");
                         }
@@ -933,13 +933,13 @@ fn run(cli: Cli) -> Result<()> {
                     let bytes = std::fs::read(&path).map_err(|e| anyhow!("cannot read {}: {e}", path.display()))?;
                     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     let mut p = citro_core::import::parse_file(&bytes, name).map_err(|e| anyhow!(e))?;
-                    // an AdsPower export leaves big cookie lists out: fetch them from AdsPower when its key is set
+                    // an antidetect browser export leaves big cookie lists out: fetch them from the antidetect browser when its key is set
                     if p.profiles.iter().any(|i| i.cookies_elsewhere) {
-                        match std::env::var("ADSPOWER_API_KEY") {
+                        match std::env::var("ANTIDETECT_API_KEY") {
                             Ok(key) if !key.trim().is_empty() => {
-                                eprintln!("fetching the cookies the file left out from AdsPower...");
-                                let n = citro_core::adspower::fill_cookies(
-                                    citro_core::adspower::DEFAULT_URL,
+                                eprintln!("fetching the cookies the file left out from the antidetect browser...");
+                                let n = citro_core::antidetect::fill_cookies(
+                                    citro_core::antidetect::DEFAULT_URL,
                                     &key,
                                     &mut p,
                                     &mut |_, _| {},
@@ -948,7 +948,7 @@ fn run(cli: Cli) -> Result<()> {
                                 eprintln!("  cookies for {n} profile(s)");
                             }
                             _ => eprintln!(
-                                "note: the file left cookies out; set ADSPOWER_API_KEY (AdsPower open) to fetch them"
+                                "note: the file left cookies out; set ANTIDETECT_API_KEY (the antidetect browser open) to fetch them"
                             ),
                         }
                     }
