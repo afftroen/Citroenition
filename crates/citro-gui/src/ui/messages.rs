@@ -143,6 +143,9 @@ impl CitroApp {
                 Err(e) => self.kernel_error = Some(e.to_string()),
             },
             Msg::KernelProgress { done, total } => self.kernel_ui.progress = Some((done, total)),
+            Msg::UpdateChecked(r) => self.update_checked(r),
+            Msg::UpdateProgress { done, total } => self.update_progress(done, total),
+            Msg::UpdateDone(r) => self.update_done(r),
             Msg::KernelInstalled(result) => {
                 self.kernel_ui.installing = false;
                 self.kernel_ui.progress = None;

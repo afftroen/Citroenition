@@ -15,4 +15,5 @@ pub mod selection;
 pub mod settings;
 pub mod timefmt;
 pub mod ui;
+pub mod updater;
 pub mod util;

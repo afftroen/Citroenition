@@ -16,6 +16,7 @@ pub mod shot;
 pub mod tasks;
 pub mod teams;
 pub mod theme;
+pub mod update;
 pub mod widgets;
 
 pub use app::{AppOptions, CitroApp, Page};

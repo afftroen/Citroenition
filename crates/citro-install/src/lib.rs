@@ -20,6 +20,7 @@
 //! # }
 //! ```
 
+pub mod app_update;
 #[cfg(test)]
 #[path = "../tests/common/mod.rs"]
 mod common;

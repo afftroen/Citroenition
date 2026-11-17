@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+**Update from inside the app.** Citroenition looks for a newer release on GitHub when it starts; the sidebar then shows
+**↑ Update to vX**, and Settings has an **Updates** card with **Check for updates**. **Update now** downloads the archive
+for this computer, checks its SHA-256 against the release's `SHA256SUMS`, unpacks it with the kernel installer's
+path-safe extractor and swaps it into the install folder, putting the old version back on any error; **Restart now**
+starts the new version. The download code is `citro_install::app_update`, the swap is `citro_gui::updater`. Releases
+are not signed yet, so the trust is TLS to the repository's own release downloads plus the checksum list.
+
 ## 0.1.2 (2026-11-17)
 
 **A profile editor like AdsPower's, and a logo.**

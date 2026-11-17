@@ -358,6 +358,14 @@ lock again and supervises it, and says so in a notice.
 
 ![The Settings page](screenshots/settings.png)
 
+* **Updates**: this version and whether a newer one is out, with **Check for updates**. Citroenition asks GitHub
+  for its newest release when it starts (and every six hours while it stays open). When there is one, the foot of the
+  sidebar says **↑ Update to vX** and **Update…** opens the update dialog with the release notes: **Update now**
+  downloads the archive for this computer from the repository's releases, checks its SHA-256 against the release's
+  `SHA256SUMS`, unpacks it and swaps it into the folder the app runs from (all or nothing: on any error the previous
+  version is put back). **Restart now** starts the new version; open browsers keep running and profiles, kernels and
+  settings are not touched. This works for an unpacked release folder the app can write to; a development build or an
+  app moved out of its folder is told to download the release instead. The demo never goes online.
 * **Appearance**: *Dark* or *Light*, applied at once.
 * **Opening browsers**:
   * *Headless: open browsers without a window*. For servers and automation.

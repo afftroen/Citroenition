@@ -12,6 +12,8 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
+# The desktop app's own release archives are .tar.gz.
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
 # OpenPGP signature check of SHA256SUMS.txt (pure Rust; no bzip2 so no C build).
 pgp = { version = "0.21", default-features = false }

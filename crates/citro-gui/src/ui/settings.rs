@@ -58,6 +58,8 @@ impl CitroApp {
         }
         ui.add_space(10.0);
         ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            self.settings_updates(ui);
+            ui.add_space(12.0);
             self.settings_look(ui);
             ui.add_space(12.0);
             self.settings_launch(ui);

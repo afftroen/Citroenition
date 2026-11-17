@@ -5,7 +5,7 @@ use super::shot::Shot;
 use super::tasks::{Msg, OpDone, Refresh, Tasks};
 use super::theme::{self, Palette};
 use super::widgets::Icon;
-use super::{edit, export, groups, kernel, logs, profiles, settings, teams};
+use super::{edit, export, groups, kernel, logs, profiles, settings, teams, update};
 use crate::backend::{
     BResult, Backend, BackendInfo, BackendKind, HubStatus, KernelStatus, OpenOpts, Query, Row, RunState, TeamInfo,
 };
@@ -173,6 +173,7 @@ pub struct CitroApp {
     pub kernel_ui: kernel::State,
     pub teams_ui: teams::State,
     pub settings_ui: settings::State,
+    pub update: update::State,
 
     pub(super) scenario: Option<StartPage>,
     pub(super) demo_failing: Vec<String>,
@@ -231,6 +232,7 @@ impl CitroApp {
             kernel_ui: kernel::State::default(),
             teams_ui: teams::State::default(),
             settings_ui: settings::State::default(),
+            update: update::State::default(),
             scenario: Some(o.start),
             demo_failing: o.demo_failing,
             shot: o.screenshot.map(|out| Shot { out, frame: 0, started: Instant::now(), requested: false, tx, rx }),
@@ -239,6 +241,7 @@ impl CitroApp {
             app.logs_ui.show_browser();
         }
         app.refresh_all();
+        app.check_updates(false);
         app
     }
 
@@ -411,6 +414,7 @@ impl CitroApp {
             self.last_slow = Instant::now();
             self.refresh_kernel();
             self.refresh_teams();
+            self.check_updates(false);
         }
         self.toasts.retain(|t| t.born.elapsed() < t.life());
         if self.rows_loaded
@@ -474,6 +478,7 @@ impl CitroApp {
             || self.confirm.is_some()
             || self.move_dlg.is_some()
             || self.remark_dlg.is_some()
+            || self.update.dialog
             || !self.failures.is_empty();
         if modal {
             return;

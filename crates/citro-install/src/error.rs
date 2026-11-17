@@ -25,6 +25,15 @@ pub enum Error {
         arch: String,
     },
 
+    /// There is no Citroenition release archive for this OS/CPU.
+    #[error("Citroenition releases are built for Linux x86-64 and macOS on Apple silicon, not {os}/{arch}")]
+    UnsupportedApp {
+        /// `std::env::consts::OS` of the host.
+        os: String,
+        /// `std::env::consts::ARCH` of the host.
+        arch: String,
+    },
+
     /// A caller-supplied value (release tag, repository, ...) has an unacceptable shape.
     #[error("invalid {what} `{value}`")]
     InvalidInput {

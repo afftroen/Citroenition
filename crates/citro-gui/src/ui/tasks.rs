@@ -90,6 +90,12 @@ pub enum Msg {
     Notices(Vec<Notice>),
     /// The team browsers are closed and uploaded: the app may quit.
     QuitDone(Vec<String>),
+    UpdateChecked(Result<Option<crate::updater::AppRelease>, String>),
+    UpdateProgress {
+        done: u64,
+        total: u64,
+    },
+    UpdateDone(Result<String, String>),
 }
 
 /// What a worker closure gets: the backend and a way to answer.

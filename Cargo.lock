@@ -625,6 +625,7 @@ dependencies = [
  "png",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -653,6 +654,7 @@ name = "citro-install"
 version = "0.1.2"
 dependencies = [
  "clap",
+ "flate2",
  "lzma-rust2",
  "pgp",
  "rand",

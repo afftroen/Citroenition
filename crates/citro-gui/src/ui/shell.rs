@@ -69,10 +69,26 @@ impl CitroApp {
                 // bottom-up layout the card's frame stretched over all the free height
                 let area = ui.max_rect();
                 let nav_bottom = ui.cursor().top();
-                let foot = Rect::from_min_max(pos2(area.left(), area.bottom() - 20.0), area.right_bottom());
-                ui.scope_builder(UiBuilder::new().max_rect(foot).layout(Layout::left_to_right(Align::Center)), |ui| {
-                    ui.add_space(4.0);
-                    ui.label(small_dim(&p, format!("Citroenition v{}", env!("CARGO_PKG_VERSION"))));
+                let has_update = matches!(
+                    self.update.status,
+                    super::update::Status::Available(_)
+                        | super::update::Status::Downloading { .. }
+                        | super::update::Status::Installed(_)
+                );
+                let foot_h = if has_update { 40.0 } else { 20.0 };
+                let foot = Rect::from_min_max(pos2(area.left(), area.bottom() - foot_h), area.right_bottom());
+                ui.scope_builder(UiBuilder::new().max_rect(foot).layout(Layout::top_down(Align::Min)), |ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    ui.horizontal(|ui| {
+                        ui.add_space(4.0);
+                        ui.label(small_dim(&p, format!("Citroenition v{}", env!("CARGO_PKG_VERSION"))));
+                    });
+                    if has_update {
+                        ui.horizontal(|ui| {
+                            ui.add_space(4.0);
+                            self.sidebar_update_link(ui);
+                        });
+                    }
                 });
                 let card_h = self.side_card_height();
                 if foot.top() - nav_bottom > card_h + 24.0 {
