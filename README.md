@@ -52,3 +52,6 @@ Verified against the real kernel through a real SOCKS5 proxy that needs a login:
 ## License
 
 MIT, see [LICENSE](LICENSE). Clearcote is a separate project under its own licence and is downloaded, not bundled.
+The desktop app embeds the [Inter](https://github.com/rsms/inter) font, which is under the SIL Open Font License 1.1:
+the text is [crates/citro-gui/assets/fonts/Inter-LICENSE.txt](crates/citro-gui/assets/fonts/Inter-LICENSE.txt) and
+the release archive carries it as `LICENSE-Inter.txt`.

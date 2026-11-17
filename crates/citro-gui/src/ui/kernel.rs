@@ -4,7 +4,7 @@
 use super::app::{CitroApp, Page, ToastKind};
 use super::tasks::Msg;
 use super::theme::Palette;
-use super::widgets::{self, dim, mono, small_dim};
+use super::widgets::{self, Icon, dim, mono, small_dim};
 use crate::backend::KernelStatus;
 use crate::installer::STUB_HINT;
 use crate::util;
@@ -42,13 +42,18 @@ impl CitroApp {
         let p = self.pal;
         let mut acts: Vec<Act> = Vec::new();
         let installing = self.kernel_ui.installing;
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Kernel").size(22.0).strong());
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if widgets::button(ui, "Check again", !installing).clicked() {
-                    acts.push(Act::Refresh);
-                }
-            });
+        widgets::tab_header(ui, &p, &["Kernel"], 0, |ui| {
+            let again = widgets::icon_text_button(
+                ui,
+                &p,
+                Icon::Refresh,
+                "Check again",
+                "Look for a newer kernel build",
+                !installing,
+            );
+            if again.clicked() {
+                acts.push(Act::Refresh);
+            }
         });
         ui.label(dim(&p, "The Clearcote browser build every profile runs on."));
         ui.add_space(10.0);

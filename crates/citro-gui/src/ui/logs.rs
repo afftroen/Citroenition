@@ -272,22 +272,22 @@ impl CitroApp {
         let st = &mut self.logs_ui;
         let (mut copy, mut clear, mut refresh) = (false, false, false);
         let shown = st.visible().len();
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Logs").size(22.0).strong());
-            ui.add_space(16.0);
-            for kind in [LogKind::Citro, LogKind::Browser] {
-                if ui.selectable_value(&mut st.kind, kind, RichText::new(kind.label()).size(14.5)).clicked() {
-                    st.dirty = true;
-                }
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let more = if st.lines.len() >= LIMIT { format!(" (newest {LIMIT})") } else { String::new() };
-                ui.label(small_dim(p, format!("{shown} line{}{more}", if shown == 1 { "" } else { "s" })));
-            });
-        });
+        let kinds = [LogKind::Citro, LogKind::Browser];
+        let labels = [kinds[0].label(), kinds[1].label()];
+        let active = kinds.iter().position(|k| *k == st.kind).unwrap_or(0);
+        let more = if st.lines.len() >= LIMIT { format!(" (newest {LIMIT})") } else { String::new() };
+        let count = format!("{shown} line{}{more}", if shown == 1 { "" } else { "s" });
+        if let Some(i) = widgets::tab_header(ui, p, &labels, active, |ui| {
+            ui.label(small_dim(p, count));
+        }) && st.kind != kinds[i]
+        {
+            st.kind = kinds[i];
+            st.dirty = true;
+        }
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ComboBox::from_id_salt("logs-level").width(170.0).selected_text(level_text(st.level)).show_ui(ui, |ui| {
+            let level_box = ComboBox::from_id_salt("logs-level").width(170.0).icon(widgets::chevron_icon);
+            level_box.selected_text(level_text(st.level)).show_ui(ui, |ui| {
                 for l in Level::ALL {
                     ui.selectable_value(&mut st.level, l, level_text(l));
                 }
@@ -304,7 +304,8 @@ impl CitroApp {
                 (None, LogKind::Citro) => "All profiles".to_owned(),
                 (None, LogKind::Browser) => "Choose a profile".to_owned(),
             };
-            ComboBox::from_id_salt("logs-profile").width(210.0).selected_text(label).show_ui(ui, |ui| {
+            let profile_box = ComboBox::from_id_salt("logs-profile").width(210.0).icon(widgets::chevron_icon);
+            profile_box.selected_text(label).show_ui(ui, |ui| {
                 if st.kind == LogKind::Citro {
                     ui.selectable_value(&mut st.profile, None, "All profiles");
                 }

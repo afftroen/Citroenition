@@ -1,4 +1,4 @@
-//! The application shell: state, message pump, sidebar, status bar, keyboard shortcuts and the screenshot harness.
+//! The application shell: state, message pump, sidebar, top bar, keyboard shortcuts and the screenshot harness.
 
 use super::dialogs::{Confirm, MoveDialog, OpenFailure, RemarkDialog};
 use super::shot::Shot;
@@ -13,7 +13,7 @@ use crate::cli::StartPage;
 use crate::settings::Settings;
 use crate::timefmt;
 use citro_core::profile::Group;
-use eframe::egui::{self, Frame, Key, Margin, Modifiers, Ui};
+use eframe::egui::{self, CornerRadius, Frame, Key, Margin, Modifiers, Ui};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -35,8 +35,6 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 6] = [Page::Profiles, Page::Groups, Page::Logs, Page::Kernel, Page::Teams, Page::Settings];
-
     pub fn label(self) -> &'static str {
         match self {
             Page::Profiles => "Profiles",
@@ -511,17 +509,27 @@ impl eframe::App for CitroApp {
         self.pump();
         self.shortcuts(&ctx);
         self.sidebar(ui);
-        self.status_bar(ui);
+        self.top_bar(ui);
         let p = self.pal;
         egui::CentralPanel::default_margins()
-            .frame(Frame::NONE.fill(p.bg).inner_margin(Margin { left: 14, right: 14, top: 12, bottom: 6 }))
-            .show(ui, |ui| match self.page {
-                Page::Profiles => self.profiles_page(ui),
-                Page::Groups => self.groups_page(ui),
-                Page::Logs => self.logs_page(ui),
-                Page::Kernel => self.kernel_page(ui),
-                Page::Teams => self.teams_page(ui),
-                Page::Settings => self.settings_page(ui),
+            .frame(Frame::NONE.fill(p.bg).inner_margin(Margin { left: 12, right: 12, top: 0, bottom: 12 }))
+            .show(ui, |ui| {
+                // one big rounded card holds the page
+                Frame::NONE
+                    .fill(p.surface)
+                    .corner_radius(CornerRadius::same(14))
+                    .inner_margin(Margin { left: 24, right: 24, top: 6, bottom: 14 })
+                    .show(ui, |ui| {
+                        ui.set_min_size(ui.available_size());
+                        match self.page {
+                            Page::Profiles => self.profiles_page(ui),
+                            Page::Groups => self.groups_page(ui),
+                            Page::Logs => self.logs_page(ui),
+                            Page::Kernel => self.kernel_page(ui),
+                            Page::Teams => self.teams_page(ui),
+                            Page::Settings => self.settings_page(ui),
+                        }
+                    });
             });
         self.guard_quit(&ctx);
         self.dialogs(&ctx);

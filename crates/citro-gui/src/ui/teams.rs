@@ -110,26 +110,24 @@ impl CitroApp {
         let p = self.pal;
         let hub = self.hub.clone();
         let (mut pull, mut disconnect) = (false, false);
+        widgets::tab_header(ui, &p, &["Teams"], 0, |ui| {
+            if widgets::button(ui, "Disconnect", !self.teams_ui.working).clicked() {
+                disconnect = true;
+            }
+            if widgets::button(ui, "Pull now", !self.teams_ui.working)
+                .on_hover_text("Fetch the team's newest profiles, remarks and groups")
+                .clicked()
+            {
+                pull = true;
+            }
+            if self.teams_ui.working {
+                ui.add(egui::Spinner::new().size(16.0));
+            }
+        });
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Teams").size(22.0).strong());
-            ui.add_space(8.0);
             widgets::dot(ui, p.ok, true);
             ui.label(RichText::new("Connected").color(p.ok));
             ui.label(small_dim(&p, format!("{}  \u{b7}  {} on {}", hub.url, hub.user, hub.device_name)));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if widgets::button(ui, "Disconnect", !self.teams_ui.working).clicked() {
-                    disconnect = true;
-                }
-                if widgets::button(ui, "Pull now", !self.teams_ui.working)
-                    .on_hover_text("Fetch the team's newest profiles, remarks and groups")
-                    .clicked()
-                {
-                    pull = true;
-                }
-                if self.teams_ui.working {
-                    ui.add(egui::Spinner::new().size(16.0));
-                }
-            });
         });
         if pull {
             self.teams_ui.working = true;
@@ -338,8 +336,7 @@ impl CitroApp {
 
     fn teams_form(&mut self, ui: &mut Ui) {
         let p = self.pal;
-        ui.label(RichText::new("Teams").size(22.0).strong());
-        ui.add_space(6.0);
+        widgets::tab_header(ui, &p, &["Teams"], 0, |_| {});
         let width = 520.0_f32.min(ui.available_width());
         let pad = ((ui.available_width() - width) / 2.0).max(0.0);
         let mut connect = false;

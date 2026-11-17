@@ -303,6 +303,7 @@ impl CitroApp {
             widgets::field_label(ui, &p, "Group");
             ComboBox::from_id_salt("move-target")
                 .width(360.0)
+                .icon(widgets::chevron_icon)
                 .selected_text(if d.target == "0" { "Ungrouped".to_owned() } else { group_label(&groups, &d.target) })
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut d.target, "0".to_owned(), "Ungrouped");

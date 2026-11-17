@@ -108,6 +108,7 @@ impl EditDialog {
             ui.horizontal(|ui| {
                 ComboBox::from_id_salt("edit-group")
                     .width(240.0)
+                    .icon(widgets::chevron_icon)
                     .selected_text(group_label(groups, &self.group))
                     .show_ui(ui, |ui| {
                         ch |= ui.selectable_value(&mut self.group, "0".to_owned(), "Ungrouped").changed();
@@ -171,14 +172,12 @@ impl EditDialog {
         let direct = self.kind == ProxyKind::Direct;
         form_row(ui, p, "Server", |ui| {
             ui.horizontal(|ui| {
-                ComboBox::from_id_salt("edit-proxy-kind").width(150.0).selected_text(self.kind.label()).show_ui(
-                    ui,
-                    |ui| {
-                        for k in ProxyKind::ALL {
-                            fields |= ui.selectable_value(&mut self.kind, k, k.label()).changed();
-                        }
-                    },
-                );
+                let kind_box = ComboBox::from_id_salt("edit-proxy-kind").width(150.0).icon(widgets::chevron_icon);
+                kind_box.selected_text(self.kind.label()).show_ui(ui, |ui| {
+                    for k in ProxyKind::ALL {
+                        fields |= ui.selectable_value(&mut self.kind, k, k.label()).changed();
+                    }
+                });
                 ui.add_enabled_ui(!direct, |ui| {
                     let w = (ui.available_width() - 66.0 - 5.0 - ui.spacing().item_spacing.x * 2.0 - 1.0).max(100.0);
                     fields |= ui
@@ -194,7 +193,15 @@ impl EditDialog {
             ui.add_enabled_ui(!direct, |ui| {
                 ui.horizontal(|ui| {
                     let forget = self.pass_stored && self.pass.is_empty();
-                    let (gaps, reserve) = if forget { (2.0, 64.0) } else { (1.0, 0.0) };
+                    // measure the button instead of guessing: the font decides how wide it is
+                    let reserve = if forget {
+                        let font = egui::TextStyle::Button.resolve(ui.style());
+                        let text = ui.painter().layout_no_wrap("Forget".to_owned(), font, p.text);
+                        text.size().x + ui.spacing().button_padding.x * 2.0 + 4.0
+                    } else {
+                        0.0
+                    };
+                    let gaps = if forget { 2.0 } else { 1.0 };
                     let w =
                         ((ui.available_width() - ui.spacing().item_spacing.x * gaps - reserve - 1.0) / 2.0).max(90.0);
                     fields |= ui
@@ -273,7 +280,8 @@ impl EditDialog {
         section(ui, p, "Identity");
         form_row(ui, p, "OS persona", |ui| {
             let shown = OS_CHOICES.iter().find(|c| c.0 == self.os).map_or("Auto (this computer's OS)", |c| c.1);
-            ComboBox::from_id_salt("edit-os").width(240.0).selected_text(shown).show_ui(ui, |ui| {
+            let os_box = ComboBox::from_id_salt("edit-os").width(240.0).icon(widgets::chevron_icon);
+            os_box.selected_text(shown).show_ui(ui, |ui| {
                 for (v, label) in OS_CHOICES {
                     ch |= ui.selectable_value(&mut self.os, v.to_owned(), label).changed();
                 }
@@ -287,7 +295,8 @@ impl EditDialog {
                     s if s.is_empty() => "Auto (from the proxy IP)".to_owned(),
                     s => s,
                 };
-                ComboBox::from_id_salt("edit-country").width(240.0).selected_text(shown).show_ui(ui, |ui| {
+                let country_box = ComboBox::from_id_salt("edit-country").width(240.0).icon(widgets::chevron_icon);
+                country_box.selected_text(shown).show_ui(ui, |ui| {
                     ch |= ui.selectable_value(&mut self.country, String::new(), "Auto (from the proxy IP)").changed();
                     for (code, name) in countries::COUNTRIES {
                         let text = format!("{name}  ({})", code.to_uppercase());

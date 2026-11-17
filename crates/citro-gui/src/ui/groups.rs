@@ -50,11 +50,17 @@ impl CitroApp {
         let p = self.pal;
         let counts = self.group_counts();
         let mut acts: Vec<Act> = Vec::new();
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Groups").size(22.0).strong());
-            ui.label(dim(&p, format!("{}", self.groups.len())));
-        });
-        ui.label(dim(&p, "Groups keep related profiles together, for example one per shop, market or account family."));
+        if widgets::tab_header(ui, &p, &["Profiles", "Groups"], 1, |_| {}) == Some(0) {
+            self.go(Page::Profiles);
+        }
+        let n = self.groups.len();
+        ui.label(dim(
+            &p,
+            format!(
+                "{n} group{}  \u{b7}  Groups keep related profiles together, for example one per shop, market or account family.",
+                if n == 1 { "" } else { "s" }
+            ),
+        ));
         ui.add_space(10.0);
 
         // create bar --------------------------------------------------------------------------------------------

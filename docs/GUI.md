@@ -60,15 +60,29 @@ login are the same in all three. Its own preferences live in `<home>/gui-setting
 
 ## The window
 
-The sidebar (158 px wide) lists the pages in this order: **Profiles** (a badge shows the number of profiles),
-**Groups**, **Logs**, **Kernel** (a red `!` badge when no kernel is installed, `new` when a newer one exists),
-**Teams** and **Settings**. At the bottom it shows the version and a **Light theme / Dark theme** switch.
+The window has a sidebar on the left, a strip with a few buttons on top, and the current page on a rounded card.
+
+**The sidebar** (220 px) starts with the logo and the blue **New profile** button (Ctrl/Cmd + N). The pages come in
+three groups: **Profiles** (a badge shows the number of profiles); under *Browser*, **Kernel** (a red `!` badge when
+no kernel is installed, `new` when a newer one exists) and **Logs**; under *Workspace*, **Teams** and **Settings**.
+Groups has no entry of its own: it is the second tab of the Profiles card.
+
+At the foot is a small card that says where the data comes from, with a tag: *Demo data* (*Demo*), *This device*
+(*Local*) or the team's name (*Online* or *Offline*). Under it come the number of profiles, how many are open and the
+kernel version (a red *not installed* when there is none). When the kernel is missing or a newer one exists, the
+card also has an **Install kernel** / **Update kernel** button that opens the Kernel page. The last line is the app's
+version.
+
+**The top strip** holds, from the right: the account chip (who you are and where: *Demo mode*, *Local*, or the hub
+user and the team; hovering shows the data directory, a click opens Teams), the **theme** toggle (sun or moon: dark
+and light), **Reload** (F5) and, while something runs in the background, a spinner.
 
 ![The same page in the light theme](screenshots/profiles-light.png)
 
-The status bar at the bottom shows the number of profiles, how many are selected and how many are open. On the right
-it names the backend (`Demo data`, `Local`, or `Team: <name>`; hovering shows the data directory) and the kernel in
-use (`Kernel 151…`, or a red `No kernel found`), with a spinner while something runs in the background.
+Every page starts with its tab strip: *Profiles | Groups*, *Citroenition | Browser* on Logs, or just the page's
+name. The page's own buttons sit at the right end of the strip (*Export CSV* on Profiles, *Check again* on Kernel,
+*Pull now* and *Disconnect* on Teams, *Revert* and *Save settings* on Settings). Under the Profiles table a line
+reads *Total: 14*, followed by *· 6 match the filters* and *· 2 selected* when they apply.
 
 The window title is *Citroenition*. It opens at 1280x800 and does not shrink below 960x600.
 
@@ -97,36 +111,41 @@ Ctrl+A, the arrows, Enter, Delete and Esc act on the Profiles page, and only whe
 
 ## Profiles
 
-The page you work in. The header has the **search box** (name, remark and proxy; the ✕ or Esc clears it), a **group
-filter** (*All groups*, *Ungrouped* or one group) and a **status filter** (*All*, *Open*, *Closed*, *Locked*).
+The page you work in. Its card starts with the *Profiles | Groups* tabs and, at the right, **Export CSV** (the
+[export dialog](#export-to-csv)). Under that are the filters: a **group filter** (*All groups*, *Ungrouped* or one
+group), the **search box** (name, remark and proxy; the ✕ or Esc clears it) and a **status filter** (*All*, *Open*,
+*Closed*, *Locked*). **New profile** is the blue button at the top of the sidebar; it opens the
+[New dialog](#new-and-edit).
 
-Below it is the action bar:
+Below the filters is the action bar: a blue **Open** button, then square icon buttons (hover one for its name) and, at
+the right, how many rows are selected and a reload button.
 
 | Button | What it does |
 |---|---|
-| **+ New profile** | the [New dialog](#new-and-edit) |
 | **▶ Open** | open the selected profiles (Enter); enabled when a selected one is closed |
-| **■ Close** | close the selected browsers |
+| **Close** | close the selected browsers |
+| **Edit** | edit the selected profile; enabled when exactly one is selected |
 | **Move to group** | move the selection to a group, or create one on the spot |
 | **Set remark** | write the same remark on every selected profile |
 | **Share with team** | only with a team hub connected: put the selected profiles on the hub |
-| **Export CSV** | the [export dialog](#export-to-csv) |
 | **Delete** | delete the selected profiles (Del) |
-| **Refresh** (right) | reload everything (F5) |
+| **Reload** (right) | reload everything (F5) |
 
-The table has these columns; all but *Country / IP* sort by a click on the header (a second click reverses; the two
-time columns sort newest first), and every column can be resized:
+The table has these columns; each one sorts by a click on its header (a second click reverses; the two time columns
+sort newest first), and every column can be resized:
 
 | Column | Shows |
 |---|---|
 | # | the serial number: this device's shorthand for `citro open 3` and the Local API's `serial_number` |
-| Name | the avatar, the name, and a blue **Team** badge when the profile is shared through the hub |
-| Group, Remark | the remark's first line; hover for all of it |
-| Proxy | a scheme badge and `host:port`, or *Direct*. The tooltip shows the URL with the password masked (`scheme://user:***@addr`) |
-| Country / IP | the country and the exit address the persona follows |
-| OS persona | *Auto*, *Windows*, *macOS* or *Linux* |
-| Last opened, Last closed | relative times (*3 min ago*), the exact time on hover, *never* before the first use |
+| Name | the avatar, the name (with a blue **Team** mark in front when the profile is shared through the hub) and the profile id under it |
+| Group | the group, or a dim *Ungrouped* |
+| Proxy | a scheme badge and `host:port`, or *Direct*; under it the country and the exit address the persona follows. The tooltip shows the URL with the password masked (`scheme://user:***@addr`) |
+| Remark | the remark's first line; hover for all of it |
+| OS | *Auto*, *Windows*, *macOS* or *Linux* |
+| Opened, Closed | relative times (*3 min ago*), the exact time on hover, *never* before the first use |
 | Status | see below |
+
+The last column of a row holds that profile's **Open** or **Close** button and a ⋮ menu.
 
 **Status** is one of:
 
@@ -142,9 +161,9 @@ time columns sort newest first), and every column can be resized:
 the header selects everything that is visible. Bulk buttons only ever touch rows that are visible: a profile hidden
 by a filter is never deleted by accident. A double-click opens a profile.
 
-**Right-click** opens the context menu: *Open*, *Close*, *Edit…* and *Duplicate* (one profile), *Set remark…*,
-*Move to group…*, *Clear cache…*, *Share with team…* (with a hub connected), *Copy profile id*, and *Delete…* in red.
-With several rows selected the labels carry the count.
+**Right-click** (or the ⋮ at the end of a row) opens the context menu: *Open*, *Close*, *Edit…* and *Duplicate* (one
+profile), *Set remark…*, *Move to group…*, *Clear cache…*, *Share with team…* (with a hub connected), *Copy profile
+id*, and *Delete…* in red. With several rows selected the labels carry the count.
 
 **When a profile will not open** the app does not guess. A team profile that somebody else holds shows a warning
 (*"Vinted FR - Louis is open on anna-laptop by anna since 3 min ago"*) and no browser starts. Any other failure opens a
@@ -162,9 +181,9 @@ terminal; a filter that matches nothing offers **Clear filters**.
 
 ## New and edit
 
-**+ New profile** (or Ctrl/Cmd + N), the **Edit** button of a row, or *Edit…* in the context menu open the same dialog.
-It scrolls, and has three sections. **Create profile** / **Save changes**, or Ctrl/Cmd + Enter (Enter in the name
-field works too); Esc cancels.
+**New profile** in the sidebar (or Ctrl/Cmd + N), the **Edit** button above the table, or *Edit…* in a row's menu open
+the same dialog. It scrolls, and has three sections. **Create profile** / **Save changes**, or Ctrl/Cmd + Enter
+(Enter in the name field works too); Esc cancels.
 
 ![The New profile dialog](screenshots/new.png)
 
@@ -204,7 +223,8 @@ somebody has the profile open.
 
 ## Groups
 
-Groups keep related profiles together, for example one per shop, market or account family.
+Groups keep related profiles together, for example one per shop, market or account family. The page is the second tab
+of the Profiles card.
 
 ![The Groups page](screenshots/groups.png)
 

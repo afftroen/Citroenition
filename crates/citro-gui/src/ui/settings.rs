@@ -5,7 +5,7 @@ use super::app::{CitroApp, ToastKind};
 use super::widgets::{self, dim, mono, small_dim};
 use crate::settings::Theme;
 use crate::util;
-use eframe::egui::{self, Align, Layout, RichText, ScrollArea, TextEdit, Ui};
+use eframe::egui::{self, RichText, ScrollArea, TextEdit, Ui};
 use std::path::{Path, PathBuf};
 
 #[derive(Default)]
@@ -43,17 +43,14 @@ impl CitroApp {
         let p = self.pal;
         let dirty = self.settings != self.saved_settings;
         let (mut save, mut revert) = (false, false);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Settings").size(22.0).strong());
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                save = widgets::primary_button(ui, &p, "Save settings", dirty).clicked();
-                revert = widgets::button(ui, "Revert", dirty).clicked();
-                if dirty {
-                    ui.label(RichText::new("Unsaved changes").color(p.warn));
-                } else if self.settings_ui.error.is_none() {
-                    ui.label(small_dim(&p, "All changes saved"));
-                }
-            });
+        widgets::tab_header(ui, &p, &["Settings"], 0, |ui| {
+            save = widgets::primary_button(ui, &p, "Save settings", dirty).clicked();
+            revert = widgets::button(ui, "Revert", dirty).clicked();
+            if dirty {
+                ui.label(RichText::new("Unsaved changes").color(p.warn));
+            } else if self.settings_ui.error.is_none() {
+                ui.label(small_dim(&p, "All changes saved"));
+            }
         });
         ui.label(dim(&p, "Preferences of this app. Profiles themselves are edited on the Profiles page."));
         if let Some(e) = &self.settings_ui.error {

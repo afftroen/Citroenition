@@ -1,19 +1,22 @@
-//! The Profiles page: toolbar, filters and the sortable, virtualized profile table.
+//! The Profiles page: tabs, filters, toolbar and the sortable, virtualized profile table.
 
-use super::app::{Busy, CitroApp, ToastKind};
+use super::app::{Busy, CitroApp, Page, ToastKind};
 use super::dialogs::{MoveDialog, RemarkDialog};
-use super::theme::Palette;
-use super::widgets::{self, dim, small_dim};
+use super::theme::{self, Palette};
+use super::widgets::{self, Icon, Pill, dim, small_dim};
 use crate::backend::{Query, Row, RunState, SortKey, StatusFilter, group_label, os_label, proxy_parts};
 use crate::selection::{Mods, Selection};
 use crate::{countries, query, timefmt};
 use eframe::egui::{
-    self, Align, Button, Color32, ComboBox, CornerRadius, Key, Layout, Modifiers, RichText, Sense, TextEdit, TextStyle,
-    Ui, vec2,
+    self, Align, Align2, Button, Color32, ComboBox, CursorIcon, FontFamily, FontId, Key, Layout, Modifiers, Popup,
+    Response, RichText, Sense, TextStyle, Ui, pos2, vec2,
 };
 use egui_extras::{Column, TableBuilder, TableRow};
 
-const ROW_H: f32 = 33.0;
+const ROW_H: f32 = 56.0;
+const HEAD_H: f32 = 40.0;
+/// Room kept under the table for the "Total" line.
+const FOOTER_H: f32 = 34.0;
 
 #[derive(Default)]
 pub struct State {
@@ -73,13 +76,13 @@ fn avatar(ui: &mut Ui, p: &Palette, id: &str, name: &str) {
     let h = id.bytes().fold(7usize, |a, b| a.wrapping_mul(31).wrapping_add(b as usize));
     let c = HUES[h % HUES.len()];
     let col = Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
-    let (rect, _) = ui.allocate_exact_size(vec2(19.0, 19.0), Sense::hover());
-    ui.painter().circle_filled(rect.center(), 9.5, col.gamma_multiply(if p.dark { 0.30 } else { 0.22 }));
+    let (rect, _) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::hover());
+    ui.painter().circle_filled(rect.center(), 13.0, col.gamma_multiply(if p.dark { 0.30 } else { 0.22 }));
     ui.painter().text(
         rect.center(),
-        egui::Align2::CENTER_CENTER,
+        Align2::CENTER_CENTER,
         crate::util::initial(name),
-        egui::FontId::proportional(11.0),
+        FontId::new(12.5, theme::semibold_family()),
         col,
     );
 }
@@ -87,25 +90,25 @@ fn avatar(ui: &mut Ui, p: &Palette, id: &str, name: &str) {
 fn head(header: &mut TableRow<'_, '_>, p: &Palette, q: &Query, label: &str, key: Option<SortKey>, acts: &mut Vec<Act>) {
     header.col(|ui| {
         let active = key.is_some_and(|k| k == q.sort);
-        let arrow = if !active {
-            ""
-        } else if q.desc {
-            " ▼"
-        } else {
-            " ▲"
-        };
-        let text =
-            RichText::new(format!("{label}{arrow}")).size(12.5).strong().color(if active { p.text } else { p.dim });
-        match key {
-            Some(k) => {
-                let r = ui.add(egui::Label::new(text).sense(Sense::click()));
-                if r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Click to sort").clicked() {
-                    acts.push(Act::Sort(k));
-                }
-            }
-            None => {
-                ui.label(text);
-            }
+        let col = if active { p.strong } else { p.dim };
+        let font = FontId::new(12.5, if active { theme::semibold_family() } else { FontFamily::Proportional });
+        let tw = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), col).size().x;
+        let arrow = if key.is_some() { 16.0 } else { 0.0 };
+        let sense = if key.is_some() { Sense::click() } else { Sense::hover() };
+        let (rect, resp) = ui.allocate_exact_size(vec2(tw + arrow, 22.0), sense);
+        ui.painter().text(rect.left_center(), Align2::LEFT_CENTER, label, font, col);
+        if key.is_some() {
+            let (icon, tint) = match (active, q.desc) {
+                (true, true) => (Icon::SortDown, p.accent_hover),
+                (true, false) => (Icon::SortUp, p.accent_hover),
+                _ => (Icon::Sort, p.dim.gamma_multiply(0.7)),
+            };
+            widgets::paint_icon_scaled(ui.painter(), pos2(rect.right() - 6.0, rect.center().y), icon, tint, 0.62);
+        }
+        if let Some(k) = key
+            && resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text("Click to sort").clicked()
+        {
+            acts.push(Act::Sort(k));
         }
     });
 }
@@ -177,9 +180,28 @@ impl CitroApp {
     pub fn profiles_page(&mut self, ui: &mut Ui) {
         let p = self.pal;
         self.refresh_view();
+        let mut export = false;
+        let tab = widgets::tab_header(ui, &p, &["Profiles", "Groups"], 0, |ui| {
+            export = widgets::icon_text_button(
+                ui,
+                &p,
+                Icon::Export,
+                "Export CSV",
+                "Write the profile list to a CSV file",
+                true,
+            )
+            .clicked();
+        });
+        if tab == Some(1) {
+            self.go(Page::Groups);
+        }
+        if export {
+            self.open_export();
+        }
         self.filter_bar(ui);
+        ui.add_space(10.0);
         self.action_bar(ui);
-        ui.add_space(4.0);
+        ui.add_space(10.0);
         if !self.rows_loaded {
             ui.vertical_centered(|ui| {
                 ui.add_space(120.0);
@@ -234,43 +256,44 @@ impl CitroApp {
         }
     }
 
+    /// Group dropdown, the wide search box and the status dropdown.
     fn filter_bar(&mut self, ui: &mut Ui) {
         let p = self.pal;
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Profiles").size(22.0).strong());
-            let (shown, total) = (self.profiles.view.len(), self.rows.len());
-            let count = if shown == total { format!("{total}") } else { format!("{shown} of {total}") };
-            ui.label(dim(&p, count));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let q = &mut self.profiles.query;
-                ComboBox::from_id_salt("status-filter")
-                    .width(96.0)
-                    .selected_text(format!("Status: {}", q.status.label()))
-                    .show_ui(ui, |ui| {
-                        for s in StatusFilter::ALL {
-                            ui.selectable_value(&mut q.status, s, s.label());
-                        }
-                    });
-                let group_text = match q.group.as_deref() {
-                    None => "All groups".to_owned(),
-                    Some(id) => group_label(&self.groups, id),
-                };
-                ComboBox::from_id_salt("group-filter").width(130.0).selected_text(group_text).show_ui(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            let q = &mut self.profiles.query;
+            let group_text = match q.group.as_deref() {
+                None => "All groups".to_owned(),
+                Some(id) => group_label(&self.groups, id),
+            };
+            ui.scope(|ui| {
+                ui.spacing_mut().interact_size.y = 40.0;
+                ui.spacing_mut().button_padding = vec2(14.0, 9.0);
+                let group_box = ComboBox::from_id_salt("group-filter").width(150.0).icon(widgets::chevron_icon);
+                group_box.selected_text(group_text).show_ui(ui, |ui| {
                     ui.selectable_value(&mut q.group, None, "All groups");
                     ui.selectable_value(&mut q.group, Some("0".to_owned()), "Ungrouped");
                     for g in &self.groups {
                         ui.selectable_value(&mut q.group, Some(g.group_id.clone()), &g.group_name);
                     }
                 });
-                if !q.q.is_empty() && ui.add(Button::new("✕").frame(false)).on_hover_text("Clear search").clicked() {
-                    q.q.clear();
-                }
-                let search = ui.add(
-                    TextEdit::singleline(&mut q.q)
-                        .hint_text("Search name, remark, proxy…")
-                        .desired_width(270.0)
-                        .margin(vec2(8.0, 5.0)),
-                );
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.scope(|ui| {
+                    ui.spacing_mut().interact_size.y = 40.0;
+                    ui.spacing_mut().button_padding = vec2(14.0, 9.0);
+                    ComboBox::from_id_salt("status-filter")
+                        .width(104.0)
+                        .icon(widgets::chevron_icon)
+                        .selected_text(format!("Status: {}", q.status.label()))
+                        .show_ui(ui, |ui| {
+                            for s in StatusFilter::ALL {
+                                ui.selectable_value(&mut q.status, s, s.label());
+                            }
+                        });
+                });
+                let width = ui.available_width();
+                let search = widgets::search_field(ui, &p, &mut q.q, "Search name, remark, proxy…", width);
                 if std::mem::take(&mut self.profiles.focus_search) {
                     search.request_focus();
                 }
@@ -282,6 +305,7 @@ impl CitroApp {
         });
     }
 
+    /// The row of square buttons under the search box. Everything acts on the selected profiles.
     fn action_bar(&mut self, ui: &mut Ui) {
         let p = self.pal;
         let sel = self.selected_ids();
@@ -290,55 +314,53 @@ impl CitroApp {
         let can_open = rows.iter().any(|r| matches!(r.run, RunState::Closed) && free(r.id()));
         let can_close = rows.iter().any(|r| r.run.is_open() && free(r.id()));
         let any = !sel.is_empty();
+        let one = sel.len() == 1;
         let hub_on = self.hub.connected;
         let mut acts = Vec::new();
-        let mut new = false;
-        let mut export = false;
         let mut refresh = false;
-        ui.horizontal_wrapped(|ui| {
-            new |= widgets::primary_button(ui, &p, "+ New profile", true).clicked();
-            ui.separator();
-            if widgets::button(ui, "▶ Open", can_open).on_hover_text("Open the selected profiles (Enter)").clicked() {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            if widgets::open_button(ui, &p, Icon::Play, "Open", can_open)
+                .on_hover_text("Open the selected profiles (Enter)")
+                .clicked()
+            {
                 acts.push(Act::Open(sel.clone()));
             }
-            if widgets::button(ui, "■ Close", can_close).on_hover_text("Close the selected browsers").clicked() {
+            if widgets::icon_button(ui, &p, Icon::Stop, "Close the selected browsers", can_close, false).clicked() {
                 acts.push(Act::Close(sel.clone()));
             }
-            ui.separator();
-            if widgets::button(ui, "Move to group", any).clicked() {
+            if widgets::icon_button(ui, &p, Icon::Edit, "Edit the selected profile…", one, false).clicked() {
+                acts.push(Act::Edit(sel[0].clone()));
+            }
+            if widgets::icon_button(ui, &p, Icon::MoveTo, "Move to group…", any, false).clicked() {
                 acts.push(Act::Move(sel.clone()));
             }
-            if widgets::button(ui, "Set remark", any).clicked() {
+            if widgets::icon_button(ui, &p, Icon::Tag, "Set remark…", any, false).clicked() {
                 acts.push(Act::Remark(sel.clone()));
             }
             if hub_on
-                && widgets::button(ui, "Share with team", any)
-                    .on_hover_text("Put the selected profiles on the team hub: everybody in the team can open them")
-                    .clicked()
+                && widgets::icon_button(
+                    ui,
+                    &p,
+                    Icon::Share,
+                    "Share with team…\nEverybody in the team can open the selected profiles",
+                    any,
+                    false,
+                )
+                .clicked()
             {
                 acts.push(Act::Share(sel.clone()));
             }
-            export |=
-                widgets::button(ui, "Export CSV", true).on_hover_text("Write the profile list to a CSV file").clicked();
-            if widgets::danger_button(ui, &p, "Delete", any)
-                .on_hover_text("Delete the selected profiles (Del)")
-                .clicked()
-            {
+            if widgets::icon_button(ui, &p, Icon::Trash, "Delete the selected profiles (Del)", any, true).clicked() {
                 acts.push(Act::Delete(sel.clone()));
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                refresh |= widgets::button(ui, "Refresh", true).on_hover_text("Reload everything (F5)").clicked();
+                refresh |= widgets::icon_button(ui, &p, Icon::Refresh, "Reload everything (F5)", true, false).clicked();
                 if any {
-                    ui.label(small_dim(&p, format!("{} selected", sel.len())));
+                    ui.label(RichText::new(format!("{} selected", sel.len())).size(13.0).color(p.accent_hover));
                 }
             });
         });
-        if new {
-            self.open_edit(None);
-        }
-        if export {
-            self.open_export();
-        }
         if refresh {
             self.refresh_all();
         }
@@ -405,6 +427,8 @@ impl CitroApp {
         let (now, offset) = (self.now, self.offset);
         let ctx = self.ctx.clone();
         let hub_on = self.hub.connected;
+        let (total, shown) = (self.rows.len(), self.profiles.view.len());
+        let selected_n = self.profiles.selection.len();
         let mut acts: Vec<Act> = Vec::new();
         {
             let CitroApp { rows, groups, busy, last_error, profiles, .. } = &mut *self;
@@ -415,227 +439,294 @@ impl CitroApp {
                 selection.all_selected(&ids)
             };
             let some_selected = !selection.is_empty();
-            egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
-                ui.spacing_mut().item_spacing.x = 5.0;
-                if let Some(f) = ui.style_mut().text_styles.get_mut(&TextStyle::Body) {
-                    f.size = 13.0;
-                }
-                TableBuilder::new(ui)
-                    .id_salt("profiles-table")
-                    .striped(true)
-                    .resizable(true)
-                    .sense(Sense::click())
-                    .cell_layout(Layout::left_to_right(Align::Center))
-                    .min_scrolled_height(120.0)
-                    .column(Column::exact(22.0))
-                    .column(Column::exact(26.0))
-                    .column(Column::initial(164.0).at_least(110.0).clip(true))
-                    .column(Column::initial(84.0).at_least(60.0).clip(true))
-                    .column(Column::remainder().at_least(80.0).clip(true))
-                    .column(Column::initial(150.0).at_least(90.0).clip(true))
-                    .column(Column::initial(98.0).at_least(70.0).clip(true))
-                    .column(Column::initial(70.0).at_least(60.0).clip(true))
-                    .column(Column::initial(70.0).at_least(60.0).clip(true))
-                    .column(Column::initial(70.0).at_least(60.0).clip(true))
-                    .column(Column::initial(112.0).at_least(80.0).clip(true))
-                    .column(Column::exact(92.0))
-                    .header(30.0, |mut header| {
-                        header.col(|ui| {
-                            let mut c = all_selected;
-                            let resp = ui.checkbox(&mut c, "");
-                            if resp
-                                .on_hover_text(if all_selected { "Select none" } else { "Select all (Ctrl+A)" })
-                                .changed()
-                            {
-                                acts.push(Act::ToggleAll);
-                            }
-                            let _ = some_selected;
-                        });
-                        head(&mut header, &p, q, "#", Some(SortKey::Serial), &mut acts);
-                        head(&mut header, &p, q, "Name", Some(SortKey::Name), &mut acts);
-                        head(&mut header, &p, q, "Group", Some(SortKey::Group), &mut acts);
-                        head(&mut header, &p, q, "Remark", Some(SortKey::Remark), &mut acts);
-                        head(&mut header, &p, q, "Proxy", Some(SortKey::Proxy), &mut acts);
-                        head(&mut header, &p, q, "Country / IP", None, &mut acts);
-                        head(&mut header, &p, q, "OS persona", Some(SortKey::Os), &mut acts);
-                        head(&mut header, &p, q, "Last opened", Some(SortKey::LastOpened), &mut acts);
-                        head(&mut header, &p, q, "Last closed", Some(SortKey::LastClosed), &mut acts);
-                        head(&mut header, &p, q, "Status", Some(SortKey::Status), &mut acts);
-                        head(&mut header, &p, q, "", None, &mut acts);
-                    })
-                    .body(|body| {
-                        body.rows(ROW_H, view.len(), |mut row| {
-                            let vi = row.index();
-                            let r = &rows[view[vi]];
-                            let id = r.id().to_owned();
-                            let pr = &r.profile;
-                            let selected = selection.contains(&id);
-                            let st = status_of(r, busy.get(&id).copied(), last_error.get(&id));
-                            let working = matches!(st, St::Busy(_));
-                            row.set_selected(selected);
+            let body_h = (ui.available_height() - FOOTER_H).max(140.0);
+            ui.allocate_ui(vec2(ui.available_width(), body_h), |ui| {
+                egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    // the table reads a notch smaller than the rest of the app
+                    if let Some(f) = ui.style_mut().text_styles.get_mut(&TextStyle::Body) {
+                        f.size = 13.0;
+                    }
+                    TableBuilder::new(ui)
+                        .id_salt("profiles-table")
+                        .striped(true)
+                        .resizable(true)
+                        .sense(Sense::click())
+                        .cell_layout(Layout::left_to_right(Align::Center))
+                        .min_scrolled_height(120.0)
+                        .column(Column::exact(26.0))
+                        .column(Column::exact(34.0))
+                        .column(Column::initial(168.0).at_least(120.0).clip(true))
+                        .column(Column::initial(76.0).at_least(56.0).clip(true))
+                        .column(Column::initial(146.0).at_least(100.0).clip(true))
+                        .column(Column::remainder().at_least(60.0).clip(true))
+                        .column(Column::initial(62.0).at_least(54.0).clip(true))
+                        .column(Column::initial(76.0).at_least(60.0).clip(true))
+                        .column(Column::initial(76.0).at_least(60.0).clip(true))
+                        .column(Column::initial(92.0).at_least(76.0).clip(true))
+                        .column(Column::exact(112.0))
+                        .header(HEAD_H, |mut header| {
+                            header.col(|ui| {
+                                let tip = if all_selected { "Select none" } else { "Select all (Ctrl+A)" };
+                                let mixed = some_selected && !all_selected;
+                                if widgets::checkbox(ui, &p, all_selected, mixed).on_hover_text(tip).clicked() {
+                                    acts.push(Act::ToggleAll);
+                                }
+                            });
+                            head(&mut header, &p, q, "#", Some(SortKey::Serial), &mut acts);
+                            head(&mut header, &p, q, "Name", Some(SortKey::Name), &mut acts);
+                            head(&mut header, &p, q, "Group", Some(SortKey::Group), &mut acts);
+                            head(&mut header, &p, q, "Proxy", Some(SortKey::Proxy), &mut acts);
+                            head(&mut header, &p, q, "Remark", Some(SortKey::Remark), &mut acts);
+                            head(&mut header, &p, q, "OS", Some(SortKey::Os), &mut acts);
+                            head(&mut header, &p, q, "Opened", Some(SortKey::LastOpened), &mut acts);
+                            head(&mut header, &p, q, "Closed", Some(SortKey::LastClosed), &mut acts);
+                            head(&mut header, &p, q, "Status", Some(SortKey::Status), &mut acts);
+                            head(&mut header, &p, q, "", None, &mut acts);
+                        })
+                        .body(|body| {
+                            body.rows(ROW_H, view.len(), |mut row| {
+                                let vi = row.index();
+                                let r = &rows[view[vi]];
+                                let id = r.id().to_owned();
+                                let pr = &r.profile;
+                                let selected = selection.contains(&id);
+                                let st = status_of(r, busy.get(&id).copied(), last_error.get(&id));
+                                let working = matches!(st, St::Busy(_));
+                                row.set_selected(selected);
 
-                            cell(&mut row, |ui| {
-                                let mut c = selected;
-                                if ui.checkbox(&mut c, "").changed() {
-                                    acts.push(Act::ToggleCheck(id.clone()));
-                                }
-                            });
-                            cell(&mut row, |ui| {
-                                ui.label(small_dim(&p, pr.serial_number.to_string()));
-                            });
-                            cell(&mut row, |ui| {
-                                avatar(ui, &p, &id, &pr.name);
-                                if r.team.is_some() {
-                                    widgets::team_mark(ui, p.accent)
-                                        .on_hover_text("Shared through the team hub: it opens on one device at a time");
-                                }
-                                ui.add(egui::Label::new(RichText::new(&pr.name).strong()).truncate());
-                            });
-                            cell(&mut row, |ui| {
-                                let label = group_label(groups, &pr.group_id);
-                                let t = if label == "Ungrouped" { dim(&p, label) } else { RichText::new(label) };
-                                ui.add(egui::Label::new(t).truncate());
-                            });
-                            cell(&mut row, |ui| {
-                                let line = crate::util::first_line(&pr.remark);
-                                ui.add(egui::Label::new(dim(&p, line)).truncate()).on_hover_text(&pr.remark);
-                            });
-                            cell(&mut row, |ui| match proxy_parts(&pr.user_proxy_config) {
-                                Some((scheme, addr)) => {
-                                    let hop = pr.user_proxy_config.hop();
-                                    let user = hop.as_ref().map(|h| h.account.clone()).unwrap_or_default();
-                                    let tip = if user.is_empty() {
-                                        format!("{scheme}://{addr}")
-                                    } else {
-                                        format!("{scheme}://{user}:***@{addr}")
-                                    };
-                                    ui.label(RichText::new(scheme.to_uppercase()).size(10.5).strong().color(p.accent));
-                                    ui.add(egui::Label::new(RichText::new(addr).size(12.5)).truncate())
-                                        .on_hover_text(tip);
-                                }
-                                None => {
-                                    ui.label(dim(&p, "Direct"));
-                                }
-                            });
-                            cell(&mut row, |ui| {
-                                let cc = pr.country.trim();
-                                let name = countries::name(cc).unwrap_or("");
-                                if cc.is_empty() && pr.ip.is_empty() {
-                                    ui.label(dim(&p, "—"));
-                                } else {
-                                    if !cc.is_empty() {
-                                        ui.label(RichText::new(cc.to_uppercase()).strong()).on_hover_text(name);
-                                    }
-                                    if !pr.ip.is_empty() {
-                                        ui.add(egui::Label::new(small_dim(&p, &pr.ip)).truncate());
-                                    }
-                                }
-                            });
-                            cell(&mut row, |ui| {
-                                let os = os_label(&pr.persona_os);
-                                ui.label(if os == "Auto" { dim(&p, os) } else { RichText::new(os) });
-                            });
-                            for ts in [pr.last_open_time, pr.last_close_time] {
                                 cell(&mut row, |ui| {
-                                    let t = timefmt::relative(now, ts, offset);
-                                    let t = if ts <= 0 { dim(&p, "never") } else { RichText::new(t) };
-                                    ui.label(t).on_hover_text(timefmt::absolute(ts, offset));
+                                    if widgets::checkbox(ui, &p, selected, false).clicked() {
+                                        acts.push(Act::ToggleCheck(id.clone()));
+                                    }
                                 });
-                            }
-                            cell(&mut row, |ui| status_cell(ui, &p, &st, now, offset));
-                            cell(&mut row, |ui| {
-                                ui.spacing_mut().button_padding = vec2(7.0, 2.0);
-                                ui.spacing_mut().item_spacing.x = 5.0;
-                                let locked = matches!(st, St::Locked { .. });
-                                if matches!(st, St::Open { .. }) {
-                                    if ui.add_enabled(!working, small_button("Close")).clicked() {
-                                        acts.push(Act::Close(vec![id.clone()]));
-                                    }
-                                } else {
-                                    let b = ui.add_enabled(!working && !locked, small_button("Open"));
-                                    if b.clicked() {
-                                        acts.push(Act::Open(vec![id.clone()]));
-                                    }
+                                cell(&mut row, |ui| {
+                                    ui.label(small_dim(&p, pr.serial_number.to_string()));
+                                });
+                                cell(&mut row, |ui| {
+                                    avatar(ui, &p, &id, &pr.name);
+                                    ui.vertical(|ui| {
+                                        ui.spacing_mut().item_spacing.y = 1.0;
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 5.0;
+                                            if r.team.is_some() {
+                                                widgets::team_mark(ui, p.accent_hover).on_hover_text(
+                                                    "Shared through the team hub: it opens on one device at a time",
+                                                );
+                                            }
+                                            let name =
+                                                RichText::new(&pr.name).size(13.5).family(theme::medium_family());
+                                            ui.add(egui::Label::new(name.color(p.strong)).truncate());
+                                        });
+                                        ui.add(egui::Label::new(small_dim(&p, &id)).truncate());
+                                    });
+                                });
+                                cell(&mut row, |ui| {
+                                    let label = group_label(groups, &pr.group_id);
+                                    let t = if label == "Ungrouped" { dim(&p, label) } else { RichText::new(label) };
+                                    ui.add(egui::Label::new(t).truncate());
+                                });
+                                cell(&mut row, |ui| {
+                                    ui.vertical(|ui| {
+                                        ui.spacing_mut().item_spacing.y = 1.0;
+                                        match proxy_parts(&pr.user_proxy_config) {
+                                            Some((scheme, addr)) => {
+                                                let hop = pr.user_proxy_config.hop();
+                                                let user = hop.as_ref().map(|h| h.account.clone()).unwrap_or_default();
+                                                let tip = if user.is_empty() {
+                                                    format!("{scheme}://{addr}")
+                                                } else {
+                                                    format!("{scheme}://{user}:***@{addr}")
+                                                };
+                                                ui.horizontal(|ui| {
+                                                    ui.spacing_mut().item_spacing.x = 5.0;
+                                                    ui.label(
+                                                        RichText::new(scheme.to_uppercase())
+                                                            .size(10.5)
+                                                            .family(theme::semibold_family())
+                                                            .color(p.accent_hover),
+                                                    );
+                                                    ui.add(
+                                                        egui::Label::new(RichText::new(addr).color(p.strong))
+                                                            .truncate(),
+                                                    )
+                                                    .on_hover_text(tip);
+                                                });
+                                            }
+                                            None => {
+                                                ui.label(dim(&p, "Direct"));
+                                            }
+                                        }
+                                        let cc = pr.country.trim();
+                                        let country = countries::name(cc).unwrap_or(cc);
+                                        let place = match (country.is_empty(), pr.ip.is_empty()) {
+                                            (true, true) => String::new(),
+                                            (false, true) => country.to_owned(),
+                                            (true, false) => pr.ip.clone(),
+                                            (false, false) => format!("{country} · {}", pr.ip),
+                                        };
+                                        if !place.is_empty() {
+                                            ui.add(egui::Label::new(small_dim(&p, place)).truncate());
+                                        }
+                                    });
+                                });
+                                cell(&mut row, |ui| {
+                                    let line = crate::util::first_line(&pr.remark);
+                                    ui.add(egui::Label::new(dim(&p, line)).truncate()).on_hover_text(&pr.remark);
+                                });
+                                cell(&mut row, |ui| {
+                                    let os = os_label(&pr.persona_os);
+                                    ui.label(if os == "Auto" { dim(&p, os) } else { RichText::new(os) });
+                                });
+                                for ts in [pr.last_open_time, pr.last_close_time] {
+                                    cell(&mut row, |ui| {
+                                        let t = timefmt::relative(now, ts, offset);
+                                        let t = if ts <= 0 { dim(&p, "never") } else { RichText::new(t) };
+                                        ui.label(t).on_hover_text(timefmt::absolute(ts, offset));
+                                    });
                                 }
-                                if ui.add_enabled(!working, small_button("Edit")).clicked() {
-                                    acts.push(Act::Edit(id.clone()));
-                                }
-                            });
+                                cell(&mut row, |ui| status_cell(ui, &p, &st, now, offset));
+                                let mut more: Option<Response> = None;
+                                cell(&mut row, |ui| {
+                                    ui.spacing_mut().item_spacing.x = 6.0;
+                                    match &st {
+                                        St::Open { .. } => {
+                                            if widgets::pill_button(
+                                                ui,
+                                                &p,
+                                                "Close",
+                                                Some(Icon::Stop),
+                                                Pill::Outline,
+                                                !working,
+                                            )
+                                            .clicked()
+                                            {
+                                                acts.push(Act::Close(vec![id.clone()]));
+                                            }
+                                        }
+                                        St::Locked { .. } => {
+                                            widgets::pill_button(
+                                                ui,
+                                                &p,
+                                                "Open",
+                                                Some(Icon::Play),
+                                                Pill::Primary,
+                                                false,
+                                            );
+                                        }
+                                        _ => {
+                                            if widgets::pill_button(
+                                                ui,
+                                                &p,
+                                                "Open",
+                                                Some(Icon::Play),
+                                                Pill::Primary,
+                                                !working,
+                                            )
+                                            .clicked()
+                                            {
+                                                acts.push(Act::Open(vec![id.clone()]));
+                                            }
+                                        }
+                                    }
+                                    more = Some(widgets::more_button(ui, &p));
+                                });
 
-                            let resp = row.response();
-                            if resp.secondary_clicked() && !selected {
-                                acts.push(Act::Context(vi));
-                            }
-                            if resp.clicked() {
-                                let mods = ctx.input(|i| Mods { ctrl: i.modifiers.command, shift: i.modifiers.shift });
-                                acts.push(Act::Click(vi, mods));
-                            }
-                            if resp.double_clicked() && !working {
-                                acts.push(Act::Open(vec![id.clone()]));
-                            }
-                            resp.context_menu(|ui| {
-                                let targets: Vec<String> = if selected {
-                                    let ids: Vec<String> = view.iter().map(|&i| rows[i].id().to_owned()).collect();
-                                    selection.ordered(&ids)
-                                } else {
-                                    vec![id.clone()]
+                                // the same menu from a right click on the row and from the three dots
+                                let menu = |ui: &mut Ui, acts: &mut Vec<Act>| {
+                                    let targets: Vec<String> = if selected {
+                                        let ids: Vec<String> = view.iter().map(|&i| rows[i].id().to_owned()).collect();
+                                        selection.ordered(&ids)
+                                    } else {
+                                        vec![id.clone()]
+                                    };
+                                    let n = targets.len();
+                                    let many = |s: &str| if n > 1 { format!("{s} ({n})") } else { s.to_owned() };
+                                    let is_open = matches!(st, St::Open { .. });
+                                    if ui
+                                        .add_enabled(
+                                            !is_open && !working && !matches!(st, St::Locked { .. }),
+                                            Button::new(many("Open")),
+                                        )
+                                        .clicked()
+                                    {
+                                        acts.push(Act::Open(targets.clone()));
+                                        ui.close();
+                                    }
+                                    if ui.add_enabled(is_open && !working, Button::new(many("Close"))).clicked() {
+                                        acts.push(Act::Close(targets.clone()));
+                                        ui.close();
+                                    }
+                                    ui.separator();
+                                    if ui.add_enabled(n == 1, Button::new("Edit…")).clicked() {
+                                        acts.push(Act::Edit(id.clone()));
+                                        ui.close();
+                                    }
+                                    if ui.add_enabled(n == 1, Button::new("Duplicate")).clicked() {
+                                        acts.push(Act::Duplicate(id.clone()));
+                                        ui.close();
+                                    }
+                                    if ui.button(many("Set remark…")).clicked() {
+                                        acts.push(Act::Remark(targets.clone()));
+                                        ui.close();
+                                    }
+                                    if ui.button(many("Move to group…")).clicked() {
+                                        acts.push(Act::Move(targets.clone()));
+                                        ui.close();
+                                    }
+                                    if ui.button(many("Clear cache…")).clicked() {
+                                        acts.push(Act::ClearCache(targets.clone()));
+                                        ui.close();
+                                    }
+                                    if hub_on && ui.button(many("Share with team…")).clicked() {
+                                        acts.push(Act::Share(targets.clone()));
+                                        ui.close();
+                                    }
+                                    if ui.button("Copy profile id").clicked() {
+                                        acts.push(Act::CopyId(id.clone()));
+                                        ui.close();
+                                    }
+                                    ui.separator();
+                                    if ui.add(Button::new(RichText::new(many("Delete…")).color(p.err))).clicked() {
+                                        acts.push(Act::Delete(targets));
+                                        ui.close();
+                                    }
                                 };
-                                let n = targets.len();
-                                let many = |s: &str| if n > 1 { format!("{s} ({n})") } else { s.to_owned() };
-                                let is_open = matches!(st, St::Open { .. });
-                                if ui
-                                    .add_enabled(
-                                        !is_open && !working && !matches!(st, St::Locked { .. }),
-                                        Button::new(many("Open")),
-                                    )
-                                    .clicked()
-                                {
-                                    acts.push(Act::Open(targets.clone()));
-                                    ui.close();
+
+                                let resp = row.response();
+                                if resp.secondary_clicked() && !selected {
+                                    acts.push(Act::Context(vi));
                                 }
-                                if ui.add_enabled(is_open && !working, Button::new(many("Close"))).clicked() {
-                                    acts.push(Act::Close(targets.clone()));
-                                    ui.close();
+                                if resp.clicked() {
+                                    let mods =
+                                        ctx.input(|i| Mods { ctrl: i.modifiers.command, shift: i.modifiers.shift });
+                                    acts.push(Act::Click(vi, mods));
                                 }
-                                ui.separator();
-                                if ui.add_enabled(n == 1, Button::new("Edit…")).clicked() {
-                                    acts.push(Act::Edit(id.clone()));
-                                    ui.close();
+                                if resp.double_clicked() && !working {
+                                    acts.push(Act::Open(vec![id.clone()]));
                                 }
-                                if ui.add_enabled(n == 1, Button::new("Duplicate")).clicked() {
-                                    acts.push(Act::Duplicate(id.clone()));
-                                    ui.close();
-                                }
-                                if ui.button(many("Set remark…")).clicked() {
-                                    acts.push(Act::Remark(targets.clone()));
-                                    ui.close();
-                                }
-                                if ui.button(many("Move to group…")).clicked() {
-                                    acts.push(Act::Move(targets.clone()));
-                                    ui.close();
-                                }
-                                if ui.button(many("Clear cache…")).clicked() {
-                                    acts.push(Act::ClearCache(targets.clone()));
-                                    ui.close();
-                                }
-                                if hub_on && ui.button(many("Share with team…")).clicked() {
-                                    acts.push(Act::Share(targets.clone()));
-                                    ui.close();
-                                }
-                                if ui.button("Copy profile id").clicked() {
-                                    acts.push(Act::CopyId(id.clone()));
-                                    ui.close();
-                                }
-                                ui.separator();
-                                if ui.add(Button::new(RichText::new(many("Delete…")).color(p.err))).clicked() {
-                                    acts.push(Act::Delete(targets));
-                                    ui.close();
+                                resp.context_menu(|ui| menu(ui, &mut acts));
+                                if let Some(m) = &more {
+                                    if m.clicked() && !selected {
+                                        acts.push(Act::Context(vi));
+                                    }
+                                    Popup::menu(m).show(|ui| menu(ui, &mut acts));
                                 }
                             });
                         });
-                    });
+                });
             });
         }
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label(small_dim(&p, format!("Total: {total}")));
+            if shown != total {
+                ui.label(small_dim(&p, format!("·  {shown} match the filters")));
+            }
+            if selected_n > 0 {
+                ui.label(RichText::new(format!("·  {selected_n} selected")).size(12.0).color(p.accent_hover));
+            }
+        });
         for a in acts {
             self.apply(a);
         }
@@ -648,10 +739,6 @@ fn cell(row: &mut TableRow<'_, '_>, add: impl FnOnce(&mut Ui)) {
         ui.visuals_mut().override_text_color = None;
         add(ui);
     });
-}
-
-fn small_button(text: &str) -> Button<'_> {
-    Button::new(RichText::new(text).size(12.5)).min_size(vec2(0.0, 22.0)).corner_radius(CornerRadius::same(5))
 }
 
 fn status_cell(ui: &mut Ui, p: &Palette, st: &St, now: i64, offset: i32) {

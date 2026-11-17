@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package the release: one tar.gz with the four programs, the licence and the docs, plus SHA256SUMS.
+# Package the release: one tar.gz with the four programs, the licences and the docs, plus SHA256SUMS.
 #
 #   scripts/package-release.sh <version> <directory with the built programs> <output directory>
 #
@@ -26,6 +26,8 @@ for p in "${programs[@]}"; do
     install -m 0755 "$bins/$p" "$stage/$name/$p"
 done
 cp "$root/LICENSE" "$root/README.md" "$root/CHANGELOG.md" "$root/docs.md" "$stage/$name/"
+# citro-gui embeds the Inter font; its licence (SIL OFL 1.1) travels with every copy
+cp "$root/crates/citro-gui/assets/fonts/Inter-LICENSE.txt" "$stage/$name/LICENSE-Inter.txt"
 cp -r "$root/docs" "$stage/$name/docs"
 
 tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$epoch" \

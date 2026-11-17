@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+**A new look for the desktop app**, modelled on a reference design: a calm dark (and light) workspace instead of the
+dense tool window. Nothing about what the app does has changed.
+
+* A 220 px sidebar with the logo, a blue **New profile** button, the pages in *Browser* and *Workspace* sections, and a
+  card at the foot with the data source, the profile and open counts, the kernel version and an **Install / Update
+  kernel** button.
+* A top strip with the account chip, the theme toggle and reload, and every page on one rounded card with its own tab
+  strip (*Profiles | Groups*, *Citroenition | Browser*). Groups is now a tab of Profiles, not a sidebar entry.
+* The profile table has taller rows with an avatar, the profile id under the name, the country and exit address under
+  the proxy, status dots, an **Open** / **Close** button per row and a ⋮ menu. The action bar is a blue **Open** button
+  and square icon buttons with tooltips. The old Country / IP column is folded into Proxy.
+* The Inter font is embedded in three weights (Regular, Medium, SemiBold), with thin dropdown chevrons. Its licence
+  (SIL OFL 1.1) ships in the release archive as `LICENSE-Inter.txt`.
+* The edit dialog sizes the *Forget* button from its text, so it no longer touches the scrollbar.
+* [docs/GUI.md](docs/GUI.md) and all its screenshots describe the new layout.
+
 ## 0.1.0 (2026-11-17)
 
 The first release. Everything is Rust except the browser engine, which is the open-source Chromium build
