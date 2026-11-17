@@ -7,6 +7,7 @@ pub mod edit;
 pub mod export;
 pub mod extensions;
 pub mod groups;
+pub mod import;
 pub mod kernel;
 pub mod logs;
 pub mod messages;

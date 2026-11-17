@@ -585,7 +585,7 @@ dependencies = [
 
 [[package]]
 name = "citro"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "axum",
@@ -603,7 +603,7 @@ dependencies = [
 
 [[package]]
 name = "citro-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "libc",
  "memchr",
@@ -611,11 +611,12 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.21",
+ "zip",
 ]
 
 [[package]]
 name = "citro-gui"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "citro-core",
  "citro-hub",
@@ -631,7 +632,7 @@ dependencies = [
 
 [[package]]
 name = "citro-hub"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "axum",
  "citro-core",
@@ -652,7 +653,7 @@ dependencies = [
 
 [[package]]
 name = "citro-install"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "clap",
  "flate2",
@@ -671,7 +672,7 @@ dependencies = [
 
 [[package]]
 name = "citro-sync"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "citro-core",
  "citro-hub",

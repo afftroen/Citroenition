@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.6 (2026-11-17)
+
+**Import from AdsPower, quitting that really quits, bookmarks, and a profile list like AdsPower's.**
+
+* **Import profiles** (Settings -> Import profiles, or `citro import`): straight from a running AdsPower through its
+  Local API (groups, proxies with their logins, platform accounts and every profile's cookies; AdsPower does not hand
+  out its fingerprints, so imported profiles get fresh ones), or from a file: CSV (comma, semicolon or tab), Excel
+  `.xlsx`, JSON or a list of proxies. Drop a file on the window to read it. A preview shows every profile and
+  warning first; **Save sample CSV** writes an example with every column. Profiles imported before from the same
+  AdsPower profile are skipped.
+* **A forgiving reader**: columns are matched by many names, proxies in every common notation, OS and country in loose
+  spellings; a value that is almost right becomes a warning on its row instead of rejecting the file.
+* **Quitting quits**: the red button (or Cmd+Q) closes every open browser the way Chrome quits, so cookies and open
+  tabs are saved and come back next time, and then the app exits.
+* **Bookmarks** for profiles and groups (`Name | URL` per line), put on the bookmarks bar before a launch; bookmarks
+  added in the browser itself are kept.
+* **The profile list** is laid out like AdsPower's: No., ID, the name with the OS mark and on two lines, group, the
+  IP with its country, a wide two-line remark, the creation date, last opened (or what is happening now), Open.
+* Cookies marked as session cookies but carrying a real expiry (AdsPower's) keep their expiry.
+
 ## 0.1.5 (2026-11-17)
 
 **Extensions, group settings, default preferences, a search engine, and fixes for cookies and start pages.**

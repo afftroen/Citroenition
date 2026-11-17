@@ -34,6 +34,16 @@ pub fn card<R>(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui) -> R) -> R {
         .inner
 }
 
+/// [`card`], returning the frame's response too (to scroll it into view).
+pub fn card_resp<R>(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui) -> R) -> egui::InnerResponse<R> {
+    Frame::NONE
+        .fill(p.raised)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(12))
+        .inner_margin(Margin::same(18))
+        .show(ui, add)
+}
+
 pub fn section_title(ui: &mut Ui, text: &str) {
     ui.label(semibold(text, 15.0));
 }
@@ -812,7 +822,12 @@ const LOGO_PNG: &[u8] = include_bytes!("../../assets/logo/citroenition-128.png")
 
 /// The lemon logo as straight RGBA: `(width, height, pixels)`. Also used for the window icon.
 pub fn logo_rgba() -> Option<(u32, u32, Vec<u8>)> {
-    let mut dec = png::Decoder::new(std::io::Cursor::new(LOGO_PNG));
+    png_rgba(LOGO_PNG)
+}
+
+/// A PNG as straight RGBA: `(width, height, pixels)`.
+pub fn png_rgba(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let mut dec = png::Decoder::new(std::io::Cursor::new(bytes));
     dec.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = dec.read_info().ok()?;
     let mut buf = vec![0; reader.output_buffer_size()?];
@@ -850,4 +865,22 @@ pub fn paint_icon_box(ui: &mut Ui, p: &Palette, icon: Icon) {
     let (rect, _) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::hover());
     ui.painter().rect_filled(rect, CornerRadius::same(10), p.active);
     paint_icon_scaled(ui.painter(), rect.center(), icon, p.strong, 1.1);
+}
+
+/// A bundled monochrome PNG (white on transparent) painted `size` px square in `tint`; the texture is uploaded once.
+pub fn tinted_png(ui: &mut Ui, key: &str, bytes: &[u8], size: f32, tint: Color32) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
+    let id = egui::Id::unique(("citro-png", key));
+    let tex: Option<egui::TextureHandle> = ui.ctx().data(|d| d.get_temp(id));
+    let tex = tex.or_else(|| {
+        let (w, h, px) = png_rgba(bytes)?;
+        let img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &px);
+        let t = ui.ctx().load_texture(format!("citro-{key}"), img, egui::TextureOptions::LINEAR);
+        ui.ctx().data_mut(|d| d.insert_temp(id, t.clone()));
+        Some(t)
+    });
+    if let Some(t) = tex {
+        ui.painter().image(t.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
+    }
+    resp
 }

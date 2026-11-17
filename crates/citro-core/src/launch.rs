@@ -567,6 +567,27 @@ pub fn start(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) ->
             Ok(false) => {}
             Err(e) => note(format!("could not set the default search engine: {e}")),
         }
+        // the bookmarks bar: the group's bookmarks, then the profile's
+        let group_marks = crate::store::Store::open(home)
+            .ok()
+            .and_then(|s| {
+                s.groups()
+                    .iter()
+                    .find(|g| !p.group_id.is_empty() && g.group_id == p.group_id)
+                    .map(|g| g.bookmarks.clone())
+            })
+            .unwrap_or_default();
+        let mut marks: Vec<crate::bookmarks::Bookmark> = Vec::new();
+        for b in group_marks.into_iter().chain(p.bookmarks.iter().cloned()) {
+            if !marks.iter().any(|m| m.url == b.url) {
+                marks.push(b);
+            }
+        }
+        match crate::bookmarks::apply(&prep.data_dir, &pdir.join("bookmarks-applied.json"), &marks) {
+            Ok(true) => note(format!("bookmarks bar updated ({} bookmarks)", marks.len())),
+            Ok(false) => {}
+            Err(e) => note(format!("could not write the bookmarks: {e}")),
+        }
         // macOS: a page asking for a downloadable font must not pop up "needs to download the font"
         if cfg!(target_os = "macos")
             && let Some(app) = kernel.binary.ancestors().find(|a| a.extension().is_some_and(|e| e == "app"))

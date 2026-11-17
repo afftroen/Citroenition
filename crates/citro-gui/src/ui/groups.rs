@@ -32,6 +32,8 @@ struct Rename {
     tabs_text: String,
     /// Extension id -> loaded into this group's profiles.
     extensions: Vec<(String, bool)>,
+    /// `Name | URL` per line.
+    bookmarks_text: String,
 }
 
 impl State {
@@ -241,6 +243,19 @@ impl CitroApp {
                 "One per line. Every profile of the group opens them, before its own start pages.",
             ));
             ui.add_space(8.0);
+            widgets::field_label(ui, &p, "Bookmarks");
+            ui.add(
+                TextEdit::multiline(&mut r.bookmarks_text)
+                    .hint_text("TikTok Ads | https://ads.tiktok.com/")
+                    .margin(egui::Margin::symmetric(10, 8))
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY),
+            );
+            ui.label(widgets::small_dim(
+                &p,
+                "Name | URL, one per line: on the bookmarks bar of every profile in the group.",
+            ));
+            ui.add_space(8.0);
             widgets::field_label(ui, &p, "Extensions");
             if exts.is_empty() {
                 ui.label(widgets::small_dim(&p, "No extensions installed yet: add them on the Extensions page."));
@@ -301,6 +316,7 @@ impl CitroApp {
                     tabs: g.tabs,
                     tabs_text,
                     extensions: Vec::new(),
+                    bookmarks_text: citro_core::bookmarks::to_lines(&g.bookmarks),
                 });
             }
             Act::CancelRename => self.groups_ui.rename = None,
@@ -335,6 +351,7 @@ impl CitroApp {
                     group_name: name.clone(),
                     remark: r.remark.trim().to_owned(),
                     tabs: r.tabs.clone(),
+                    bookmarks: citro_core::bookmarks::parse_lines(&r.bookmarks_text),
                 };
                 self.run_op(Vec::new(), format!("Saved group {name}"), Refresh::ROWS_GROUPS, move |b| {
                     b.save_group(g)?;
@@ -368,6 +385,7 @@ impl CitroApp {
                     group_name: s.new_name.trim().to_owned(),
                     remark: s.new_remark.trim().to_owned(),
                     tabs: Vec::new(),
+                    bookmarks: Vec::new(),
                 };
                 if g.group_name.is_empty() {
                     return;

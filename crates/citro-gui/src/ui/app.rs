@@ -5,7 +5,7 @@ use super::shot::Shot;
 use super::tasks::{Msg, OpDone, Refresh, Tasks};
 use super::theme::{self, Palette};
 use super::widgets::Icon;
-use super::{edit, export, extensions, groups, kernel, logs, profiles, settings, teams, update};
+use super::{edit, export, extensions, groups, import, kernel, logs, profiles, settings, teams, update};
 use crate::backend::{
     BResult, Backend, BackendInfo, BackendKind, HubStatus, KernelStatus, OpenOpts, Query, Row, RunState, TeamInfo,
 };
@@ -168,6 +168,8 @@ pub struct CitroApp {
     pub move_dlg: Option<MoveDialog>,
     pub remark_dlg: Option<RemarkDialog>,
     pub edit: Option<edit::EditDialog>,
+    /// How many browsers are being closed on the way out.
+    pub quit_count: usize,
     pub export: Option<export::ExportDialog>,
 
     // pages -------------------------------------------------------------------------------------------------
@@ -178,6 +180,7 @@ pub struct CitroApp {
     pub teams_ui: teams::State,
     pub settings_ui: settings::State,
     pub extensions_ui: extensions::State,
+    pub import_ui: import::State,
     pub update: update::State,
 
     pub(super) scenario: Option<StartPage>,
@@ -230,6 +233,7 @@ impl CitroApp {
             move_dlg: None,
             remark_dlg: None,
             edit: None,
+            quit_count: 0,
             export: None,
             profiles: profiles::State::default(),
             groups_ui: groups::State::default(),
@@ -238,6 +242,7 @@ impl CitroApp {
             teams_ui: teams::State::default(),
             settings_ui: settings::State::default(),
             extensions_ui: extensions::State::default(),
+            import_ui: import::State::default(),
             update: update::State::default(),
             scenario: Some(o.start),
             demo_failing: o.demo_failing,
@@ -519,6 +524,7 @@ impl eframe::App for CitroApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.pump();
+        self.take_dropped_file(&ctx);
         self.shortcuts(&ctx);
         self.sidebar(ui);
         self.top_bar(ui);

@@ -651,6 +651,22 @@ impl EditDialog {
                 ),
             }
         });
+        form_row(ui, p, "Bookmarks", |ui| {
+            let r = ui.add(
+                TextEdit::multiline(&mut self.bookmarks)
+                    .hint_text("TikTok Ads | https://ads.tiktok.com/")
+                    .margin(Margin::symmetric(10, 8))
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY),
+            );
+            ch |= r.changed();
+            hint(
+                ui,
+                p,
+                "Name | URL, one per line (or just the URL). They go on the bookmarks bar, after the group's. \
+                 Bookmarks you add in the browser itself are kept.",
+            );
+        });
         ch
     }
 

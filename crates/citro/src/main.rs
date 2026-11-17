@@ -98,6 +98,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: GroupCmd,
     },
+    /// Import profiles from AdsPower (its Local API) or from a file (CSV, Excel, JSON, a list of proxies)
+    Import {
+        #[command(subcommand)]
+        cmd: ImportCmd,
+    },
     /// Chrome extensions loaded into profiles (all of them, or the profiles of chosen groups)
     #[command(visible_alias = "ext")]
     Extension {
@@ -186,6 +191,30 @@ enum GroupCmd {
     /// List groups
     #[command(visible_alias = "ls")]
     List,
+}
+
+#[derive(Subcommand)]
+enum ImportCmd {
+    /// Every profile of a running AdsPower, with groups, proxies and cookies (the key: --key or $ADSPOWER_API_KEY)
+    Adspower {
+        /// AdsPower's Local API address (API & MCP in AdsPower)
+        #[arg(long, default_value = citro_core::adspower::DEFAULT_URL)]
+        url: String,
+        /// The API key (better: set ADSPOWER_API_KEY, so it does not show in `ps`)
+        #[arg(long, env = "ADSPOWER_API_KEY", hide_env_values = true, default_value = "")]
+        key: String,
+        /// Show what would be imported, change nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// A CSV / TSV / TXT / JSON / XLSX file; columns are matched by name, almost-right values become warnings
+    File {
+        path: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Print a sample CSV with every column the importer understands
+    Sample,
 }
 
 #[derive(Subcommand)]
@@ -885,6 +914,56 @@ fn run(cli: Cli) -> Result<()> {
                 citro_core::extensions::assign(&home, &id, false, group_ids)?;
             }
             println!("installed {} {} ({})", e.name, e.version, e.id);
+        }
+        Cmd::Import { cmd: ImportCmd::Sample } => print!("{}", citro_core::import::SAMPLE_CSV),
+        Cmd::Import { cmd } => {
+            let (parsed, dry) = match cmd {
+                ImportCmd::Adspower { url, key, dry_run } => {
+                    eprintln!("reading AdsPower at {url} (about one request per second)...");
+                    let p = citro_core::adspower::fetch(&url, &key, &mut |d, t| {
+                        if t > 0 {
+                            eprint!("\r  cookies {d}/{t}   ");
+                        }
+                    })
+                    .map_err(|e| anyhow!(e))?;
+                    eprintln!();
+                    (p, dry_run)
+                }
+                ImportCmd::File { path, dry_run } => {
+                    let bytes = std::fs::read(&path).map_err(|e| anyhow!("cannot read {}: {e}", path.display()))?;
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    (citro_core::import::parse_file(&bytes, name).map_err(|e| anyhow!(e))?, dry_run)
+                }
+                ImportCmd::Sample => unreachable!(),
+            };
+            for n in &parsed.notes {
+                eprintln!("note: {n}");
+            }
+            let body: Vec<Vec<String>> = parsed
+                .profiles
+                .iter()
+                .map(|i| {
+                    let proxy = i
+                        .profile
+                        .user_proxy_config
+                        .hop()
+                        .map_or("direct".to_owned(), |h| format!("{} {}:{}", h.scheme, h.host, h.port));
+                    let cookies = citro_core::cookies::parse(&i.profile.cookie, &i.profile.domain_name)
+                        .map(|c| c.len())
+                        .unwrap_or(0);
+                    vec![i.profile.name.clone(), i.group.clone(), proxy, cookies.to_string(), i.warnings.join("; ")]
+                })
+                .collect();
+            table(&["NAME", "GROUP", "PROXY", "COOKIES", "WARNINGS"], &body);
+            if dry {
+                println!("dry run: nothing imported ({} profiles found)", parsed.profiles.len());
+            } else {
+                let r = citro_core::import::apply(&home, &parsed)?;
+                println!(
+                    "imported {} profiles ({} already there, skipped), {} new groups",
+                    r.created, r.skipped, r.groups_created
+                );
+            }
         }
         Cmd::Extension { cmd: ExtCmd::List } => {
             let s = Store::open(&home)?;

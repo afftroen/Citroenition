@@ -15,6 +15,8 @@ pub struct State {
     /// Where the data folder should move to.
     pub move_to: String,
     pub moving: bool,
+    /// A dropped file was read: bring the import card into view.
+    pub scroll_to_import: bool,
 }
 
 /// What the pinned-kernel field says about its content.
@@ -71,6 +73,8 @@ impl CitroApp {
             self.settings_launch(ui);
             ui.add_space(12.0);
             self.settings_data(ui);
+            ui.add_space(12.0);
+            self.settings_import(ui);
         });
         if revert {
             self.settings = self.saved_settings.clone();

@@ -76,6 +76,8 @@ pub struct EditDialog {
     plat_pass: String,
     plat_pass_stored: bool,
     tabs: String,
+    /// `Name | URL` per line.
+    bookmarks: String,
     // fingerprint
     webrtc: String,
     tz_mode: Follow,
@@ -184,6 +186,7 @@ impl EditDialog {
             plat_pass: String::new(),
             plat_pass_stored: false,
             tabs: String::new(),
+            bookmarks: String::new(),
             webrtc: "disabled".to_owned(),
             tz_mode: Follow::Auto,
             timezone: String::new(),
@@ -250,6 +253,7 @@ impl EditDialog {
         self.os = p.persona_os.clone();
         self.country = p.country.trim().to_ascii_lowercase();
         self.tabs = p.tabs.join("\n");
+        self.bookmarks = citro_core::bookmarks::to_lines(&p.bookmarks);
         self.cookie.clear();
         self.cookie_stored = !p.cookie.is_empty();
         self.domain = p.domain_name.clone();
@@ -629,6 +633,7 @@ impl EditDialog {
         p.launch_args = self.launch_args.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect();
         p.fingerprint_config = self.fingerprint();
         p.search_engine = self.search_engine.clone();
+        p.bookmarks = citro_core::bookmarks::parse_lines(&self.bookmarks);
         Some(p)
     }
 
@@ -639,6 +644,7 @@ impl EditDialog {
             search_engine: t.search_engine.clone(),
             country: t.country.clone(),
             tabs: t.tabs.clone(),
+            bookmarks: t.bookmarks.clone(),
             domain_name: t.domain_name.clone(),
             launch_args: t.launch_args.clone(),
             fingerprint_config: t.fingerprint_config.clone(),
@@ -742,7 +748,7 @@ impl CitroApp {
                 });
             }
             Do::CreateGroup(name) => {
-                let g = Group { group_id: String::new(), group_name: name, remark: String::new(), tabs: Vec::new() };
+                let g = Group { group_name: name, ..Default::default() };
                 self.tasks.spawn(true, move |w| w.send(Msg::GroupCreated(w.backend.save_group(g))));
             }
             Do::Nothing => {}

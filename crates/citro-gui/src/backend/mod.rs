@@ -169,6 +169,7 @@ pub enum SortKey {
     LastOpened,
     LastClosed,
     Status,
+    Created,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -467,6 +468,11 @@ pub trait Backend: Send + Sync {
         Err(BackendError::Unsupported("extensions".into()))
     }
 
+    /// Add what an import read: groups by name, new profiles, skipping ones imported before.
+    fn apply_import(&self, _parsed: &citro_core::import::Parsed) -> BResult<citro_core::import::Report> {
+        Err(BackendError::Unsupported("importing profiles".into()))
+    }
+
     /// Move all data to `to` (a new or empty folder) and use it from now on; refused while a browser runs.
     fn move_data(&self, _to: &str) -> BResult<()> {
         Err(BackendError::Unsupported("moving the data folder".into()))
@@ -628,6 +634,7 @@ mod tests {
             group_name: "Vinted FR".into(),
             remark: String::new(),
             tabs: Vec::new(),
+            bookmarks: Vec::new(),
         }];
         assert_eq!(group_label(&g, "3"), "Vinted FR");
         assert_eq!(group_label(&g, "0"), "Ungrouped");

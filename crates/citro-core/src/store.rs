@@ -286,6 +286,7 @@ impl Store {
             group_name: name.to_owned(),
             remark: remark.to_owned(),
             tabs: Vec::new(),
+            bookmarks: Vec::new(),
         };
         self.data.groups.push(g.clone());
         self.save()?;

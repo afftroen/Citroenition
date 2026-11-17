@@ -60,6 +60,7 @@ fn compare(a: &Row, b: &Row, key: SortKey, groups: &[Group]) -> Ordering {
         SortKey::Os => os_label(&pa.persona_os).cmp(os_label(&pb.persona_os)),
         SortKey::LastOpened => pa.last_open_time.cmp(&pb.last_open_time),
         SortKey::LastClosed => pa.last_close_time.cmp(&pb.last_close_time),
+        SortKey::Created => pa.created_time.cmp(&pb.created_time),
         SortKey::Status => status_rank(&a.run).cmp(&status_rank(&b.run)),
     }
 }
@@ -105,8 +106,8 @@ mod tests {
 
     fn groups() -> Vec<Group> {
         vec![
-            Group { group_id: "1".into(), group_name: "Vinted FR".into(), remark: String::new(), tabs: Vec::new() },
-            Group { group_id: "2".into(), group_name: "eBay DE".into(), remark: String::new(), tabs: Vec::new() },
+            Group { group_id: "1".into(), group_name: "Vinted FR".into(), remark: String::new(), ..Default::default() },
+            Group { group_id: "2".into(), group_name: "eBay DE".into(), remark: String::new(), ..Default::default() },
         ]
     }
 

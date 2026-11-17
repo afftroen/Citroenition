@@ -400,6 +400,15 @@ lock again and supervises it, and says so in a notice.
 * **New profiles**: the defaults a new profile starts with, like AdsPower's Preferences. **Edit defaults…** opens the
   profile editor without the per-profile parts (name, group, proxy login, platform account, cookies, seed); **Save
   defaults** keeps them in the settings file, **Use built-in defaults** forgets them.
+* **Import profiles** (at the bottom): *From AdsPower* takes the Local API address and API key (AdsPower -> API &
+  MCP; AdsPower must be open) and reads every profile with its group, proxy login, account and cookies, about one
+  request a second. AdsPower does not hand out its fingerprint settings, so imported profiles get fresh ones. *From a
+  file* reads CSV / TSV, Excel `.xlsx` (AdsPower's export), JSON or a list of proxies; dropping a file on the window
+  does the same. A preview lists every profile and its warnings before **Import**; a value that is almost right (an
+  unreadable proxy, an unknown OS) becomes a warning and is left out, the rest of the row comes in. **Save sample CSV**
+  writes `citroenition-import-sample.csv` to Downloads. Profiles imported before from the same AdsPower profile are
+  skipped. The same from the command line: `citro import adspower` (key in `$ADSPOWER_API_KEY`), `citro import file
+  <path>`, `citro import sample`.
 * **Appearance**: *Dark* or *Light*, applied at once.
 * **Opening browsers**:
   * *Headless: open browsers without a window*. For servers and automation.

@@ -76,26 +76,46 @@ impl CitroApp {
     pub fn guard_quit(&mut self, ctx: &egui::Context) {
         use super::app::Quit;
         if self.quit == Quit::Idle && ctx.input(|i| i.viewport().close_requested()) {
+            // every open browser is closed the way Chrome quits (SIGTERM, then it writes its cookies and the open
+            // tabs to disk), so quitting really quits and the next launch restores the tabs
+            let open: Vec<String> = self
+                .rows
+                .iter()
+                .filter(|r| r.run.is_open() || r.run == RunState::Closing)
+                .map(|r| r.profile.profile_id.clone())
+                .collect();
             let team_open =
                 self.rows.iter().any(|r| r.team.is_some() && (r.run.is_open() || r.run == RunState::Closing));
-            if team_open {
+            if !open.is_empty() || team_open {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.quit = Quit::Working;
-                self.tasks.spawn(false, |w| w.send(Msg::QuitDone(w.backend.shutdown())));
+                self.quit_count = open.len();
+                self.tasks.spawn(false, move |w| {
+                    let mut lines = Vec::new();
+                    for id in &open {
+                        if let Err(e) = w.backend.close(id) {
+                            lines.push(format!("{id}: {e}"));
+                        }
+                    }
+                    lines.extend(w.backend.shutdown());
+                    w.send(Msg::QuitDone(lines));
+                });
             }
         }
         if self.quit == Quit::Working {
             let p = self.pal;
-            widgets::modal(ctx, &p, "quit-modal", 400.0, |ui| {
+            let n = self.quit_count;
+            widgets::modal(ctx, &p, "quit-modal", 420.0, |ui| {
                 ui.horizontal(|ui| {
                     ui.add(egui::Spinner::new().size(18.0));
-                    ui.label(RichText::new("Closing your team browsers").size(17.0).strong());
+                    let title = if n == 1 { "Closing 1 browser".to_owned() } else { format!("Closing {n} browsers") };
+                    ui.label(RichText::new(title).size(17.0).strong());
                 });
                 ui.add_space(4.0);
                 ui.label(widgets::dim(
                     &p,
-                    "Their cookies and data are going up to the hub so the next person gets the newest state. The app \
-                     closes by itself when that is done.",
+                    "Each browser saves its cookies and open tabs first, so they are back the next time you open the \
+                     profile. Team profiles also go up to the hub. Citroenition quits by itself when that is done.",
                 ));
             });
         }
@@ -357,6 +377,7 @@ impl CitroApp {
                                 group_name: name2,
                                 remark: String::new(),
                                 tabs: Vec::new(),
+                                bookmarks: Vec::new(),
                             })?;
                             b.move_to_group(&ids2, &g.group_id)
                         },

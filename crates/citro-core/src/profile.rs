@@ -164,6 +164,12 @@ pub struct Profile {
     /// The browser's default search engine (`google`, `bing`, ... see `crate::browser_prefs`); empty = Google,
     /// `browser` = leave it to the browser.
     pub search_engine: String,
+    /// Bookmarks Citroenition keeps on the browser's bookmarks bar (`crate::bookmarks`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub bookmarks: Vec<crate::bookmarks::Bookmark>,
+    /// Where the profile was imported from (`adspower:<user_id>`), so an import run twice adds nothing twice.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub source: String,
     pub created_time: i64,
     /// Unix seconds; `0` = never.
     pub last_open_time: i64,
@@ -180,6 +186,8 @@ pub struct Group {
     /// Start pages every profile of the group opens (before the profile's own). Extensions per group are in
     /// `crate::extensions`.
     pub tabs: Vec<String>,
+    /// Bookmarks on the bar of every profile of the group (before the profile's own).
+    pub bookmarks: Vec<crate::bookmarks::Bookmark>,
 }
 
 #[cfg(test)]

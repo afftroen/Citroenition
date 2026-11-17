@@ -524,6 +524,15 @@ impl Backend for LocalBackend {
         Ok(citro_core::extensions::assign(&self.home, id, all_profiles, groups)?)
     }
 
+    fn apply_import(&self, parsed: &citro_core::import::Parsed) -> BResult<citro_core::import::Report> {
+        let r = citro_core::import::apply(&self.home, parsed)?;
+        self.events.info(
+            None,
+            format!("imported {} profiles ({} skipped, {} new groups)", r.created, r.skipped, r.groups_created),
+        );
+        Ok(r)
+    }
+
     fn move_data(&self, to: &str) -> BResult<()> {
         let to = crate::util::expand_tilde(to.trim(), crate::util::home_dir().as_deref());
         store::move_data(&self.home, &to)?;
@@ -552,13 +561,17 @@ impl Backend for LocalBackend {
                 }
                 s.create_group(&name, &remark)
             })?;
-            let created =
-                if tabs.is_empty() { created } else { self.save_group(Group { tabs: tabs.clone(), ..created })? };
+            let created = if tabs.is_empty() && g.bookmarks.is_empty() {
+                created
+            } else {
+                self.save_group(Group { tabs: tabs.clone(), bookmarks: g.bookmarks.clone(), ..created })?
+            };
             self.events.info(None, format!("created group {}", created.group_name));
             return Ok(created);
         }
         let id = g.group_id.clone();
-        let mut saved = Group { group_id: id.clone(), group_name: name.clone(), remark, tabs };
+        let mut saved =
+            Group { group_id: id.clone(), group_name: name.clone(), remark, tabs, bookmarks: g.bookmarks.clone() };
         edit_store_file(&self.home, |doc| {
             let arr = group_array(doc)?;
             let others: Vec<Group> = arr.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect();
@@ -572,6 +585,7 @@ impl Backend for LocalBackend {
             slot["group_name"] = Value::String(saved.group_name.clone());
             slot["remark"] = Value::String(saved.remark.clone());
             slot["tabs"] = serde_json::json!(saved.tabs);
+            slot["bookmarks"] = serde_json::json!(saved.bookmarks);
             saved = serde_json::from_value(slot.clone()).unwrap_or(saved.clone());
             Ok(())
         })?;
@@ -915,6 +929,7 @@ mod tests {
                 group_name: "eBay Germany".into(),
                 remark: "new remark".into(),
                 tabs: vec![" https://www.ebay.de/ ".into(), "".into()],
+                bookmarks: Vec::new(),
             })
             .unwrap();
         assert_eq!((renamed.group_name.as_str(), renamed.remark.as_str()), ("eBay Germany", "new remark"));
@@ -930,6 +945,7 @@ mod tests {
             group_name: "Vinted FR".into(),
             remark: "x".into(),
             tabs: Vec::new(),
+            bookmarks: Vec::new(),
         })
         .unwrap();
         assert!(

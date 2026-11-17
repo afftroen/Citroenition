@@ -13,4 +13,6 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # MACs of protected browser preferences (browser_prefs)
 sha2 = "0.10"
+# .xlsx files (AdsPower's export and import template) in `import`
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 thiserror = "2.0.21"

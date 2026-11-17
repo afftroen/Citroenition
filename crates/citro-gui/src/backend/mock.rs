@@ -291,6 +291,7 @@ impl MockBackend {
                 group_name: (*n).into(),
                 remark: (*r).into(),
                 tabs: Vec::new(),
+                bookmarks: Vec::new(),
             })
             .collect();
         let mut profiles = Vec::new();

@@ -62,9 +62,9 @@ fn parse_json(t: &str) -> Result<Vec<Value>, String> {
         let expires = ["expirationDate", "expires", "expiry"]
             .iter()
             .find_map(|k| c.get(*k).and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok())));
-        if b(c, "session") != Some(true)
-            && let Some(e) = expires.filter(|e| *e > 0.0)
-        {
+        // a real expiry wins over `session: true` (AdsPower marks every cookie as a session cookie and still gives
+        // the date); without one the cookie lives until the browser closes
+        if let Some(e) = expires.filter(|e| *e > 0.0) {
             // some exporters write milliseconds
             p["expires"] = json!(if e > 1e11 { e / 1000.0 } else { e });
         }
@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn json_exports_of_cookie_editor_and_edit_this_cookie() {
         let t = r#"[{"domain":".tiktok.com","expirationDate":1999999999.5,"hostOnly":false,"httpOnly":true,"name":"sid","path":"/","sameSite":"no_restriction","secure":false,"session":false,"value":"abc"},
-                    {"domain":"www.example.com","hostOnly":true,"name":"a","value":"1","session":true,"expirationDate":1999999999},
+                    {"domain":"www.example.com","hostOnly":true,"name":"a","value":"1","session":true},
                     {"name":"skip-no-domain","value":"x"}]"#;
         let c = parse(t, "").unwrap();
         assert_eq!(c.len(), 2);
@@ -174,6 +174,10 @@ mod tests {
         assert_eq!(c[0]["expires"], 1999999999.5);
         assert_eq!(c[1]["domain"], "www.example.com");
         assert!(c[1].get("expires").is_none(), "a session cookie has no expiry");
+        // AdsPower: `session: true` with a real date keeps the date
+        let ads = parse(r#"[{"domain":".x.com","name":"n","value":"v","session":true,"expires":1824066717,"sameSite":"unspecified"}]"#, "").unwrap();
+        assert_eq!(ads[0]["expires"], 1824066717.0);
+        assert!(ads[0].get("sameSite").is_none());
         // milliseconds are turned into seconds
         let ms = parse(r#"[{"name":"n","value":"v","domain":"x.com","expires":1999999999000}]"#, "").unwrap();
         assert_eq!(ms[0]["expires"], 1999999999.0);

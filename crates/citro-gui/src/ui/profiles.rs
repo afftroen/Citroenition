@@ -4,7 +4,7 @@ use super::app::{Busy, CitroApp, Page, ToastKind};
 use super::dialogs::{MoveDialog, RemarkDialog};
 use super::theme::{self, Palette};
 use super::widgets::{self, Icon, Pill, dim, small_dim};
-use crate::backend::{Query, Row, RunState, SortKey, StatusFilter, group_label, os_label, proxy_parts};
+use crate::backend::{Query, Row, RunState, SortKey, StatusFilter, group_label};
 use crate::selection::{Mods, Selection};
 use crate::{countries, query, timefmt};
 use eframe::egui::{
@@ -71,6 +71,50 @@ fn status_of(r: &Row, busy: Option<Busy>, failure: Option<&String>) -> St {
     }
 }
 
+/// Text on up to two lines, then cut with an ellipsis (AdsPower's name and remark cells).
+fn two_lines(ui: &mut Ui, text: RichText) -> Response {
+    let w = ui.available_width().max(40.0);
+    let style = ui.style().clone();
+    let mut job = egui::text::LayoutJob::default();
+    text.append_to(&mut job, &style, egui::FontSelection::Default, Align::LEFT);
+    job.wrap = egui::text::TextWrapping {
+        max_width: w,
+        max_rows: 2,
+        break_anywhere: false,
+        overflow_character: Some('\u{2026}'),
+    };
+    ui.add(egui::Label::new(job).wrap().sense(Sense::hover()))
+}
+
+const OS_MACOS: &[u8] = include_bytes!("../../assets/os/macos.png");
+const OS_WINDOWS: &[u8] = include_bytes!("../../assets/os/windows.png");
+const OS_LINUX: &[u8] = include_bytes!("../../assets/os/linux.png");
+
+/// The mark of the OS the profile presents (Simple Icons, CC0), in the accent blue like AdsPower's; "Auto" is a
+/// ring with an A.
+fn os_mark(ui: &mut Ui, p: &Palette, os: &str) {
+    let tint = p.accent_hover;
+    let resp = match os {
+        "windows" => widgets::tinted_png(ui, "os-windows", OS_WINDOWS, 15.0, tint),
+        "macos" => widgets::tinted_png(ui, "os-macos", OS_MACOS, 16.0, tint),
+        "linux" => widgets::tinted_png(ui, "os-linux", OS_LINUX, 18.0, tint),
+        _ => {
+            let (rect, resp) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+            let c = rect.center();
+            ui.painter().circle_stroke(c, 7.0, egui::Stroke::new(1.3, p.dim));
+            ui.painter().text(c, Align2::CENTER_CENTER, "A", FontId::new(9.0, theme::semibold_family()), p.dim);
+            resp
+        }
+    };
+    resp.on_hover_text(match os {
+        "windows" => "Windows persona",
+        "macos" => "macOS persona",
+        "linux" => "Linux persona",
+        _ => "Auto: this computer's OS",
+    });
+}
+
+#[allow(dead_code)]
 fn avatar(ui: &mut Ui, p: &Palette, id: &str, name: &str) {
     const HUES: [u32; 8] = [0x4f8cff, 0x2fbf9b, 0xe0a030, 0xd9648a, 0x8d7cf0, 0x4fb0d8, 0xe07a4f, 0x7ab648];
     let h = id.bytes().fold(7usize, |a, b| a.wrapping_mul(31).wrapping_add(b as usize));
@@ -416,7 +460,7 @@ impl CitroApp {
                     q.desc = !q.desc;
                 } else {
                     q.sort = key;
-                    q.desc = matches!(key, SortKey::LastOpened | SortKey::LastClosed);
+                    q.desc = matches!(key, SortKey::LastOpened | SortKey::LastClosed | SortKey::Created);
                 }
             }
         }
@@ -450,20 +494,19 @@ impl CitroApp {
                     TableBuilder::new(ui)
                         .id_salt("profiles-table")
                         .striped(true)
-                        .resizable(true)
+                        .resizable(false)
                         .sense(Sense::click())
                         .cell_layout(Layout::left_to_right(Align::Center))
                         .min_scrolled_height(120.0)
-                        .column(Column::exact(26.0))
-                        .column(Column::exact(34.0))
-                        .column(Column::initial(168.0).at_least(120.0).clip(true))
-                        .column(Column::initial(76.0).at_least(56.0).clip(true))
-                        .column(Column::initial(146.0).at_least(100.0).clip(true))
-                        .column(Column::remainder().at_least(60.0).clip(true))
-                        .column(Column::initial(62.0).at_least(54.0).clip(true))
-                        .column(Column::initial(76.0).at_least(60.0).clip(true))
-                        .column(Column::initial(76.0).at_least(60.0).clip(true))
-                        .column(Column::initial(92.0).at_least(76.0).clip(true))
+                        .column(Column::exact(28.0))
+                        .column(Column::exact(42.0))
+                        .column(Column::exact(72.0))
+                        .column(Column::initial(160.0).at_least(120.0).clip(true))
+                        .column(Column::initial(96.0).at_least(70.0).clip(true))
+                        .column(Column::initial(150.0).at_least(120.0).clip(true))
+                        .column(Column::remainder().at_least(120.0).clip(true))
+                        .column(Column::exact(80.0))
+                        .column(Column::exact(96.0))
                         .column(Column::exact(112.0))
                         .header(HEAD_H, |mut header| {
                             header.col(|ui| {
@@ -473,16 +516,15 @@ impl CitroApp {
                                     acts.push(Act::ToggleAll);
                                 }
                             });
-                            head(&mut header, &p, q, "#", Some(SortKey::Serial), &mut acts);
+                            head(&mut header, &p, q, "No.", Some(SortKey::Serial), &mut acts);
+                            head(&mut header, &p, q, "ID", None, &mut acts);
                             head(&mut header, &p, q, "Name", Some(SortKey::Name), &mut acts);
                             head(&mut header, &p, q, "Group", Some(SortKey::Group), &mut acts);
-                            head(&mut header, &p, q, "Proxy", Some(SortKey::Proxy), &mut acts);
+                            head(&mut header, &p, q, "IP", Some(SortKey::Proxy), &mut acts);
                             head(&mut header, &p, q, "Remark", Some(SortKey::Remark), &mut acts);
-                            head(&mut header, &p, q, "OS", Some(SortKey::Os), &mut acts);
-                            head(&mut header, &p, q, "Opened", Some(SortKey::LastOpened), &mut acts);
-                            head(&mut header, &p, q, "Closed", Some(SortKey::LastClosed), &mut acts);
-                            head(&mut header, &p, q, "Status", Some(SortKey::Status), &mut acts);
-                            head(&mut header, &p, q, "", None, &mut acts);
+                            head(&mut header, &p, q, "Created", Some(SortKey::Created), &mut acts);
+                            head(&mut header, &p, q, "Last opened", Some(SortKey::LastOpened), &mut acts);
+                            head(&mut header, &p, q, "Operation", None, &mut acts);
                         })
                         .body(|body| {
                             body.rows(ROW_H, view.len(), |mut row| {
@@ -501,97 +543,129 @@ impl CitroApp {
                                     }
                                 });
                                 cell(&mut row, |ui| {
-                                    ui.label(small_dim(&p, pr.serial_number.to_string()));
+                                    ui.label(dim(&p, pr.serial_number.to_string()));
                                 });
                                 cell(&mut row, |ui| {
-                                    avatar(ui, &p, &id, &pr.name);
-                                    ui.vertical(|ui| {
-                                        ui.spacing_mut().item_spacing.y = 1.0;
-                                        ui.horizontal(|ui| {
-                                            ui.spacing_mut().item_spacing.x = 5.0;
-                                            if r.team.is_some() {
-                                                widgets::team_mark(ui, p.accent_hover).on_hover_text(
-                                                    "Shared through the team hub: it opens on one device at a time",
-                                                );
-                                            }
-                                            let name =
-                                                RichText::new(&pr.name).size(13.5).family(theme::medium_family());
-                                            ui.add(egui::Label::new(name.color(p.strong)).truncate());
-                                        });
-                                        ui.add(egui::Label::new(small_dim(&p, &id)).truncate());
-                                    });
+                                    ui.add(egui::Label::new(dim(&p, &id)).truncate());
+                                });
+                                // Name: the OS mark, then the name on up to two lines
+                                cell(&mut row, |ui| {
+                                    ui.spacing_mut().item_spacing.x = 8.0;
+                                    os_mark(ui, &p, &pr.persona_os);
+                                    if r.team.is_some() {
+                                        widgets::team_mark(ui, p.accent_hover).on_hover_text(
+                                            "Shared through the team hub: it opens on one device at a time",
+                                        );
+                                    }
+                                    two_lines(
+                                        ui,
+                                        RichText::new(&pr.name)
+                                            .size(13.5)
+                                            .family(theme::medium_family())
+                                            .color(p.strong),
+                                    )
+                                    .on_hover_text(&pr.name);
                                 });
                                 cell(&mut row, |ui| {
                                     let label = group_label(groups, &pr.group_id);
-                                    let t = if label == "Ungrouped" { dim(&p, label) } else { RichText::new(label) };
+                                    let t = if label == "Ungrouped" {
+                                        dim(&p, label)
+                                    } else {
+                                        RichText::new(label).color(p.strong)
+                                    };
                                     ui.add(egui::Label::new(t).truncate());
                                 });
+                                // IP: the exit address (the proxy's until a check or a launch knows better), the country
                                 cell(&mut row, |ui| {
-                                    let cc = pr.country.trim();
-                                    let country = countries::name(cc).unwrap_or(cc);
-                                    let place = match (country.is_empty(), pr.ip.is_empty()) {
-                                        (true, true) => String::new(),
-                                        (false, true) => country.to_owned(),
-                                        (true, false) => pr.ip.clone(),
-                                        (false, false) => format!("{country} · {}", pr.ip),
-                                    };
-                                    // one line sits on the row's centre like every other cell; two lines stack
-                                    let layout = if place.is_empty() {
-                                        Layout::left_to_right(Align::Center)
+                                    let hop = pr.user_proxy_config.hop();
+                                    let ip = if !pr.ip.trim().is_empty() {
+                                        pr.ip.trim().to_owned()
                                     } else {
-                                        Layout::top_down(Align::Min)
+                                        hop.as_ref().map(|h| h.host.clone()).unwrap_or_default()
                                     };
-                                    ui.with_layout(layout, |ui| {
-                                        ui.spacing_mut().item_spacing.y = 1.0;
-                                        match proxy_parts(&pr.user_proxy_config) {
-                                            Some((scheme, addr)) => {
-                                                let hop = pr.user_proxy_config.hop();
-                                                let user = hop.as_ref().map(|h| h.account.clone()).unwrap_or_default();
-                                                let tip = if user.is_empty() {
-                                                    format!("{scheme}://{addr}")
-                                                } else {
-                                                    format!("{scheme}://{user}:***@{addr}")
-                                                };
-                                                ui.horizontal(|ui| {
-                                                    ui.spacing_mut().item_spacing.x = 5.0;
-                                                    ui.label(
-                                                        RichText::new(scheme.to_uppercase())
-                                                            .size(10.5)
-                                                            .family(theme::semibold_family())
-                                                            .color(p.accent_hover),
-                                                    );
-                                                    ui.add(
-                                                        egui::Label::new(RichText::new(addr).color(p.strong))
-                                                            .truncate(),
-                                                    )
-                                                    .on_hover_text(tip);
-                                                });
-                                            }
-                                            None => {
-                                                ui.label(dim(&p, "Direct"));
-                                            }
+                                    let cc = pr.country.trim().to_ascii_uppercase();
+                                    let place = match (cc.is_empty(), countries::name(&cc.to_ascii_lowercase())) {
+                                        (true, _) => String::new(),
+                                        (false, Some(n)) => format!("{cc} - {n}"),
+                                        (false, None) => cc.clone(),
+                                    };
+                                    let tip = match &hop {
+                                        Some(h) if h.account.is_empty() => {
+                                            format!("{}://{}:{}", h.scheme, h.host, h.port)
                                         }
+                                        Some(h) => format!("{}://{}:***@{}:{}", h.scheme, h.account, h.host, h.port),
+                                        None => "No proxy: the browser connects directly".to_owned(),
+                                    };
+                                    ui.vertical(|ui| {
+                                        ui.spacing_mut().item_spacing.y = 2.0;
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 6.0;
+                                            let (tag, col) = match &hop {
+                                                Some(h) => (h.scheme.to_uppercase(), p.accent_hover),
+                                                None => ("DIRECT".to_owned(), p.dim),
+                                            };
+                                            ui.label(
+                                                RichText::new(tag)
+                                                    .size(9.5)
+                                                    .family(theme::semibold_family())
+                                                    .color(col),
+                                            );
+                                            let main = if ip.is_empty() {
+                                                dim(&p, "\u{2013}")
+                                            } else {
+                                                RichText::new(&ip).color(p.strong)
+                                            };
+                                            ui.add(egui::Label::new(main).truncate()).on_hover_text(tip);
+                                        });
                                         if !place.is_empty() {
                                             ui.add(egui::Label::new(small_dim(&p, place)).truncate());
                                         }
                                     });
                                 });
                                 cell(&mut row, |ui| {
-                                    let line = crate::util::first_line(&pr.remark);
-                                    ui.add(egui::Label::new(dim(&p, line)).truncate()).on_hover_text(&pr.remark);
+                                    let text = pr.remark.trim();
+                                    if text.is_empty() {
+                                        ui.label(dim(&p, "\u{2013}"));
+                                    } else {
+                                        two_lines(ui, RichText::new(text).color(p.text)).on_hover_text(text);
+                                    }
                                 });
                                 cell(&mut row, |ui| {
-                                    let os = os_label(&pr.persona_os);
-                                    ui.label(if os == "Auto" { dim(&p, os) } else { RichText::new(os) });
+                                    if pr.created_time > 0 {
+                                        let d = timefmt::DateTime::from_unix(pr.created_time, offset);
+                                        ui.vertical(|ui| {
+                                            ui.spacing_mut().item_spacing.y = 2.0;
+                                            ui.label(
+                                                RichText::new(format!("{:02}-{:02}", d.month, d.day)).color(p.text),
+                                            );
+                                            ui.label(small_dim(
+                                                &p,
+                                                format!("{:02}:{:02}:{:02}", d.hour, d.minute, d.second),
+                                            ));
+                                        })
+                                        .response
+                                        .on_hover_text(timefmt::absolute(pr.created_time, offset));
+                                    } else {
+                                        ui.label(dim(&p, "\u{2013}"));
+                                    }
                                 });
-                                for ts in [pr.last_open_time, pr.last_close_time] {
-                                    cell(&mut row, |ui| {
-                                        let t = timefmt::relative(now, ts, offset);
-                                        let t = if ts <= 0 { dim(&p, "never") } else { RichText::new(t) };
-                                        ui.label(t).on_hover_text(timefmt::absolute(ts, offset));
-                                    });
-                                }
-                                cell(&mut row, |ui| status_cell(ui, &p, &st, now, offset));
+                                // last opened, or what is going on right now
+                                cell(&mut row, |ui| match &st {
+                                    St::Closed => {
+                                        let ts = pr.last_open_time;
+                                        let t = if ts <= 0 {
+                                            dim(&p, "never")
+                                        } else {
+                                            RichText::new(timefmt::relative(now, ts, offset))
+                                        };
+                                        ui.label(t).on_hover_text(format!(
+                                            "Opened {}\nClosed {}",
+                                            timefmt::absolute(pr.last_open_time, offset),
+                                            timefmt::absolute(pr.last_close_time, offset)
+                                        ));
+                                    }
+                                    other => status_cell(ui, &p, other, now, offset),
+                                });
                                 let mut more: Option<Response> = None;
                                 cell(&mut row, |ui| {
                                     ui.spacing_mut().item_spacing.x = 6.0;
