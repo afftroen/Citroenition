@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+* **`deploy/install-hub.sh` and `deploy/expose-hub.sh`** put the team hub on an Ubuntu server: a `citro-hub` system user
+  with no login, its data in `/var/lib/citro-hub` (`0700`), the checksum-verified release program owned by root, a
+  sandboxed systemd service on `127.0.0.1:8470`, and then HTTPS through the server's nginx and certbot. Re-running the
+  first one upgrades the program and keeps the data; a failure in the second puts nginx back as it was. See
+  [docs/HUB.md](docs/HUB.md#install-on-an-ubuntu-server).
+
 ## 0.1.7 (2026-11-17)
 
 This release also brings everything listed under 0.1.6 below: that build could not get a macOS runner from GitHub and

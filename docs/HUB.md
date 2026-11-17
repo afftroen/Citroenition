@@ -32,14 +32,15 @@ client or a script. The commands are in the [manual](../docs.md#10-teams-locks-a
 
 1. [Concepts](#concepts)
 2. [Running a hub](#running-a-hub)
-3. [Users, teams and tokens](#users-teams-and-tokens)
-4. [Behind a TLS reverse proxy](#behind-a-tls-reverse-proxy)
-5. [Backups and restore](#backups-and-restore)
-6. [Connecting a device](#connecting-a-device)
-7. [The HTTP contract](#the-http-contract)
-8. [What is logged](#what-is-logged)
-9. [Security model](#security-model)
-10. [Troubleshooting](#troubleshooting)
+3. [Install on an Ubuntu server](#install-on-an-ubuntu-server)
+4. [Users, teams and tokens](#users-teams-and-tokens)
+5. [Behind a TLS reverse proxy](#behind-a-tls-reverse-proxy)
+6. [Backups and restore](#backups-and-restore)
+7. [Connecting a device](#connecting-a-device)
+8. [The HTTP contract](#the-http-contract)
+9. [What is logged](#what-is-logged)
+10. [Security model](#security-model)
+11. [Troubleshooting](#troubleshooting)
 
 ## Concepts
 
@@ -201,6 +202,65 @@ Directories are created with mode `0700` and files with mode `0600`.
   as a *new* version, so that no client mistakes it for the one it already has. Each of these is a warning in the
   hub's log.
 * **`logs/`**: see [What is logged](#what-is-logged).
+
+## Install on an Ubuntu server
+
+Two scripts in [`deploy/`](../deploy) set the hub up the way this document describes it. They are for Ubuntu or
+Debian on x86_64 with systemd; the second one also needs nginx and certbot. Run them as root, and read them first:
+they are short plain bash (about 215 and 165 lines), and the comment at the top of each says what it touches.
+
+```sh
+# 1. The hub, on 127.0.0.1:8470, under its own user. Prints the owner's token once.
+sudo bash install-hub.sh --owner anna --team Acme
+
+# 2. Make an A record  hub.example.com -> this server  (DNS only), then put HTTPS in front of the hub:
+sudo bash expose-hub.sh hub.example.com you@example.com
+```
+
+**`install-hub.sh`** creates this, and nothing else:
+
+| What | Where | Why |
+|---|---|---|
+| a system user | `citro-hub`: no password, no login shell | the hub holds your team's cookies; no other account on the machine may read them |
+| the data directory | `/var/lib/citro-hub`, mode `0700`, owned by `citro-hub` | [the layout](#data-directory) |
+| the program | `/usr/local/bin/citro-hub`, owned by root | the service cannot rewrite itself. It is the GitHub release, checked against its `SHA256SUMS` **before** anything on the system changes |
+| the service | `/etc/systemd/system/citro-hub.service` | sandboxed (the file system is read-only except the data directory, no new privileges, no capabilities, IP sockets only), restarts on failure, and **listens on 127.0.0.1 only** |
+| `citro-hub-admin` | `/usr/local/sbin/` | `citro-hub admin …` run as the hub's own user; run as root it would write files the service cannot open |
+
+The first run needs `--owner`, because a hub does not exist without a user; on a server that already has data,
+`--owner` is refused. Without arguments the script **upgrades** to the newest release: same data, new program,
+service restarted (`--version X.Y.Z` names another release). It does not touch nginx or the firewall.
+
+**`expose-hub.sh HOSTNAME [EMAIL]`** adds one nginx file (`sites-available/citro-hub`, linked into `sites-enabled`),
+one certificate, and the folder for the certificate check. The file is the [block above](#behind-a-tls-reverse-proxy)
+plus a port-80 block that answers the check and redirects everything else to HTTPS. It changes no other nginx file,
+refuses a name that nginx already serves, and when a step fails it puts its own file back as it was and reloads
+nginx. The email is only needed for the first certificate on a server.
+
+**Before you pick the hostname:**
+
+* Its DNS record points at this server, and certificates are public (certificate transparency). Anyone who finds the
+  name finds the address. If the server's address is meant to stay hidden behind a CDN, use a name that has nothing to
+  do with your other domains.
+* Keep Cloudflare's proxy **off** for it ("DNS only"). The proxy refuses uploads over 100 MB on the Free and Pro plans
+  while the hub accepts up to 512 MiB (`--max-data-mb`), and through the proxy the hub would see Cloudflare's
+  addresses instead of your team's, which is what the failed-login block counts.
+
+**Then, for each teammate:**
+
+```sh
+sudo systemctl stop citro-hub; sudo citro-hub-admin create-user --name ben --team Acme; sudo systemctl start citro-hub
+```
+
+It prints ben's token once; send it over a private channel. `--team` needs the hub stopped
+([why](#while-a-hub-is-serving)), which takes a second or two. Ben then runs, on each of his devices:
+
+```sh
+export CITRO_HUB_TOKEN=citro_…
+citro hub login --url https://hub.example.com --device-name ben-laptop
+```
+
+The scripts do not set up [backups](#backups-and-restore): copy `/var/lib/citro-hub` as that section describes.
 
 ## Users, teams and tokens
 
