@@ -115,6 +115,60 @@ impl Client {
     }
 }
 
+/// The cookies AdsPower keeps for profile `id` (its JSON text), or "" when it has none.
+fn cookies_of(c: &mut Client, id: &str) -> Result<String, String> {
+    let v = c.get(&format!("/api/v2/browser-profile/cookies?profile_id={id}"))?;
+    let cookies = v.pointer("/data/cookies").cloned().unwrap_or(Value::Null);
+    Ok(match cookies {
+        Value::String(s) => s,
+        Value::Array(_) => cookies.to_string(),
+        _ => String::new(),
+    })
+}
+
+/// Fetch, from the AdsPower at `url`, the cookies an export left out (and those of any AdsPower profile without
+/// cookies in `parsed`), by each profile's AdsPower id. Returns how many profiles got cookies.
+pub fn fill_cookies(
+    url: &str,
+    key: &str,
+    parsed: &mut Parsed,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<usize, String> {
+    let wanted: Vec<usize> = parsed
+        .profiles
+        .iter()
+        .enumerate()
+        .filter(|(_, i)| {
+            i.profile.source.starts_with("adspower:") && (i.cookies_elsewhere || i.profile.cookie.trim().is_empty())
+        })
+        .map(|(n, _)| n)
+        .collect();
+    if wanted.is_empty() {
+        return Ok(0);
+    }
+    let mut c = Client::new(url, key)?;
+    c.get("/status").map_err(|e| {
+        if e.starts_with("AdsPower") { e } else { format!("{url} does not look like AdsPower's Local API ({e})") }
+    })?;
+    let (total, mut got) = (wanted.len(), 0);
+    for (done, n) in wanted.into_iter().enumerate() {
+        progress(done, total);
+        let inc = &mut parsed.profiles[n];
+        let id = inc.profile.source.trim_start_matches("adspower:").to_owned();
+        match cookies_of(&mut c, &id) {
+            Ok(text) if !text.trim().is_empty() => {
+                inc.profile.cookie = text;
+                inc.cookies_elsewhere = false;
+                got += 1;
+            }
+            Ok(_) => inc.cookies_elsewhere = false,
+            Err(e) => inc.warnings.push(format!("cookies not fetched from AdsPower: {e}")),
+        }
+    }
+    progress(total, total);
+    Ok(got)
+}
+
 /// Every profile in the AdsPower at `url` (with `key`, its API key), with groups and cookies.
 /// `progress(done, total)` follows the per-profile cookie requests.
 pub fn fetch(url: &str, key: &str, progress: &mut dyn FnMut(usize, usize)) -> Result<Parsed, String> {
@@ -149,18 +203,9 @@ pub fn fetch(url: &str, key: &str, progress: &mut dyn FnMut(usize, usize)) -> Re
     for (i, item) in items.iter_mut().enumerate() {
         progress(i, total);
         let Some(id) = item.get("user_id").and_then(Value::as_str).map(str::to_owned) else { continue };
-        match c.get(&format!("/api/v2/browser-profile/cookies?profile_id={id}")) {
-            Ok(v) => {
-                let cookies = v.pointer("/data/cookies").cloned().unwrap_or(Value::Null);
-                let text = match cookies {
-                    Value::String(s) => s,
-                    Value::Array(_) => cookies.to_string(),
-                    _ => String::new(),
-                };
-                if !text.trim().is_empty() {
-                    item["cookie"] = Value::String(text);
-                }
-            }
+        match cookies_of(&mut c, &id) {
+            Ok(text) if !text.trim().is_empty() => item["cookie"] = Value::String(text),
+            Ok(_) => {}
             Err(_) => missing += 1,
         }
     }

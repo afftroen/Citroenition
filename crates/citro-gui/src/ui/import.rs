@@ -49,12 +49,26 @@ impl CitroApp {
 
     fn read_import_file(&mut self) {
         let path = crate::util::expand_tilde(self.import_ui.path.trim().trim_matches('"'), self.home.as_deref());
+        let (url, key) = (self.import_ui.ads_url.trim().to_owned(), self.import_ui.ads_key.trim().to_owned());
         self.start_reading();
         self.tasks.spawn(true, move |w| {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_owned();
-            let r = std::fs::read(&path)
+            let mut r = std::fs::read(&path)
                 .map_err(|e| format!("cannot read {}: {e}", path.display()))
                 .and_then(|b| citro_core::import::parse_file(&b, &name));
+            // an AdsPower export leaves big cookie lists out: fetch them through the API with the key above
+            if let Ok(p) = r.as_mut()
+                && p.profiles.iter().any(|i| i.cookies_elsewhere)
+            {
+                if key.is_empty() {
+                    p.notes.push("AdsPower left the cookies out of this file (too large for Excel). Enter the AdsPower API key above and press Read file again to fetch them.".into());
+                } else {
+                    match citro_core::adspower::fill_cookies(&url, &key, p, &mut |d, t| w.send(Msg::ImportProgress(d, t))) {
+                        Ok(n) => p.notes.push(format!("Fetched the cookies of {n} profile(s) from AdsPower.")),
+                        Err(e) => p.notes.push(format!("Could not fetch the cookies from AdsPower: {e}")),
+                    }
+                }
+            }
             w.send(Msg::ImportRead(r));
         });
     }
@@ -82,8 +96,8 @@ impl CitroApp {
         match r {
             Ok(r) => {
                 self.import_ui.preview = None;
-                let skipped = if r.skipped > 0 { format!(", {} already there", r.skipped) } else { String::new() };
-                self.toast(ToastKind::Ok, format!("Imported {} profiles{skipped}", r.created));
+                let updated = if r.updated > 0 { format!(", filled in {}", r.updated) } else { String::new() };
+                self.toast(ToastKind::Ok, format!("Imported {} profiles{updated}", r.created));
                 self.apply_refresh(Refresh::ROWS_GROUPS);
             }
             Err(e) => self.import_ui.error = Some(e.to_string()),

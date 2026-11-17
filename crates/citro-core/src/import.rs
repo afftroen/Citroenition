@@ -19,6 +19,9 @@ pub struct Incoming {
     /// Group by name ("" = ungrouped); created when missing.
     pub group: String,
     pub warnings: Vec<String>,
+    /// The file could not hold its cookies (AdsPower writes "Cookie too large ..." instead): they are fetched from
+    /// AdsPower's API by the profile's AdsPower id ([`crate::adspower::fill_cookies`]).
+    pub cookies_elsewhere: bool,
 }
 
 /// What a file held.
@@ -62,6 +65,13 @@ enum Col {
     Cookie,
     TwoFa,
     Ip,
+    /// AdsPower's profile id (`id` in its export): where cookies are fetched from, and what an import matches on.
+    AdsId,
+    /// AdsPower's serial (`acc_id`).
+    AdsSerial,
+    Tags,
+    /// AdsPower's saved-proxy id: not in the file, so the proxy cannot come along.
+    SavedProxy,
     Skip,
 }
 
@@ -79,7 +89,7 @@ fn column(header: &str) -> Option<Col> {
         Col::Group
     } else if is(&["remark", "remarks", "note", "notes", "description", "comment", "comments", "memo"]) {
         Col::Remark
-    } else if is(&["proxy", "proxyurl", "proxystring", "proxies", "proxyaddress", "userproxyconfig"]) {
+    } else if is(&["proxy", "proxystring", "proxies", "proxyaddress", "userproxyconfig"]) {
         Col::Proxy
     } else if is(&["proxytype", "proxyprotocol", "protocol", "scheme", "type"]) {
         Col::ProxyType
@@ -111,7 +121,14 @@ fn column(header: &str) -> Option<Col> {
         Col::TwoFa
     } else if is(&["exitip", "lastip"]) {
         Col::Ip
+    } else if is(&["tags", "tag", "labels", "label"]) {
+        Col::Tags
+    } else if is(&["proxyid", "savedproxyid"]) {
+        Col::SavedProxy
     } else if is(&[
+        // AdsPower's `proxyurl` is the proxy's "change IP" link, not the proxy
+        "proxyurl",
+        "ipchecker",
         "id",
         "serial",
         "serialnumber",
@@ -294,13 +311,42 @@ fn one_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Start pages separated by new lines, spaces, commas, semicolons or `|`.
+/// Start pages separated by new lines, spaces, `;`, `|`, or commas *between* addresses (a comma inside a URL's query,
+/// as in an OAuth link, stays).
 fn urls(s: &str) -> Vec<String> {
-    s.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '|'))
-        .map(|u| u.trim().trim_matches(|c| c == '"' || c == '\''))
+    let mut out: Vec<String> = Vec::new();
+    for piece in s.split(|c: char| c.is_whitespace() || matches!(c, ';' | '|')) {
+        let mut cur = String::new();
+        for part in piece.split(',') {
+            let starts_url = {
+                let t = part.trim_start().to_ascii_lowercase();
+                t.starts_with("http://")
+                    || t.starts_with("https://")
+                    || t.starts_with("www.")
+                    || t.starts_with("about:")
+            };
+            if cur.is_empty() {
+                cur.push_str(part);
+            } else if starts_url {
+                out.push(std::mem::take(&mut cur));
+                cur.push_str(part);
+            } else {
+                cur.push(',');
+                cur.push_str(part);
+            }
+        }
+        out.push(cur);
+    }
+    out.into_iter()
+        .map(|u| u.trim().trim_matches(|c| c == '"' || c == '\'').trim_end_matches(',').to_owned())
         .filter(|u| !u.is_empty() && (u.contains('.') || u.contains("://") || u.starts_with("about:")))
-        .map(str::to_owned)
         .collect()
+}
+
+/// AdsPower's text in place of cookies that did not fit an Excel cell.
+fn cookies_left_out(text: &str) -> bool {
+    let t = text.to_lowercase();
+    !t.trim_start().starts_with('[') && (t.contains("too large") || t.contains("too long") || t.contains("exceeds"))
 }
 
 // -------------------------------------------------------------------------------------------------------------
@@ -354,7 +400,19 @@ fn table(text: &str) -> Vec<Vec<String>> {
 /// Rows with a header line -> profiles.
 fn from_rows(rows: Vec<Vec<String>>, out: &mut Parsed) {
     let Some((header, body)) = rows.split_first() else { return };
-    let cols: Vec<Option<Col>> = header.iter().map(|h| column(h)).collect();
+    // AdsPower's export (`acc_id`, `id`, `proxytype`, ...): `id` is its profile id, `acc_id` its serial
+    let adspower = header.iter().any(|h| norm(h) == "accid") || header.iter().any(|h| norm(h) == "ipchecker");
+    let cols: Vec<Option<Col>> = header
+        .iter()
+        .map(|h| match norm(h).as_str() {
+            "id" | "userid" | "profileid" if adspower => Some(Col::AdsId),
+            "accid" | "serialnumber" if adspower => Some(Col::AdsSerial),
+            _ => column(h),
+        })
+        .collect();
+    if adspower {
+        out.notes.push("This is an AdsPower export: profiles are matched to AdsPower by their id.".into());
+    }
     if cols.iter().all(Option::is_none) {
         // no header at all: maybe one proxy per line
         for (i, r) in rows.iter().enumerate() {
@@ -416,18 +474,49 @@ fn from_rows(rows: Vec<Vec<String>>, out: &mut Parsed) {
         if !ua.is_empty() {
             p.fingerprint_config.0.insert("ua".into(), Value::String(ua));
         }
+        let ads_id = get(Col::AdsId);
+        if !ads_id.is_empty() {
+            p.source = format!("adspower:{ads_id}");
+        }
+        let mut cookies_elsewhere = false;
         let cookie = get(Col::Cookie);
-        if !cookie.is_empty() {
+        if cookies_left_out(&cookie) {
+            cookies_elsewhere = true;
+            if ads_id.is_empty() {
+                warnings.push(
+                    "the file left the cookies out (too large for Excel) and has no AdsPower id to fetch them".into(),
+                );
+            }
+        } else if !cookie.is_empty() {
             match crate::cookies::parse(&cookie, &crate::cookies::default_domain(&p.domain_name, &p.tabs)) {
                 Ok(_) => p.cookie = cookie,
                 Err(e) => warnings.push(format!("cookies left out: {e}")),
             }
         }
+        let tags = get(Col::Tags);
+        let serial = get(Col::AdsSerial);
+        let mut extra: Vec<String> = Vec::new();
+        if !tags.is_empty() {
+            extra.push(format!("Tags: {tags}"));
+        }
+        if !serial.is_empty() {
+            extra.push(format!("AdsPower #{serial}"));
+        }
+        if !extra.is_empty() {
+            let tail = extra.join(" \u{b7} ");
+            p.remark = if p.remark.trim().is_empty() { tail } else { format!("{} ({tail})", p.remark.trim()) };
+        }
+        let saved = get(Col::SavedProxy);
+        if !saved.is_empty() && saved != "0" && p.user_proxy_config.is_direct() {
+            warnings.push(format!(
+                "uses AdsPower's saved proxy #{saved}, which the file does not contain: set the proxy by hand"
+            ));
+        }
         p.name = one_line(&p.name);
         if p.name.is_empty() {
             p.name = if p.username.is_empty() { format!("Imported {}", i + 1) } else { p.username.clone() };
         }
-        out.profiles.push(Incoming { profile: p, group: get(Col::Group), warnings });
+        out.profiles.push(Incoming { profile: p, group: get(Col::Group), warnings, cookies_elsewhere });
     }
 }
 
@@ -439,6 +528,7 @@ fn from_proxy_line(line: &str, n: usize, out: &mut Parsed) {
                 profile: Profile { name: format!("Proxy {n} ({host})"), user_proxy_config: c, ..Default::default() },
                 group: String::new(),
                 warnings: Vec::new(),
+                cookies_elsewhere: false,
             });
         }
         Err(e) if e.is_empty() => {}
@@ -520,7 +610,7 @@ pub fn from_json(v: &Value, groups: &[(String, String)], out: &mut Parsed) {
         if p.name.is_empty() {
             p.name = format!("Imported {}", i + 1);
         }
-        out.profiles.push(Incoming { profile: p, group, warnings });
+        out.profiles.push(Incoming { profile: p, group, warnings, cookies_elsewhere: false });
     }
 }
 
@@ -634,9 +724,48 @@ pub fn parse_file(bytes: &[u8], name: &str) -> Result<Parsed, String> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
     pub created: usize,
-    /// Already imported from the same source (`Profile::source`).
+    /// Imported before from the same source (`Profile::source`) and given what they were missing.
+    pub updated: usize,
+    /// Imported before, nothing new to add.
     pub skipped: usize,
     pub groups_created: usize,
+}
+
+/// Give `old` (imported before from the same place) whatever it lacks and `new` has. Nothing set is overwritten,
+/// except cookies when `new` brings some and `old` has none.
+fn fill_in(old: &mut Profile, new: &Profile, new_group: Option<String>) -> bool {
+    let before = old.clone();
+    let take = |a: &mut String, b: &String| {
+        if a.trim().is_empty() && !b.trim().is_empty() {
+            *a = b.clone();
+        }
+    };
+    take(&mut old.cookie, &new.cookie);
+    take(&mut old.domain_name, &new.domain_name);
+    take(&mut old.username, &new.username);
+    take(&mut old.password, &new.password);
+    take(&mut old.fakey, &new.fakey);
+    take(&mut old.country, &new.country);
+    take(&mut old.persona_os, &new.persona_os);
+    take(&mut old.remark, &new.remark);
+    if old.tabs.is_empty() {
+        old.tabs = new.tabs.clone();
+    }
+    if old.bookmarks.is_empty() {
+        old.bookmarks = new.bookmarks.clone();
+    }
+    if old.user_proxy_config.is_direct() && !new.user_proxy_config.is_direct() {
+        old.user_proxy_config = new.user_proxy_config.clone();
+    }
+    for (k, v) in &new.fingerprint_config.0 {
+        old.fingerprint_config.0.entry(k.clone()).or_insert_with(|| v.clone());
+    }
+    if let Some(g) = new_group
+        && (old.group_id.is_empty() || old.group_id == "0")
+    {
+        old.group_id = g;
+    }
+    *old != before
 }
 
 /// Add `parsed` to the store: groups by name (created when missing), every profile a new one with its own id (its
@@ -651,9 +780,16 @@ pub fn apply(home: &crate::store::Home, parsed: &Parsed) -> crate::Result<Report
             }
         }
         for inc in &parsed.profiles {
-            let src = inc.profile.source.as_str();
-            if !src.is_empty() && s.profiles().iter().any(|p| p.source == src) {
-                r.skipped += 1;
+            let src = inc.profile.source.clone();
+            if let Some(existing) = s.profiles().iter().find(|p| !src.is_empty() && p.source == src).cloned() {
+                let group = if inc.group.trim().is_empty() { None } else { Some(s.group_id_for(&inc.group)?) };
+                let mut merged = existing.clone();
+                if fill_in(&mut merged, &inc.profile, group) {
+                    s.update(&existing.profile_id, |p| *p = merged)?;
+                    r.updated += 1;
+                } else {
+                    r.skipped += 1;
+                }
                 continue;
             }
             let mut p = inc.profile.clone();

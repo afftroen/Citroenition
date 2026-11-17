@@ -932,7 +932,27 @@ fn run(cli: Cli) -> Result<()> {
                 ImportCmd::File { path, dry_run } => {
                     let bytes = std::fs::read(&path).map_err(|e| anyhow!("cannot read {}: {e}", path.display()))?;
                     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    (citro_core::import::parse_file(&bytes, name).map_err(|e| anyhow!(e))?, dry_run)
+                    let mut p = citro_core::import::parse_file(&bytes, name).map_err(|e| anyhow!(e))?;
+                    // an AdsPower export leaves big cookie lists out: fetch them from AdsPower when its key is set
+                    if p.profiles.iter().any(|i| i.cookies_elsewhere) {
+                        match std::env::var("ADSPOWER_API_KEY") {
+                            Ok(key) if !key.trim().is_empty() => {
+                                eprintln!("fetching the cookies the file left out from AdsPower...");
+                                let n = citro_core::adspower::fill_cookies(
+                                    citro_core::adspower::DEFAULT_URL,
+                                    &key,
+                                    &mut p,
+                                    &mut |_, _| {},
+                                )
+                                .map_err(|e| anyhow!(e))?;
+                                eprintln!("  cookies for {n} profile(s)");
+                            }
+                            _ => eprintln!(
+                                "note: the file left cookies out; set ADSPOWER_API_KEY (AdsPower open) to fetch them"
+                            ),
+                        }
+                    }
+                    (p, dry_run)
                 }
                 ImportCmd::Sample => unreachable!(),
             };
@@ -960,8 +980,8 @@ fn run(cli: Cli) -> Result<()> {
             } else {
                 let r = citro_core::import::apply(&home, &parsed)?;
                 println!(
-                    "imported {} profiles ({} already there, skipped), {} new groups",
-                    r.created, r.skipped, r.groups_created
+                    "imported {} profiles, filled in {} imported before ({} unchanged), {} new groups",
+                    r.created, r.updated, r.skipped, r.groups_created
                 );
             }
         }
