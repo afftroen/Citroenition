@@ -686,11 +686,13 @@ mod tests {
         let port = l.local_addr().unwrap().port();
         let bin = root.join("chrome_157").join("SunBrowser");
         std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        // like Clearcote's Linux build, the engine takes the proxy login as a switch (no local relay)
         std::fs::write(
             &bin,
             format!(
                 "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --user-data-dir=*) ud=\"${{a#--user-data-dir=}}\";; esac; done\n\
-                 printf '%s\\n%s\\n' {port} /devtools/browser/api-test > \"$ud/DevToolsActivePort\"\nsleep 60 &\nwait\n"
+                 printf '%s\\n%s\\n' {port} /devtools/browser/api-test > \"$ud/DevToolsActivePort\"\nsleep 60 &\nwait\nexit 0\n\
+                 \0proxy-auth\0socks5-credentials\0"
             ),
         )
         .unwrap();

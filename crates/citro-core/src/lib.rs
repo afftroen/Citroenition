@@ -14,6 +14,7 @@ pub mod launch;
 pub mod locale;
 pub mod profile;
 pub mod redact;
+pub mod relay;
 pub mod rng;
 pub mod store;
 

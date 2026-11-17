@@ -13,6 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 fn main() -> eframe::Result {
+    // a browser whose proxy needs a login this kernel cannot send runs us again as its local relay
+    citro_core::relay::run_if_requested();
     let args = match Args::parse(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {

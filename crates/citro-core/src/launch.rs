@@ -82,6 +82,9 @@ pub struct Prepared {
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
     pub data_dir: PathBuf,
+    /// The proxy needs a login this kernel cannot send: [`start`] runs a [`crate::relay`] and points the browser
+    /// at it (`args` then has no `--proxy-server` yet).
+    pub relay: Option<crate::relay::Upstream>,
 }
 
 /// Flags every launch carries. Deliberately small: each one changes what a page can observe or how the
@@ -196,13 +199,29 @@ pub fn prepare(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) 
     let mut args: Vec<String> =
         vec![format!("--user-data-dir={}", data_dir.display()), "--remote-debugging-port=0".into()];
     args.extend(BASE_FLAGS.iter().map(|s| (*s).to_owned()));
+    // On macOS Chromium keeps the key that encrypts cookies and saved passwords in the login keychain and asks for
+    // the user's password ("Chromium Safe Storage") on first use; `--password-store=basic` only means something on
+    // Linux. The mock keychain uses a fixed key instead, as AdsPower's launcher does.
+    if cfg!(target_os = "macos") {
+        args.push("--use-mock-keychain".into());
+    }
     args.extend(resolved.switches());
 
     // The window follows a pinned screen; a headless browser has no desktop to size it, so it gets a common one.
     if let Some((w, h)) = resolved.screen.or(opts.headless.then_some((1366, 768))) {
         args.push(format!("--window-size={w},{h}"));
     }
+    let mut relay = None;
     match p.user_proxy_config.hop() {
+        // a login the kernel has no switch for (Clearcote's macOS build): the relay logs in instead
+        Some(h)
+            if !h.account.is_empty()
+                && !kernel.supports_switch(if h.scheme == "socks5" { "socks5-credentials" } else { "proxy-auth" })
+                && let Some(up) = crate::relay::Upstream::for_hop(&h) =>
+        {
+            relay = Some(up);
+            args.push("--disable-quic".into());
+        }
         Some(h) => {
             args.push(format!("--proxy-server={}://{}:{}", h.scheme, host_for_url(&h.host), h.port));
             // QUIC is UDP; a TCP proxy cannot carry it, and a connection that falls back is a timing tell
@@ -261,7 +280,7 @@ pub fn prepare(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) 
         }
         args.extend(urls);
     }
-    Ok(Prepared { args, env, data_dir })
+    Ok(Prepared { args, env, data_dir, relay })
 }
 
 fn read_devtools_port(data_dir: &Path) -> Option<(u16, String)> {
@@ -475,17 +494,26 @@ pub fn start(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) ->
         return Err(Error::HubBound(p.profile_id.clone()));
     }
     let start_time = now();
-    let prep = prepare(home, kernel, p, opts)?;
+    let mut prep = prepare(home, kernel, p, opts)?;
     let _ = fs::remove_file(prep.data_dir.join("DevToolsActivePort"));
 
     let log_path = kernel_log(home, &p.profile_id);
     let log = OpenOptions::new().create(true).append(true).mode(0o600).open(&log_path)?;
+    let relay = match &prep.relay {
+        Some(up) => {
+            let r = crate::relay::Relay::start(up, log.try_clone()?)
+                .map_err(|e| Error::Invalid(format!("could not start the local proxy relay: {e}")))?;
+            prep.args.insert(1, format!("--proxy-server=socks5://127.0.0.1:{}", r.port));
+            Some(r)
+        }
+        None => None,
+    };
     let mut cmd = Command::new(&kernel.binary);
     // our own configuration (hub tokens, test proxies, ...) is none of the browser's business
     for (k, _) in std::env::vars_os().filter(|(k, _)| k.to_string_lossy().starts_with("CITRO_")) {
         cmd.env_remove(k);
     }
-    let mut child = cmd
+    let child = cmd
         .args(&prep.args)
         .envs(prep.env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null())
@@ -494,7 +522,16 @@ pub fn start(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) ->
         // its own process group: closing the launching terminal does not take the browser down, and
         // `stop` can sweep every helper process with one signal
         .process_group(0)
-        .spawn()?;
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            if let Some(r) = relay {
+                r.abort();
+            }
+            return Err(e.into());
+        }
+    };
     let pid = child.id();
 
     let deadline = Instant::now() + opts.startup_timeout;
@@ -503,16 +540,25 @@ pub fn start(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) ->
             break (port, path);
         }
         if let Some(status) = child.try_wait()? {
+            if let Some(r) = relay {
+                r.abort();
+            }
             return Err(Error::KernelExited { status: status.code(), stderr: tail(&log_path, 2000) });
         }
         if Instant::now() >= deadline {
             signal(-(pid as i32), libc::SIGKILL);
             let _ = child.wait();
+            if let Some(r) = relay {
+                r.abort();
+            }
             return Err(Error::LaunchTimeout);
         }
         std::thread::sleep(Duration::from_millis(100));
     };
 
+    if let Some(relay) = relay {
+        relay.follow(pid);
+    }
     let r = Running {
         profile_id: p.profile_id.clone(),
         pid,
@@ -716,7 +762,7 @@ mod tests {
     #[test]
     fn prepare_builds_a_clearcote_command_line_and_environment() {
         let home = tmp_home("prepare");
-        let kernel = fake_kernel(&home, "exit 0");
+        let kernel = fake_kernel_with(&home, "exit 0", b"\0proxy-auth\0socks5-credentials\0");
         let p = profile(
             &home,
             Profile {
@@ -748,6 +794,7 @@ mod tests {
         assert!(disabled.contains("Translate") && disabled.contains("FencedFrames"), "{disabled}");
         assert_eq!(a.iter().filter(|x| x.starts_with("--disable-features=")).count(), 1);
         assert_eq!(a.last().map(String::as_str), Some("about:blank"));
+        assert_eq!(a.contains(&"--use-mock-keychain".to_owned()), cfg!(target_os = "macos"));
         if cfg!(target_os = "linux") {
             assert!(a.contains(&"--use-angle=swiftshader-webgl".to_owned()));
             assert_eq!(env_of(&prep, "LANGUAGE"), Some("fr"));
@@ -760,7 +807,7 @@ mod tests {
     #[test]
     fn socks5_credentials_use_the_socks_switch_and_a_linux_persona_hides_web_bluetooth() {
         let home = tmp_home("socks");
-        let kernel = fake_kernel(&home, "exit 0");
+        let kernel = fake_kernel_with(&home, "exit 0", b"\0proxy-auth\0socks5-credentials\0");
         let p = profile(
             &home,
             Profile {
@@ -776,6 +823,42 @@ mod tests {
         assert!(a.contains(&"--no-sandbox".to_owned()) && a.contains(&"--test-type".to_owned()));
         assert!(arg(&a, "--disable-features=").unwrap().contains("WebBluetooth"));
         assert!(!a.iter().any(|x| x.starts_with("--window-size=")), "headed + no pinned screen: the desktop decides");
+        let _ = fs::remove_dir_all(&home.root);
+    }
+
+    #[test]
+    fn a_login_the_kernel_cannot_send_goes_through_the_relay() {
+        let home = tmp_home("relay");
+        // Clearcote's macOS build: no --socks5-credentials, no --proxy-auth
+        let kernel = fake_kernel(&home, "exit 0");
+        let p = profile(
+            &home,
+            Profile {
+                persona_os: "macos".into(),
+                user_proxy_config: ProxyConfig::from_url("socks5://u:secret@10.0.0.1:1080").unwrap(),
+                ..Default::default()
+            },
+        );
+        let prep = prepare(&home, &kernel, &p, &LaunchOptions::default()).unwrap();
+        let up = prep.relay.clone().expect("a relay");
+        assert_eq!(
+            (up.scheme.as_str(), up.host.as_str(), up.port, up.user.as_str()),
+            ("socks5", "10.0.0.1", 1080, "u")
+        );
+        assert!(arg(&prep.args, "--proxy-server=").is_none(), "start() points the browser at the relay");
+        assert!(prep.args.iter().all(|x| !x.contains("secret")));
+        assert!(prep.args.contains(&"--disable-quic".to_owned()));
+        // no login: the browser connects by itself
+        let open = profile(
+            &home,
+            Profile {
+                user_proxy_config: ProxyConfig::from_url("socks5://10.0.0.1:1080").unwrap(),
+                ..Default::default()
+            },
+        );
+        let prep = prepare(&home, &kernel, &open, &LaunchOptions::default()).unwrap();
+        assert!(prep.relay.is_none());
+        assert_eq!(arg(&prep.args, "--proxy-server="), Some("socks5://10.0.0.1:1080"));
         let _ = fs::remove_dir_all(&home.root);
     }
 
@@ -805,7 +888,7 @@ mod tests {
     #[test]
     fn an_engine_with_env_transport_keeps_the_seed_and_credentials_off_argv() {
         let home = tmp_home("envmode");
-        let kernel = fake_kernel_with(&home, "exit 0", b"\0persona-from-env\0");
+        let kernel = fake_kernel_with(&home, "exit 0", b"\0persona-from-env\0socks5-credentials\0");
         let p = profile(
             &home,
             Profile {

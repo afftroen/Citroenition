@@ -27,8 +27,8 @@ Download the archive of the [latest release](https://github.com/afftroen/Citroen
 machine (Linux x86-64, or macOS 12+ on Apple silicon), or build the programs yourself:
 
 ```sh
-tar xzf citroenition-v0.1.3-x86_64-linux.tar.gz       # on a Mac: citroenition-v0.1.3-aarch64-macos.tar.gz
-export PATH="$PWD/citroenition-v0.1.3-x86_64-linux:$PATH"
+tar xzf citroenition-v0.1.4-x86_64-linux.tar.gz       # on a Mac: citroenition-v0.1.4-aarch64-macos.tar.gz
+export PATH="$PWD/citroenition-v0.1.4-x86_64-linux:$PATH"
 
 # or, from a clone: needs a recent stable Rust toolchain and a C compiler
 cargo build --release

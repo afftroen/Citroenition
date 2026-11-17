@@ -911,6 +911,8 @@ fn run(cli: Cli) -> Result<()> {
 }
 
 fn main() {
+    // a browser whose proxy needs a login this kernel cannot send runs us again as its local relay
+    citro_core::relay::run_if_requested();
     if let Err(e) = run(Cli::parse()) {
         eprintln!("error: {e:#}");
         std::process::exit(1);

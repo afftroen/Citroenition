@@ -81,10 +81,10 @@ per platform, each with `citro`, `citro-gui`, `citro-hub` and `citro-install`, a
 both. On Linux (glibc 2.35 or newer: Ubuntu 22.04, Debian 12 or later):
 
 ```sh
-V=0.1.3
+V=0.1.4
 curl -LO https://github.com/afftroen/Citroenition/releases/download/v$V/citroenition-v$V-x86_64-linux.tar.gz
 curl -LO https://github.com/afftroen/Citroenition/releases/download/v$V/SHA256SUMS
-sha256sum -c --ignore-missing SHA256SUMS      # citroenition-v0.1.3-x86_64-linux.tar.gz: OK
+sha256sum -c --ignore-missing SHA256SUMS      # citroenition-v0.1.4-x86_64-linux.tar.gz: OK
 tar xzf citroenition-v$V-x86_64-linux.tar.gz
 export PATH="$PWD/citroenition-v$V-x86_64-linux:$PATH"
 ```
@@ -92,10 +92,10 @@ export PATH="$PWD/citroenition-v$V-x86_64-linux:$PATH"
 On a Mac (Apple silicon, macOS 12 or newer):
 
 ```sh
-V=0.1.3
+V=0.1.4
 curl -LO https://github.com/afftroen/Citroenition/releases/download/v$V/citroenition-v$V-aarch64-macos.tar.gz
 curl -LO https://github.com/afftroen/Citroenition/releases/download/v$V/SHA256SUMS
-grep aarch64-macos SHA256SUMS | shasum -a 256 -c      # citroenition-v0.1.3-aarch64-macos.tar.gz: OK
+grep aarch64-macos SHA256SUMS | shasum -a 256 -c      # citroenition-v0.1.4-aarch64-macos.tar.gz: OK
 tar xzf citroenition-v$V-aarch64-macos.tar.gz
 export PATH="$PWD/citroenition-v$V-aarch64-macos:$PATH"
 open citroenition-v$V-aarch64-macos/Citroenition.app      # the desktop app
@@ -380,6 +380,13 @@ What Citroenition does when a proxy is set:
 * `--proxy-server=<scheme>://host:port`, no credentials in the URL;
 * `--disable-quic`: QUIC is UDP, a TCP proxy cannot carry it, and a connection that falls back is a timing tell;
 * credentials go to the engine as `--socks5-credentials` (SOCKS5) or `--proxy-auth` (HTTP, HTTPS);
+* **when the engine has neither switch** (Clearcote's macOS build 150), a SOCKS5 or HTTP proxy with a login goes
+  through a **local relay**: Citroenition starts a small SOCKS5 server on `127.0.0.1:<random port>` (the launching
+  program itself, run again with `__citro-proxy-relay`; it gets the proxy over stdin, never on its command line), the
+  browser gets `--proxy-server=socks5://127.0.0.1:<port>`, and the relay logs in to the real proxy for every
+  connection (SOCKS5 username/password, or HTTP `CONNECT` with `Proxy-Authorization`). Host names reach the proxy
+  unresolved, so DNS does not leak. The relay exits when its browser does; its line is in the profile's
+  `kernel.log`. An `https://` proxy with a login is not relayed;
 * WebRTC is restricted to the proxied path (`disable_non_proxied_udp`) unless the profile says otherwise.
 
 **Credentials and `ps`.** A command line is readable by every local user (`ps`; on Linux `/proc/<pid>/cmdline`). When the kernel

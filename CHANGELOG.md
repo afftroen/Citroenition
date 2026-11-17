@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.4 (2026-11-17)
+
+**Proxies with a login work on macOS.**
+
+* **The fix.** Clearcote's macOS build (150) has no `--socks5-credentials` or `--proxy-auth`, so a SOCKS5 or HTTP proxy
+  that needs a username and password failed on a Mac with `ERR_SOCKS_CONNECTION_FAILED`. For such an engine
+  Citroenition now runs a local relay per browser: the browser talks to `socks5://127.0.0.1:<port>` without a login and
+  the relay logs in to the real proxy (host names stay unresolved, so no DNS leak). It ends with the browser. Engines
+  that take the login as a switch (Linux) are launched exactly as before. Checked on a Mac with the real kernel and a
+  real SOCKS5 proxy with a login: the page sees the proxy's exit IP.
+* **No more keychain prompt on macOS.** Browsers start with `--use-mock-keychain`, as AdsPower's do, so Chromium no
+  longer asks for the login keychain password ("Chromium Safe Storage"). `--password-store=basic` only works on Linux.
+
 ## 0.1.3 (2026-11-17)
 
 This release also brings everything listed under 0.1.2 below (the new profile editor and the logo): the 0.1.2 build
