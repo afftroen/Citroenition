@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.3 (2026-11-17)
 
 **Update from inside the app.** Citroenition looks for a newer release on GitHub when it starts; the sidebar then shows
 **↑ Update to vX**, and Settings has an **Updates** card with **Check for updates**. **Update now** downloads the archive
