@@ -48,6 +48,7 @@ fn main() -> eframe::Result {
         (Arc::new(mock), settings, None, failing)
     } else {
         let home = Home::discover(args.home.as_deref());
+        log_panics(home.root.join("crash.log"));
         let path = home.root.join("gui-settings.json");
         let backend = LocalBackend::new(home).with_installer(Arc::new(CitroInstaller::default()));
         (Arc::new(backend), Settings::load(&path), Some(path), Vec::new())
@@ -73,4 +74,23 @@ fn main() -> eframe::Result {
     let opts =
         AppOptions { backend, settings, settings_path, start: args.page, screenshot: args.screenshot, demo_failing };
     eframe::run_native("Citroenition", options, Box::new(move |cc| Ok(Box::new(CitroApp::new(cc, opts)))))
+}
+
+/// A panic closes the window: write what happened and where to `crash.log` in the data folder, so it can be found.
+fn log_panics(path: std::path::PathBuf) {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        use std::io::Write;
+        let when = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let thread = std::thread::current().name().unwrap_or("?").to_owned();
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(
+                f,
+                "{when} v{} thread {thread}: {info}\n{}",
+                env!("CARGO_PKG_VERSION"),
+                std::backtrace::Backtrace::force_capture()
+            );
+        }
+        default(info);
+    }));
 }

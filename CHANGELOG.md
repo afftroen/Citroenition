@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.9 (2026-11-17)
+
+* **Deleting a profile no longer closes the app.** After a delete, the keyboard shortcuts read the profile list before
+  it was rebuilt and went past its end. A panic now also leaves its reason in `crash.log` in the data folder.
+* **The profile list scrolls sideways again**, with the tick boxes pinned on the left and Open pinned on the right
+  above the scrolled columns (a shade shows what slides under them), a scroll bar at the bottom, a header that stays
+  put, and resize lines only between the headers.
+* **IP column**: the two arrows check the proxy (green or red once checked) and the edit mark on a hovered row opens
+  **Edit proxy**: profile number, quick paste, type, host and port, login, Check proxy, Copy. "Edit proxy…" is in the
+  right-click menu too.
+* **Change a profile's number**: double-click the No.; the profile that had that number takes the old one, so sorting
+  by No. puts the chosen profiles first.
+* Importing through another browser's Local API is removed from Settings for now; importing a file stays.
+
 ## 0.1.8 (2026-11-17)
 
 * **Closing a browser window closes the browser.** On macOS, the red close button left the browser running in the Dock

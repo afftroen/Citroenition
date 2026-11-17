@@ -10,12 +10,22 @@ use crate::ui::tasks::Refresh;
 use crate::{countries, query, timefmt};
 use citro_core::profile::ProxyConfig;
 use eframe::egui::{
-    self, Align, Align2, Button, Color32, ComboBox, CursorIcon, FontFamily, FontId, Key, Layout, Modifiers, Popup,
-    PopupCloseBehavior, Response, RichText, Sense, TextStyle, Ui, pos2, vec2,
+    self, Align, Align2, Button, Color32, ComboBox, CornerRadius, CursorIcon, FontFamily, FontId, Key, Layout,
+    Modifiers, Popup, PopupCloseBehavior, Rect, Response, RichText, ScrollArea, Sense, Stroke, TextStyle, Ui,
+    UiBuilder, pos2, vec2,
 };
-use egui_extras::{Column, TableBuilder, TableRow};
 
 const ROW_H: f32 = 56.0;
+/// The scrolling columns: No., ID, Name, Group, Tags, IP, Remark, Created, Last opened.
+const COL_W: [f32; 9] = [52.0, 80.0, 180.0, 100.0, 120.0, 170.0, 230.0, 92.0, 104.0];
+const COL_MIN: [f32; 9] = [36.0, 40.0, 80.0, 56.0, 56.0, 100.0, 80.0, 60.0, 70.0];
+const REMARK: usize = 6;
+/// The pinned tick-box and Operation columns, the room kept for the vertical scroll bar, the sideways bar.
+const LEFT_W: f32 = 40.0;
+const RIGHT_W: f32 = 124.0;
+const GUTTER: f32 = 10.0;
+const SCROLL_H: f32 = 14.0;
+const CELL_PAD: f32 = 6.0;
 const HEAD_H: f32 = 40.0;
 /// Room kept under the table for the "Total" line.
 const FOOTER_H: f32 = 34.0;
@@ -33,18 +43,20 @@ pub struct State {
     pub tags_for: Option<Vec<String>>,
     pub new_tag: String,
     pub new_tag_color: String,
-    /// The proxy being typed in a row's IP popup.
-    proxy_edit: Option<(String, String, Option<String>)>,
     /// The remark being edited in a row's Remark popup.
     remark_edit: Option<(String, String)>,
     /// Proxy checks made from the list: running (`None`) or their answer.
     pub checks: std::collections::HashMap<String, Option<Result<ProxyCheck, String>>>,
+    /// The widths of the columns between the pinned ones (dragged in the header), and the sideways scroll.
+    widths: Vec<f32>,
+    h_off: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Field {
     Name,
     Remark,
+    Serial,
 }
 
 struct Inline {
@@ -78,8 +90,7 @@ enum Act {
     Retag(Vec<String>, Vec<String>, Vec<String>),
     Tags(Vec<String>),
     CheckProxy(Vec<String>),
-    /// New proxy text for a profile (empty = no proxy).
-    SetProxy(String, String),
+    EditProxy(String),
     SaveRemark(String, String),
 }
 
@@ -117,13 +128,11 @@ fn tag_color(key: &str) -> Color32 {
 /// cancels. Returns `false` when this cell is not being edited.
 fn inline_edit(ui: &mut Ui, inline: &mut Option<Inline>, id: &str, field: Field, acts: &mut Vec<Act>) -> bool {
     let Some(e) = inline.as_mut().filter(|e| e.id == id && e.field == field) else { return false };
-    let r = ui.add(
-        egui::TextEdit::singleline(&mut e.text).desired_width(f32::INFINITY).char_limit(if field == Field::Name {
-            100
-        } else {
-            2000
-        }),
-    );
+    let r = ui.add(egui::TextEdit::singleline(&mut e.text).desired_width(f32::INFINITY).char_limit(match field {
+        Field::Name => 100,
+        Field::Serial => 9,
+        Field::Remark => 2000,
+    }));
     if !e.focused {
         r.request_focus();
         e.focused = true;
@@ -196,7 +205,7 @@ fn avatar(ui: &mut Ui, p: &Palette, id: &str, name: &str) {
     );
 }
 
-fn head(header: &mut TableRow<'_, '_>, p: &Palette, q: &Query, label: &str, key: Option<SortKey>, acts: &mut Vec<Act>) {
+fn head(header: &mut RowCells<'_, '_>, p: &Palette, q: &Query, label: &str, key: Option<SortKey>, acts: &mut Vec<Act>) {
     header.col(|ui| {
         let active = key.is_some_and(|k| k == q.sort);
         let col = if active { p.strong } else { p.dim };
@@ -228,14 +237,15 @@ impl CitroApp {
         self.profiles
             .view
             .iter()
-            .map(|&i| &self.rows[i])
+            .filter_map(|&i| self.rows.get(i))
             .filter(|r| sel.contains(r.id()))
             .map(|r| r.id().to_owned())
             .collect()
     }
 
     fn visible_ids(&self) -> Vec<String> {
-        self.profiles.view.iter().map(|&i| self.rows[i].id().to_owned()).collect()
+        // `get`: the list may have shrunk (a delete) since the view was built; refresh_view rebuilds it
+        self.profiles.view.iter().filter_map(|&i| self.rows.get(i)).map(|r| r.id().to_owned()).collect()
     }
 
     pub(super) fn refresh_view(&mut self) {
@@ -252,6 +262,8 @@ impl CitroApp {
     }
 
     pub fn profile_shortcuts(&mut self, ctx: &egui::Context) {
+        // the rows may have changed since the last frame (a delete, an import): the view must follow first
+        self.refresh_view();
         let (all, delete, enter, esc, up, down, shift_up, shift_down) = ctx.input_mut(|i| {
             (
                 i.consume_key(Modifiers::COMMAND, Key::A),
@@ -538,6 +550,25 @@ impl CitroApp {
                             b.save_profile(p).map(|_| ())
                         });
                     }
+                    Field::Serial => {
+                        let Ok(n) = text.parse::<u64>() else {
+                            self.toast(ToastKind::Warn, "The number must be a whole number, 1 or more");
+                            return;
+                        };
+                        if n == 0 || n == row.profile.serial_number {
+                            return;
+                        }
+                        let old = row.profile.serial_number;
+                        for r in self.rows.iter_mut() {
+                            if r.id() == id {
+                                r.profile.serial_number = n;
+                            } else if r.profile.serial_number == n {
+                                r.profile.serial_number = old;
+                            }
+                        }
+                        self.rows_version += 1;
+                        self.run_op(Vec::new(), format!("Now No. {n}"), Refresh::ROWS, move |b| b.set_serial(&id, n));
+                    }
                     Field::Remark => {
                         if text == row.profile.remark.trim() {
                             return;
@@ -566,23 +597,7 @@ impl CitroApp {
                     self.check_row_proxy(id, None);
                 }
             }
-            Act::SetProxy(id, text) => {
-                let cfg = if text.trim().is_empty() {
-                    ProxyConfig { proxy_soft: Some("no_proxy".into()), ..Default::default() }
-                } else {
-                    match crate::proxy::parse(text.trim()) {
-                        Ok(pp) => crate::proxy::to_config(&pp, crate::proxy::ProxyKind::Http),
-                        Err(e) => {
-                            if let Some(pe) = self.profiles.proxy_edit.as_mut().filter(|pe| pe.0 == id) {
-                                pe.2 = Some(e);
-                            }
-                            return;
-                        }
-                    }
-                };
-                self.profiles.proxy_edit = None;
-                self.check_row_proxy(id, Some(cfg));
-            }
+            Act::EditProxy(id) => self.open_proxy_dialog(&id),
             Act::SaveRemark(id, text) => {
                 let text = text.trim_end().to_owned();
                 self.profiles.remark_edit = None;
@@ -622,7 +637,19 @@ impl CitroApp {
 
     /// Check a profile's proxy from the list; with `new`, save that proxy first. A working proxy's exit IP and
     /// country are kept on the profile (the IP column and the persona's language and time zone follow them).
-    fn check_row_proxy(&mut self, id: String, new: Option<ProxyConfig>) {
+    pub(super) fn check_row_proxy(&mut self, id: String, new: Option<ProxyConfig>) {
+        if let Some(cfg) = new.clone().filter(|c| c.hop().is_none()) {
+            // no proxy: only save it, there is nothing to check
+            self.profiles.checks.remove(&id);
+            let id2 = id.clone();
+            self.run_op(Vec::new(), "Proxy removed".into(), Refresh::ROWS, move |b| {
+                let mut p = b.profile(&id2)?;
+                p.user_proxy_config = cfg;
+                p.ip.clear();
+                b.save_profile(p).map(|_| ())
+            });
+            return;
+        }
         self.profiles.checks.insert(id.clone(), None);
         self.tasks.spawn(true, move |w| {
             let result = (|| {
@@ -675,7 +702,7 @@ impl CitroApp {
         let mut acts: Vec<Act> = Vec::new();
         {
             let CitroApp { rows, groups, tags, busy, last_error, profiles, .. } = &mut *self;
-            let State { view, selection, query: q, inline, proxy_edit, remark_edit, checks, .. } = profiles;
+            let State { view, selection, query: q, inline, remark_edit, checks, widths, h_off, .. } = profiles;
             let view: &Vec<usize> = view;
             let all_selected = {
                 let ids: Vec<String> = view.iter().map(|&i| rows[i].id().to_owned()).collect();
@@ -683,76 +710,175 @@ impl CitroApp {
             };
             let some_selected = !selection.is_empty();
             let body_h = (ui.available_height() - FOOTER_H).max(140.0);
-            ui.allocate_ui(vec2(ui.available_width(), body_h), |ui| {
-                {
-                    // no sideways scrolling: the tick boxes on the left and Open on the right always stay in view,
-                    // and the columns in between share the width (drag a header edge to resize one)
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    // the table reads a notch smaller than the rest of the app
-                    if let Some(f) = ui.style_mut().text_styles.get_mut(&TextStyle::Body) {
-                        f.size = 13.0;
+            let area = Rect::from_min_size(ui.available_rect_before_wrap().min, vec2(ui.available_width(), body_h));
+            ui.allocate_rect(area, Sense::hover());
+            let mut table_ui = ui.new_child(
+                UiBuilder::new().max_rect(area).layout(Layout::top_down(Align::Min)).id_salt("profiles-table"),
+            );
+            let ui = &mut table_ui;
+            ui.set_clip_rect(area.intersect(ui.clip_rect()));
+            ui.spacing_mut().item_spacing = vec2(4.0, 0.0);
+            // the table reads a notch smaller than the rest of the app
+            if let Some(f) = ui.style_mut().text_styles.get_mut(&TextStyle::Body) {
+                f.size = 13.0;
+            }
+
+            // Columns: the tick box pinned on the left, Operation pinned on the right, the rest in between scrolls
+            // sideways under them (a trackpad swipe, Shift + wheel, or the bar at the bottom).
+            if widths.len() != COL_W.len() {
+                *widths = COL_W.to_vec();
+            }
+            let mid_x0 = area.left() + LEFT_W;
+            let right_x1 = area.right() - GUTTER;
+            let right_x0 = right_x1 - RIGHT_W;
+            let mid_w = (right_x0 - mid_x0).max(40.0);
+            let mut eff = widths.clone();
+            let natural: f32 = eff.iter().sum();
+            if natural < mid_w {
+                eff[REMARK] += mid_w - natural; // room to spare goes to the remark
+            }
+            let content: f32 = eff.iter().sum();
+            let max_off = (content - mid_w).max(0.0);
+            if ui.rect_contains_pointer(area) {
+                let dx = ui.input(|i| i.smooth_scroll_delta.x);
+                if dx != 0.0 {
+                    *h_off -= dx;
+                }
+            }
+            *h_off = h_off.clamp(0.0, max_off);
+            let mut xs = vec![(area.left(), mid_x0)];
+            let mut x = mid_x0 - *h_off;
+            for w in &eff {
+                xs.push((x, x + w));
+                x += w;
+            }
+            xs.push((right_x0, right_x1));
+            let last = xs.len() - 1;
+            let clips: Vec<(f32, f32)> = xs
+                .iter()
+                .enumerate()
+                .map(|(i, &(a, b))| if i == 0 || i == last { (a, b) } else { (a.max(mid_x0), b.min(right_x0)) })
+                .collect();
+
+            // the header: it stays put while the rows scroll
+            let head_rect = Rect::from_x_y_ranges(area.x_range(), area.top()..=area.top() + HEAD_H);
+            ui.painter().rect_filled(head_rect, CornerRadius::same(8), p.raised);
+            {
+                let mut header = RowCells {
+                    ui,
+                    key: usize::MAX,
+                    y: (head_rect.top(), head_rect.bottom()),
+                    xs: &xs,
+                    clips: &clips,
+                    i: 0,
+                };
+                header.col(|ui| {
+                    let tip = if all_selected { "Select none" } else { "Select all (Ctrl+A)" };
+                    let mixed = some_selected && !all_selected;
+                    if widgets::checkbox(ui, &p, all_selected, mixed).on_hover_text(tip).clicked() {
+                        acts.push(Act::ToggleAll);
                     }
-                    TableBuilder::new(ui)
-                        .id_salt("profiles-table")
-                        .striped(true)
-                        .resizable(true)
-                        .sense(Sense::click())
-                        .cell_layout(Layout::left_to_right(Align::Center))
-                        .min_scrolled_height(120.0)
-                        .column(Column::exact(28.0).resizable(false))
-                        .column(Column::initial(42.0).at_least(30.0).clip(true))
-                        .column(Column::initial(72.0).at_least(40.0).clip(true))
-                        .column(Column::initial(160.0).at_least(80.0).clip(true))
-                        .column(Column::initial(92.0).at_least(56.0).clip(true))
-                        .column(Column::initial(118.0).at_least(56.0).clip(true))
-                        .column(Column::initial(160.0).at_least(100.0).clip(true))
-                        .column(Column::remainder().at_least(80.0).clip(true))
-                        .column(Column::initial(80.0).at_least(60.0).clip(true))
-                        .column(Column::initial(96.0).at_least(70.0).clip(true))
-                        .column(Column::exact(112.0).resizable(false))
-                        .header(HEAD_H, |mut header| {
-                            header.col(|ui| {
-                                let tip = if all_selected { "Select none" } else { "Select all (Ctrl+A)" };
-                                let mixed = some_selected && !all_selected;
-                                if widgets::checkbox(ui, &p, all_selected, mixed).on_hover_text(tip).clicked() {
-                                    acts.push(Act::ToggleAll);
-                                }
-                            });
-                            head(&mut header, &p, q, "No.", Some(SortKey::Serial), &mut acts);
-                            head(&mut header, &p, q, "ID", None, &mut acts);
-                            head(&mut header, &p, q, "Name", Some(SortKey::Name), &mut acts);
-                            head(&mut header, &p, q, "Group", Some(SortKey::Group), &mut acts);
-                            head(&mut header, &p, q, "Tags", None, &mut acts);
-                            head(&mut header, &p, q, "IP", Some(SortKey::Proxy), &mut acts);
-                            head(&mut header, &p, q, "Remark", Some(SortKey::Remark), &mut acts);
-                            head(&mut header, &p, q, "Created", Some(SortKey::Created), &mut acts);
-                            head(&mut header, &p, q, "Last opened", Some(SortKey::LastOpened), &mut acts);
-                            head(&mut header, &p, q, "Operation", None, &mut acts);
-                        })
-                        .body(|body| {
-                            body.rows(ROW_H, view.len(), |mut row| {
-                                let vi = row.index();
+                });
+                head(&mut header, &p, q, "No.", Some(SortKey::Serial), &mut acts);
+                head(&mut header, &p, q, "ID", None, &mut acts);
+                head(&mut header, &p, q, "Name", Some(SortKey::Name), &mut acts);
+                head(&mut header, &p, q, "Group", Some(SortKey::Group), &mut acts);
+                head(&mut header, &p, q, "Tags", None, &mut acts);
+                head(&mut header, &p, q, "IP", Some(SortKey::Proxy), &mut acts);
+                head(&mut header, &p, q, "Remark", Some(SortKey::Remark), &mut acts);
+                head(&mut header, &p, q, "Created", Some(SortKey::Created), &mut acts);
+                head(&mut header, &p, q, "Last opened", Some(SortKey::LastOpened), &mut acts);
+                head(&mut header, &p, q, "Operation", None, &mut acts);
+            }
+            // drag the short line between two headers to resize a column (lines in the header only)
+            for i in 0..eff.len() {
+                let x = xs[i + 1].1;
+                if x <= mid_x0 + 2.0 || x >= right_x0 - 1.0 {
+                    continue;
+                }
+                let hr = Rect::from_x_y_ranges(x - 5.0..=x + 5.0, head_rect.top() + 4.0..=head_rect.bottom() - 4.0);
+                let r = ui.interact(hr, ui.scope_id().with(("col-resize", i)), Sense::drag());
+                let hot = r.hovered() || r.dragged();
+                if hot {
+                    ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+                }
+                if r.dragged() {
+                    widths[i] = (eff[i] + r.drag_delta().x).max(COL_MIN[i]);
+                }
+                let col = if hot { p.accent_hover } else { p.border_strong };
+                ui.painter().vline(x, (head_rect.top() + 12.0)..=(head_rect.bottom() - 12.0), Stroke::new(1.0, col));
+            }
+
+            // the rows
+            let body_rect =
+                Rect::from_x_y_ranges(area.x_range(), (head_rect.bottom() + 2.0)..=(area.bottom() - SCROLL_H));
+            let n = view.len();
+            let stripe = ui.visuals().faint_bg_color;
+            ui.scope_builder(UiBuilder::new().max_rect(body_rect), |ui| {
+                ScrollArea::vertical().id_salt("profiles-body").auto_shrink([false, false]).show_rows(
+                    ui,
+                    ROW_H,
+                    n,
+                    |ui, range| {
+                        for vi in range {
+                            let (rect, row_resp) =
+                                ui.allocate_exact_size(vec2(body_rect.width(), ROW_H), Sense::click());
+                            {
                                 let r = &rows[view[vi]];
                                 let id = r.id().to_owned();
                                 let pr = &r.profile;
                                 let selected = selection.contains(&id);
                                 let st = status_of(r, busy.get(&id).copied(), last_error.get(&id));
                                 let working = matches!(st, St::Busy(_));
-                                row.set_selected(selected);
+                                let row_hot = ui.rect_contains_pointer(rect);
+                                let fill = if selected {
+                                    p.accent.gamma_multiply(0.16)
+                                } else if row_hot {
+                                    p.hover
+                                } else if vi % 2 == 1 {
+                                    stripe
+                                } else {
+                                    Color32::TRANSPARENT
+                                };
+                                ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
+                                let mut row = RowCells {
+                                    ui,
+                                    key: vi,
+                                    y: (rect.top(), rect.bottom()),
+                                    xs: &xs,
+                                    clips: &clips,
+                                    i: 0,
+                                };
 
-                                cell(&mut row, |ui| {
+                                row.col(|ui| {
                                     if widgets::checkbox(ui, &p, selected, false).clicked() {
                                         acts.push(Act::ToggleCheck(id.clone()));
                                     }
                                 });
-                                cell(&mut row, |ui| {
-                                    ui.label(dim(&p, pr.serial_number.to_string()));
+                                row.col(|ui| {
+                                    if !inline_edit(ui, inline, &id, Field::Serial, &mut acts) {
+                                        let r = ui
+                                            .add(
+                                                egui::Label::new(dim(&p, pr.serial_number.to_string()))
+                                                    .sense(Sense::click()),
+                                            )
+                                            .on_hover_text(
+                                                "Double-click to change the number (sort by No. to put profiles first)",
+                                            );
+                                        if r.double_clicked() {
+                                            acts.push(Act::StartEdit(
+                                                id.clone(),
+                                                Field::Serial,
+                                                pr.serial_number.to_string(),
+                                            ));
+                                        }
+                                    }
                                 });
-                                cell(&mut row, |ui| {
+                                row.col(|ui| {
                                     ui.add(egui::Label::new(dim(&p, &id)).truncate());
                                 });
                                 // Name: the OS mark, then the name on up to two lines
-                                cell(&mut row, |ui| {
+                                row.col(|ui| {
                                     ui.spacing_mut().item_spacing.x = 8.0;
                                     os_mark(ui, &p, &pr.persona_os);
                                     if r.team.is_some() {
@@ -775,7 +901,7 @@ impl CitroApp {
                                     }
                                 });
                                 // Group: click to move the profile (or the selection it is part of)
-                                cell(&mut row, |ui| {
+                                row.col(|ui| {
                                     let label = group_label(groups, &pr.group_id);
                                     let t = if label == "Ungrouped" {
                                         dim(&p, label)
@@ -809,7 +935,7 @@ impl CitroApp {
                                     });
                                 });
                                 // Tags: colored chips; click to tick tags
-                                cell(&mut row, |ui| {
+                                row.col(|ui| {
                                     ui.spacing_mut().item_spacing.x = 4.0;
                                     let mine: Vec<&crate::backend::Tag> =
                                         pr.tags.iter().filter_map(|t| tags.iter().find(|x| &x.id == t)).collect();
@@ -867,9 +993,9 @@ impl CitroApp {
                                         }
                                     });
                                 });
-                                // IP: the exit address (the proxy's until a check or a launch knows better), the
-                                // country; a click opens the proxy: change it, check it
-                                cell(&mut row, |ui| {
+                                // IP: the check arrows, the proxy type, the exit address and (on a hovered row) the
+                                // edit mark; the country under it
+                                row.col(|ui| {
                                     let hop = pr.user_proxy_config.hop();
                                     let ip = if !pr.ip.trim().is_empty() {
                                         pr.ip.trim().to_owned()
@@ -890,146 +1016,79 @@ impl CitroApp {
                                         None => "No proxy: the browser connects directly".to_owned(),
                                     };
                                     let check = checks.get(&id);
-                                    let resp = ui
-                                        .vertical(|ui| {
-                                            ui.spacing_mut().item_spacing.y = 2.0;
-                                            ui.horizontal(|ui| {
-                                                ui.spacing_mut().item_spacing.x = 6.0;
-                                                match check {
-                                                    Some(None) => {
-                                                        ui.add(egui::Spinner::new().size(10.0));
-                                                    }
-                                                    Some(Some(Ok(c))) if c.ok => widgets::dot(ui, p.ok, false),
-                                                    Some(Some(_)) => widgets::dot(ui, p.err, false),
-                                                    None => {}
-                                                }
-                                                let (tag, col) = match &hop {
-                                                    Some(h) => (h.scheme.to_uppercase(), p.accent_hover),
-                                                    None => ("DIRECT".to_owned(), p.dim),
+                                    ui.vertical(|ui| {
+                                        ui.spacing_mut().item_spacing.y = 3.0;
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 6.0;
+                                            // the two arrows: check the proxy (green / red once checked)
+                                            if matches!(check, Some(None)) {
+                                                ui.add_sized(vec2(16.0, 14.0), egui::Spinner::new().size(11.0));
+                                            } else {
+                                                let tint = match check {
+                                                    Some(Some(Ok(c))) if c.ok => p.ok,
+                                                    Some(Some(_)) => p.err,
+                                                    _ => p.dim,
                                                 };
-                                                ui.label(
-                                                    RichText::new(tag)
-                                                        .size(9.5)
-                                                        .family(theme::semibold_family())
-                                                        .color(col),
+                                                let tip = match check {
+                                                    Some(Some(Ok(c))) if c.ok => format!(
+                                                        "Works: exit IP {} \u{b7} {} ms\nClick to check again",
+                                                        c.ip, c.latency_ms
+                                                    ),
+                                                    Some(Some(Ok(c))) => format!("{}\nClick to check again", c.message),
+                                                    Some(Some(Err(e))) => format!("{e}\nClick to check again"),
+                                                    _ => "Check the proxy".to_owned(),
+                                                };
+                                                if swap_arrows(ui, tint, hop.is_some()).on_hover_text(tip).clicked() {
+                                                    acts.push(Act::CheckProxy(vec![id.clone()]));
+                                                }
+                                            }
+                                            let (tag, col) = match &hop {
+                                                Some(h) => (h.scheme.to_uppercase(), p.accent_hover),
+                                                None => ("DIRECT".to_owned(), p.dim),
+                                            };
+                                            ui.label(
+                                                RichText::new(tag)
+                                                    .size(9.5)
+                                                    .family(theme::semibold_family())
+                                                    .color(col),
+                                            );
+                                            let main = if ip.is_empty() {
+                                                dim(&p, "\u{2013}")
+                                            } else {
+                                                RichText::new(&ip).color(p.strong)
+                                            };
+                                            ui.add(egui::Label::new(main).truncate()).on_hover_text(&current);
+                                            if row_hot {
+                                                let (r, resp) =
+                                                    ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+                                                let tint = if resp.hovered() { p.accent } else { p.accent_hover };
+                                                widgets::paint_icon_scaled(
+                                                    ui.painter(),
+                                                    r.center(),
+                                                    Icon::Edit,
+                                                    tint,
+                                                    0.62,
                                                 );
-                                                let main = if ip.is_empty() {
-                                                    dim(&p, "\u{2013}")
-                                                } else {
-                                                    RichText::new(&ip).color(p.strong)
-                                                };
-                                                ui.add(egui::Label::new(main).truncate());
-                                            });
-                                            if !place.is_empty() {
-                                                ui.add(egui::Label::new(small_dim(&p, &place)).truncate());
-                                            }
-                                        })
-                                        .response
-                                        .interact(Sense::click())
-                                        .on_hover_cursor(CursorIcon::PointingHand)
-                                        .on_hover_text(format!("{current}\nClick to change or check the proxy"));
-                                    Popup::menu(&resp).close_behavior(PopupCloseBehavior::CloseOnClickOutside).show(
-                                        |ui| {
-                                            ui.set_width(380.0);
-                                            ui.spacing_mut().item_spacing.y = 8.0;
-                                            ui.label(widgets::semibold("Proxy", 14.0));
-                                            ui.add(egui::Label::new(dim(&p, &current)).wrap());
-                                            match check {
-                                                Some(None) => {
-                                                    ui.horizontal(|ui| {
-                                                        ui.add(egui::Spinner::new().size(12.0));
-                                                        ui.label(dim(&p, "Checking\u{2026}"));
-                                                    });
-                                                }
-                                                Some(Some(Ok(c))) if c.ok => {
-                                                    let place = countries::name(&c.country.to_ascii_lowercase())
-                                                        .map(|n| format!(" \u{b7} {n}"))
-                                                        .unwrap_or_default();
-                                                    ui.label(
-                                                        RichText::new(format!(
-                                                            "\u{2713} Works: exit IP {}{place} \u{b7} {} ms",
-                                                            c.ip, c.latency_ms
-                                                        ))
-                                                        .color(p.ok),
-                                                    );
-                                                }
-                                                Some(Some(Ok(c))) => {
-                                                    ui.add(
-                                                        egui::Label::new(
-                                                            RichText::new(format!("\u{2717} {}", c.message))
-                                                                .color(p.err),
-                                                        )
-                                                        .wrap(),
-                                                    );
-                                                }
-                                                Some(Some(Err(e))) => {
-                                                    ui.add(
-                                                        egui::Label::new(
-                                                            RichText::new(format!("\u{2717} {e}")).color(p.err),
-                                                        )
-                                                        .wrap(),
-                                                    );
-                                                }
-                                                None => {}
-                                            }
-                                            if hop.is_some()
-                                                && ui
-                                                    .add_enabled(
-                                                        !matches!(check, Some(None)),
-                                                        Button::new("Check this proxy"),
-                                                    )
+                                                if resp
+                                                    .on_hover_cursor(CursorIcon::PointingHand)
+                                                    .on_hover_text("Edit the proxy")
                                                     .clicked()
-                                            {
-                                                acts.push(Act::CheckProxy(vec![id.clone()]));
-                                            }
-                                            ui.separator();
-                                            ui.label(small_dim(&p, "New proxy"));
-                                            if proxy_edit.as_ref().is_none_or(|pe| pe.0 != id) {
-                                                *proxy_edit = Some((id.clone(), String::new(), None));
-                                            }
-                                            if let Some(pe) = proxy_edit.as_mut() {
-                                                let r = ui.add(
-                                                    egui::TextEdit::singleline(&mut pe.1)
-                                                        .hint_text(
-                                                            "socks5://user:pass@host:port or host:port:user:pass",
-                                                        )
-                                                        .font(egui::TextStyle::Monospace)
-                                                        .desired_width(f32::INFINITY),
-                                                );
-                                                if r.changed() {
-                                                    pe.2 = None;
+                                                {
+                                                    acts.push(Act::EditProxy(id.clone()));
                                                 }
-                                                if let Some(e) = &pe.2 {
-                                                    ui.add(
-                                                        egui::Label::new(RichText::new(e).color(p.err).size(12.0))
-                                                            .wrap(),
-                                                    );
-                                                }
-                                                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                                                ui.horizontal(|ui| {
-                                                    let ok = !pe.1.trim().is_empty();
-                                                    if widgets::primary_button(ui, &p, "Save and check", ok).clicked()
-                                                        || (enter && ok)
-                                                    {
-                                                        acts.push(Act::SetProxy(id.clone(), pe.1.clone()));
-                                                    }
-                                                    if hop.is_some() && ui.button("No proxy").clicked() {
-                                                        acts.push(Act::SetProxy(id.clone(), String::new()));
-                                                        ui.close();
-                                                    }
+                                            }
+                                        });
+                                        if !place.is_empty() {
+                                            egui::Frame::NONE
+                                                .inner_margin(egui::Margin { left: 22, ..Default::default() })
+                                                .show(ui, |ui| {
+                                                    ui.add(egui::Label::new(small_dim(&p, &place)).truncate());
                                                 });
-                                            }
-                                            if matches!(st, St::Open { .. }) {
-                                                ui.label(small_dim(
-                                                    &p,
-                                                    "A new proxy applies the next time the profile opens.",
-                                                ));
-                                            }
-                                        },
-                                    );
+                                        }
+                                    });
                                 });
                                 // Remark: a click shows the whole text to read, select, copy or change
-                                cell(&mut row, |ui| {
+                                row.col(|ui| {
                                     if inline_edit(ui, inline, &id, Field::Remark, &mut acts) {
                                         return;
                                     }
@@ -1077,7 +1136,7 @@ impl CitroApp {
                                         },
                                     );
                                 });
-                                cell(&mut row, |ui| {
+                                row.col(|ui| {
                                     if pr.created_time > 0 {
                                         let d = timefmt::DateTime::from_unix(pr.created_time, offset);
                                         ui.vertical(|ui| {
@@ -1097,7 +1156,7 @@ impl CitroApp {
                                     }
                                 });
                                 // last opened, or what is going on right now
-                                cell(&mut row, |ui| match &st {
+                                row.col(|ui| match &st {
                                     St::Closed => {
                                         let ts = pr.last_open_time;
                                         let t = if ts <= 0 {
@@ -1114,7 +1173,7 @@ impl CitroApp {
                                     other => status_cell(ui, &p, other, now, offset),
                                 });
                                 let mut more: Option<Response> = None;
-                                cell(&mut row, |ui| {
+                                row.col(|ui| {
                                     ui.spacing_mut().item_spacing.x = 6.0;
                                     match &st {
                                         St::Open { .. } => {
@@ -1193,6 +1252,10 @@ impl CitroApp {
                                         acts.push(Act::Duplicate(id.clone()));
                                         ui.close();
                                     }
+                                    if ui.add_enabled(n == 1, Button::new("Edit proxy\u{2026}")).clicked() {
+                                        acts.push(Act::EditProxy(id.clone()));
+                                        ui.close();
+                                    }
                                     if ui.button(many("Check proxy")).clicked() {
                                         acts.push(Act::CheckProxy(targets.clone()));
                                         ui.close();
@@ -1224,7 +1287,7 @@ impl CitroApp {
                                     }
                                 };
 
-                                let resp = row.response();
+                                let resp = row_resp;
                                 if resp.secondary_clicked() && !selected {
                                     acts.push(Act::Context(vi));
                                 }
@@ -1240,10 +1303,46 @@ impl CitroApp {
                                     }
                                     Popup::menu(m).show(|ui| menu(ui, &mut acts));
                                 }
-                            });
-                        });
-                }
+                            }
+                        }
+                    },
+                );
             });
+
+            // a soft shadow where the scrolled columns slide under the pinned ones
+            let y = area.top()..=body_rect.bottom();
+            let shade = |x: f32, dir: f32| {
+                for k in 0..8 {
+                    let a = (40 - k * 5) as u8;
+                    ui.painter().vline(x + dir * k as f32, y.clone(), Stroke::new(1.0, Color32::from_black_alpha(a)));
+                }
+            };
+            if *h_off > 0.5 {
+                shade(mid_x0, 1.0);
+            }
+            if *h_off < max_off - 0.5 {
+                shade(right_x0, -1.0);
+            }
+            // the sideways scroll bar
+            if max_off > 0.0 {
+                let track =
+                    Rect::from_x_y_ranges(mid_x0..=right_x0, (area.bottom() - SCROLL_H + 4.0)..=(area.bottom() - 2.0));
+                let tw = (mid_w * mid_w / content).max(40.0);
+                let room = (mid_w - tw).max(1.0);
+                let tx = mid_x0 + (*h_off / max_off) * room;
+                let thumb = Rect::from_x_y_ranges(tx..=tx + tw, track.y_range());
+                let r = ui.interact(track, ui.scope_id().with("h-scroll"), Sense::click_and_drag());
+                if r.dragged() {
+                    *h_off = (*h_off + r.drag_delta().x * max_off / room).clamp(0.0, max_off);
+                } else if r.clicked()
+                    && let Some(pos) = r.interact_pointer_pos()
+                {
+                    *h_off = ((pos.x - mid_x0 - tw / 2.0) / room * max_off).clamp(0.0, max_off);
+                }
+                let hot = r.hovered() || r.dragged();
+                ui.painter().rect_filled(track, CornerRadius::same(4), p.raised);
+                ui.painter().rect_filled(thumb, CornerRadius::same(4), if hot { p.dim } else { p.border_strong });
+            }
         }
         ui.add_space(6.0);
         ui.horizontal(|ui| {
@@ -1261,12 +1360,55 @@ impl CitroApp {
     }
 }
 
-/// A table cell whose text keeps the normal colour even in a selected row.
-fn cell(row: &mut TableRow<'_, '_>, add: impl FnOnce(&mut Ui)) {
-    row.col(|ui| {
-        ui.visuals_mut().override_text_color = None;
-        add(ui);
-    });
+/// The two arrows (⇄) that check a proxy.
+fn swap_arrows(ui: &mut Ui, tint: Color32, enabled: bool) -> Response {
+    let (r, resp) = ui.allocate_exact_size(vec2(16.0, 14.0), if enabled { Sense::click() } else { Sense::hover() });
+    let tint = if enabled && resp.hovered() {
+        tint.gamma_multiply(1.4)
+    } else if enabled {
+        tint
+    } else {
+        tint.gamma_multiply(0.4)
+    };
+    let st = Stroke::new(1.3, tint);
+    let g = ui.painter();
+    let (l, rr, c) = (r.left() + 1.0, r.right() - 1.0, r.center().y);
+    // upper arrow to the right, lower arrow to the left
+    g.line_segment([pos2(l, c - 3.0), pos2(rr, c - 3.0)], st);
+    g.line_segment([pos2(rr - 3.5, c - 6.0), pos2(rr, c - 3.0)], st);
+    g.line_segment([pos2(l, c + 3.0), pos2(rr, c + 3.0)], st);
+    g.line_segment([pos2(l + 3.5, c + 6.0), pos2(l, c + 3.0)], st);
+    if enabled { resp.on_hover_cursor(CursorIcon::PointingHand) } else { resp }
+}
+
+/// One row of the profile table: hands out a clipped child `Ui` per column, left to right.
+struct RowCells<'u, 'a> {
+    ui: &'u mut Ui,
+    /// Unique per row (the header is `usize::MAX`), so widgets in different rows get different ids.
+    key: usize,
+    y: (f32, f32),
+    xs: &'a [(f32, f32)],
+    clips: &'a [(f32, f32)],
+    i: usize,
+}
+
+impl RowCells<'_, '_> {
+    fn col(&mut self, add: impl FnOnce(&mut Ui)) {
+        let i = self.i;
+        self.i += 1;
+        let ((x0, x1), (c0, c1)) = (self.xs[i], self.clips[i]);
+        if c1 - c0 < 1.0 {
+            return; // scrolled out of view
+        }
+        let rect =
+            Rect::from_x_y_ranges((x0 + CELL_PAD)..=(x1 - CELL_PAD).max(x0 + CELL_PAD + 1.0), self.y.0..=self.y.1);
+        let clip = Rect::from_x_y_ranges(c0..=c1, self.y.0..=self.y.1).intersect(self.ui.clip_rect());
+        let mut child = self.ui.new_child(
+            UiBuilder::new().max_rect(rect).layout(Layout::left_to_right(Align::Center)).id_salt(("cell", self.key, i)),
+        );
+        child.set_clip_rect(clip);
+        add(&mut child);
+    }
 }
 
 fn status_cell(ui: &mut Ui, p: &Palette, st: &St, now: i64, offset: i32) {

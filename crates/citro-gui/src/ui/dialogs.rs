@@ -64,6 +64,8 @@ impl CitroApp {
             self.move_modal(ctx);
         } else if self.remark_dlg.is_some() {
             self.remark_modal(ctx);
+        } else if self.proxy_dlg.is_some() {
+            self.proxy_modal(ctx);
         } else if self.profiles.tags_for.is_some() {
             self.tags_modal(ctx);
         } else if self.update.dialog {
@@ -231,6 +233,11 @@ impl CitroApp {
             danger: false,
             action: ConfirmAction::ClearCache(ids),
         });
+    }
+
+    #[cfg(test)]
+    pub fn test_run_confirm(&mut self) {
+        self.run_confirm();
     }
 
     fn run_confirm(&mut self) {

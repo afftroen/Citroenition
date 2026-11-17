@@ -435,6 +435,10 @@ pub trait Backend: Send + Sync {
     fn save_profile(&self, p: Profile) -> BResult<Profile>;
     fn delete_profiles(&self, ids: &[String]) -> BResult<()>;
     fn set_remark(&self, id: &str, text: &str) -> BResult<()>;
+    /// Give the profile another number (No.); the profile that had it takes the old one.
+    fn set_serial(&self, _id: &str, _n: u64) -> BResult<()> {
+        Err(BackendError::Unsupported("changing the number".into()))
+    }
     /// `group` is a group id; `"0"` = Ungrouped.
     fn move_to_group(&self, ids: &[String], group: &str) -> BResult<()>;
     fn duplicate_profile(&self, id: &str) -> BResult<Profile>;

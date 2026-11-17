@@ -75,6 +75,14 @@ pub enum Msg {
         id: String,
         result: BResult<String>,
     },
+    ProxyDialogLoaded {
+        id: String,
+        result: BResult<citro_core::profile::Profile>,
+    },
+    ProxyDialogChecked {
+        token: u64,
+        result: BResult<ProxyCheck>,
+    },
     /// A proxy checked from the profile list.
     RowProxyChecked {
         id: String,

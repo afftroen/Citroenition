@@ -12,6 +12,7 @@ pub mod kernel;
 pub mod logs;
 pub mod messages;
 pub mod profiles;
+pub mod proxy_dialog;
 pub mod settings;
 pub mod shell;
 pub mod shot;
@@ -23,3 +24,5 @@ pub mod update;
 pub mod widgets;
 
 pub use app::{AppOptions, CitroApp, Page};
+#[cfg(test)]
+mod headless_tests;

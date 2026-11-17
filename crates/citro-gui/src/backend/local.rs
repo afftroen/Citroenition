@@ -348,6 +348,11 @@ impl Backend for LocalBackend {
         Ok(())
     }
 
+    fn set_serial(&self, id: &str, n: u64) -> BResult<()> {
+        store::locked(&self.home, |s| s.set_serial(id, n))?;
+        Ok(())
+    }
+
     fn set_remark(&self, id: &str, text: &str) -> BResult<()> {
         let text = text.trim_end().to_owned();
         citro_sync::edit(&self.home, id, |_, p| {

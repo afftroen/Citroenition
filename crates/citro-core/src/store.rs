@@ -214,6 +214,25 @@ impl Store {
         Ok(p)
     }
 
+    /// Give the profile number `n` (the list is sorted by it). The profile that had `n` takes over the old number,
+    /// so numbers stay unique.
+    pub fn set_serial(&mut self, key: &str, n: u64) -> Result<()> {
+        if n == 0 {
+            return Err(Error::Invalid("the number must be 1 or more".into()));
+        }
+        let id = self.get(key)?.profile_id.clone();
+        let old = self.get(key)?.serial_number;
+        for p in self.data.profiles.iter_mut() {
+            if p.profile_id == id {
+                p.serial_number = n;
+            } else if p.serial_number == n {
+                p.serial_number = old;
+            }
+        }
+        self.data.next_serial = self.data.next_serial.max(n + 1);
+        self.save()
+    }
+
     /// Insert or replace a profile that comes from a team hub, **keeping its id** (the id is the persona seed: it
     /// must be the same on every device). A profile that exists already keeps its local serial number, creation
     /// time and the newer of the two open/close times; a new one gets the next serial number.
@@ -535,6 +554,23 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("citro-store-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         Home { root: dir }
+    }
+
+    #[test]
+    fn a_new_number_swaps_with_the_profile_that_had_it() {
+        let home = tmp_home("serial");
+        let _g = lock(&home).unwrap();
+        let mut s = Store::open(&home).unwrap();
+        let a = s.create(Profile { name: "a".into(), ..Default::default() }).unwrap();
+        let b = s.create(Profile { name: "b".into(), ..Default::default() }).unwrap();
+        s.set_serial(&b.profile_id, 1).unwrap();
+        let s = Store::open(&home).unwrap();
+        assert_eq!((s.get(&b.profile_id).unwrap().serial_number, s.get(&a.profile_id).unwrap().serial_number), (1, 2));
+        let mut s = s;
+        s.set_serial(&a.profile_id, 40).unwrap();
+        assert!(s.set_serial(&a.profile_id, 0).is_err());
+        let c = s.create(Profile { name: "c".into(), ..Default::default() }).unwrap();
+        assert_eq!(c.serial_number, 41, "new profiles come after the highest number");
     }
 
     #[test]

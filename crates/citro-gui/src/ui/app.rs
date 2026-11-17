@@ -168,6 +168,7 @@ pub struct CitroApp {
     pub confirm: Option<Confirm>,
     pub move_dlg: Option<MoveDialog>,
     pub remark_dlg: Option<RemarkDialog>,
+    pub proxy_dlg: Option<super::proxy_dialog::ProxyDialog>,
     pub edit: Option<edit::EditDialog>,
     /// How many browsers are being closed on the way out.
     pub quit_count: usize,
@@ -234,6 +235,7 @@ impl CitroApp {
             confirm: None,
             move_dlg: None,
             remark_dlg: None,
+            proxy_dlg: None,
             edit: None,
             quit_count: 0,
             export: None,
@@ -495,6 +497,7 @@ impl CitroApp {
             || self.confirm.is_some()
             || self.move_dlg.is_some()
             || self.remark_dlg.is_some()
+            || self.proxy_dlg.is_some()
             || self.update.dialog
             || self.profiles.tags_for.is_some()
             || !self.failures.is_empty();

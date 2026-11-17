@@ -142,6 +142,8 @@ impl CitroApp {
                 }
             }
             Msg::RowProxyChecked { id, result } => self.row_proxy_checked(id, result),
+            Msg::ProxyDialogLoaded { id, result } => self.proxy_dialog_loaded(&id, result),
+            Msg::ProxyDialogChecked { token, result } => self.proxy_dialog_checked(token, result),
             Msg::ProxyChecked { token, result } => {
                 if let Some(d) = &mut self.edit {
                     d.proxy_checked(token, result.map_err(|e| e.to_string()));

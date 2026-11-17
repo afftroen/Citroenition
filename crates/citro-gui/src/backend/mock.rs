@@ -592,6 +592,24 @@ impl Backend for MockBackend {
         Ok(())
     }
 
+    fn set_serial(&self, id: &str, n: u64) -> BResult<()> {
+        let mut st = self.lock();
+        let old = st
+            .profiles
+            .iter()
+            .find(|p| p.profile_id == id)
+            .ok_or_else(|| BackendError::NotFound(id.into()))?
+            .serial_number;
+        for p in st.profiles.iter_mut() {
+            if p.profile_id == id {
+                p.serial_number = n;
+            } else if p.serial_number == n {
+                p.serial_number = old;
+            }
+        }
+        Ok(())
+    }
+
     fn set_remark(&self, id: &str, text: &str) -> BResult<()> {
         let mut st = self.lock();
         let p = st.profiles.iter_mut().find(|p| p.profile_id == id).ok_or_else(|| BackendError::NotFound(id.into()))?;
