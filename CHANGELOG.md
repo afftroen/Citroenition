@@ -2,6 +2,9 @@
 
 ## 0.1.3 (2026-11-17)
 
+This release also brings everything listed under 0.1.2 below (the new profile editor and the logo): the 0.1.2 build
+could not get a macOS runner from GitHub and was never published.
+
 **Update from inside the app.** Citroenition looks for a newer release on GitHub when it starts; the sidebar then shows
 **↑ Update to vX**, and Settings has an **Updates** card with **Check for updates**. **Update now** downloads the archive
 for this computer, checks its SHA-256 against the release's `SHA256SUMS`, unpacks it with the kernel installer's
