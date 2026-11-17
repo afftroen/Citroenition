@@ -1,0 +1,51 @@
+=== citro --version
+citro 0.1.1
+=== citro kernel install
+resolving the release and checking the signature of SHA256SUMS.txt...
+downloading 0.0 / 218.4 MiB (0%)
+downloading 30.5 / 218.4 MiB (13%)
+downloading 56.6 / 218.4 MiB (25%)
+downloading 66.9 / 218.4 MiB (30%)
+downloading 100.6 / 218.4 MiB (46%)
+downloading 115.5 / 218.4 MiB (52%)
+downloading 144.6 / 218.4 MiB (66%)
+downloading 159.8 / 218.4 MiB (73%)
+downloading 184.7 / 218.4 MiB (84%)
+downloading 197.8 / 218.4 MiB (90%)
+downloading 218.4 / 218.4 MiB (100%)
+verifying the archive against the signed checksum...
+extracting...
+installed 150.0.7871.114: /var/folders/2s/vty41l455yv698g4xkgfv7z00000gn/T/tmp.wbCnjnNErt/kernels/clearcote-150.0.7871.114/Chromium.app/Contents/MacOS/Chromium
+=== citro kernel status
+binary        /var/folders/2s/vty41l455yv698g4xkgfv7z00000gn/T/tmp.wbCnjnNErt/kernels/clearcote-150.0.7871.114/Chromium.app/Contents/MacOS/Chromium
+version       150.0.7871.114
+chrome major  150
+chromedriver  -
+=== citro new
+km6szna
+created profile 1 (smoke); open it with: citro open km6szna
+=== citro open 1 (a window)
+profile 1 (km6szna) is running
+  pid        11146
+  selenium   127.0.0.1:49714
+  puppeteer  ws://127.0.0.1:49714/devtools/browser/c56000c2-8f67-480d-b66c-abd2e755c188
+=== the browser answers on 127.0.0.1:49714
+{
+   "Browser": "Chrome/150.0.7871.114",
+   "Protocol-Version": "1.3",
+   "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+   "V8-Version": "15.0.245.15",
+   "WebKit-Version": "537.36 (@0000000000000000000000000000000000000000)",
+   "webSocketDebuggerUrl": "ws://127.0.0.1:49714/devtools/browser/c56000c2-8f67-480d-b66c-abd2e755c188"
+}
+user agent names the host OS (Macintosh): ok
+--- pages
+page  about:blank
+=== citro ps sees that process
+NO  ID       NAME   PID    PORT   UP
+1   km6szna  smoke  11146  49714  0m02s
+pid 11146 is alive
+=== citro close 1
+closed 1 (smoke)
+closed: pid 11146 is gone and ps is empty
+SMOKE-OK (window, Darwin arm64)

@@ -1,0 +1,50 @@
+citroenition-v0.1.1-aarch64-macos.tar.gz: OK
+citro 0.1.1
+citro-gui 0.1.1
+citro-hub 0.1.1
+citro-install 0.1.1
+citro: arm64
+  minos 12.0
+citro-hub: arm64
+  minos 12.0
+citro-install: arm64
+  minos 12.0
+Citroenition.app/Contents/MacOS/citro-gui: arm64
+  minos 12.0
+check/citroenition-v0.1.1-aarch64-macos/Citroenition.app: valid on disk
+check/citroenition-v0.1.1-aarch64-macos/Citroenition.app: satisfies its Designated Requirement
+Identifier=io.github.afftroen.citroenition
+Format=app bundle with Mach-O thin (arm64)
+CodeDirectory v=20400 size=102296 flags=0x2(adhoc) hashes=3190+3 location=embedded
+Signature=adhoc
+TeamIdentifier=not set
+check/citroenition-v0.1.1-aarch64-macos:
+total 35544
+-rw-r--r--  1 runner  staff     7856 Nov 17 04:51 CHANGELOG.md
+-rwxr-xr-x  1 runner  staff  8531568 Nov 17 04:51 citro
+lrwxr-xr-x  1 runner  staff       41 Nov 17 04:51 citro-gui -> Citroenition.app/Contents/MacOS/citro-gui
+-rwxr-xr-x  1 runner  staff  4400336 Nov 17 04:51 citro-hub
+-rwxr-xr-x  1 runner  staff  5198512 Nov 17 04:51 citro-install
+drwxr-xr-x  3 runner  staff       96 Nov 17 04:51 Citroenition.app
+drwxr-xr-x  8 runner  staff      256 Nov 17 04:51 docs
+-rw-r--r--  1 runner  staff    34752 Nov 17 04:51 docs.md
+-rw-r--r--  1 runner  staff     1065 Nov 17 04:51 LICENSE
+-rw-r--r--  1 runner  staff     4380 Nov 17 04:51 LICENSE-Inter.txt
+-rw-r--r--  1 runner  staff     3329 Nov 17 04:51 README.md
+
+check/citroenition-v0.1.1-aarch64-macos/Citroenition.app/Contents:
+total 8
+drwxr-xr-x  3 runner  staff   96 Nov 17 04:51 _CodeSignature
+-rw-r--r--  1 runner  staff  940 Nov 17 04:51 Info.plist
+drwxr-xr-x  3 runner  staff   96 Nov 17 04:51 MacOS
+drwxr-xr-x  3 runner  staff   96 Nov 17 04:51 Resources
+
+check/citroenition-v0.1.1-aarch64-macos/Citroenition.app/Contents/MacOS:
+total 25752
+-rwxr-xr-x  1 runner  staff  13183488 Nov 17 04:51 citro-gui
+API.md
+GUI.md
+HUB.md
+KERNEL.md
+REVERSE_ENGINEERING.md
+screenshots
