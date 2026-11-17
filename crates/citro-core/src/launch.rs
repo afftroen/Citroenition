@@ -129,6 +129,9 @@ const BASE_FLAGS: &[&str] = &[
     "--disable-renderer-backgrounding",
     // the Privacy Sandbox APIs a stock profile would expose and a persona should not
     "--disable-features=Translate,BrowsingTopics,BrowsingTopicsDocumentAPI,Fledge,InterestGroupStorage,PrivateAggregationApi,SharedStorageAPI,FencedFrames",
+    // Clearcote is built with DCHECKs (developer self-checks) that are fatal: a failed one turns the tab into "Aw, Snap!
+    // Error code: 6" (TikTok Ads, Gmail). Stable Chrome has none; with this they are only written to the log.
+    "--disable-features=DcheckIsFatal",
 ];
 
 const LIST_FLAGS: [&str; 4] =

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.11 (2026-11-18)
+
+* **No more "Aw, Snap! Error code: 6".** The Clearcote browser is built with Chromium's developer self-checks
+  (DCHECKs) switched on and fatal, so a check that failed on a busy page (TikTok Ads Manager while it uploads, Gmail
+  while it updates the page) crashed the tab. Every profile now launches with `--disable-features=DcheckIsFatal`: a
+  failed check is written to the browser log and the page keeps working, as in stable Chrome.
+
 ## 0.1.10 (2026-11-17)
 
 * **The red close button really closes the browser.** Citroenition now asks macOS whether the browser still has a
