@@ -594,7 +594,7 @@ Every response carries `Cache-Control: no-store` and `X-Content-Type-Options: no
 
 | Method and path | What it does | Needs |
 |---|---|---|
-| `GET /healthz` | `{"ok":true,"version":"0.1.0"}` | nothing |
+| `GET /healthz` | `{"ok":true,"version":"0.1.1"}` | nothing |
 | `GET /v1/me` | the user and their teams with the role in each | any token |
 | `GET /v1/teams`, `POST /v1/teams` | list; create `{"name"}` (hub operator; the creator becomes owner) | token / operator |
 | `GET /v1/teams/{team}/members`, `POST …` | list; add `{"user_name","role"}` | member / admin |

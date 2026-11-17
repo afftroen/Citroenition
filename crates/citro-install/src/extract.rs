@@ -63,12 +63,12 @@ pub(crate) struct Extracted {
     pub bytes: u64,
 }
 
-/// How entry names are split into components.
+/// How entry names are split into components, and whether symbolic links may be created.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Naming {
-    /// Only `/` separates components (tar on Unix).
+pub(crate) enum Naming {
+    /// Only `/` separates components (tar on Unix, and the zip of a macOS app bundle).
     Posix,
-    /// `\` separates too and `:` is refused (zip, and anything unpacked on Windows).
+    /// `\` separates too and `:` is refused; no links (a Windows zip, and anything unpacked on Windows).
     Windows,
 }
 
@@ -407,14 +407,18 @@ pub(crate) fn extract_tar_xz(archive: &Path, dest: &Path, limits: Limits) -> Res
 }
 
 /// Unpack the `.zip` file `archive` into the existing, empty directory `dest`.
-pub(crate) fn extract_zip(archive: &Path, dest: &Path, limits: Limits) -> Result<Extracted> {
+///
+/// `naming` says what made the archive: [`Naming::Windows`] (no symbolic links, `\` also separates) or
+/// [`Naming::Posix`] (a macOS app bundle, whose frameworks are built from relative symlinks such as
+/// `Versions/Current -> 150.0.7871.114`; links are held to the rules in the module docs).
+pub(crate) fn extract_zip(archive: &Path, dest: &Path, limits: Limits, naming: Naming) -> Result<Extracted> {
     let file = File::open(archive).context(|| format!("opening {}", archive.display()))?;
     let corrupt = |e: zip::result::ZipError| Error::BadArchive(e.to_string());
     let mut zip = zip::ZipArchive::new(BufReader::new(file)).map_err(corrupt)?;
     if zip.len() > limits.max_entries {
         return Err(Error::ArchiveLimit(format!("more than {} entries", limits.max_entries)));
     }
-    let mut up = Unpacker::new(dest, limits, Naming::Windows, Arc::new(AtomicBool::new(false)));
+    let mut up = Unpacker::new(dest, limits, naming, Arc::new(AtomicBool::new(false)));
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(corrupt)?;
         let size = entry.size();
@@ -422,7 +426,21 @@ pub(crate) fn extract_zip(archive: &Path, dest: &Path, limits: Limits) -> Result
         let name = entry.name_raw().to_vec();
         let mode = entry.unix_mode();
         if entry.is_symlink() {
-            return Err(bad_name(&name, "symbolic links are not allowed in zip archives"));
+            if naming == Naming::Windows {
+                return Err(bad_name(&name, "symbolic links are not allowed in zip archives"));
+            }
+            let rel = up.sanitize(&name)?;
+            if rel.as_os_str().is_empty() {
+                return Err(bad_name(&name, "a link cannot be the archive root"));
+            }
+            // the member's data is the link target; one byte more than the longest accepted name is enough to refuse it
+            let mut target = Vec::new();
+            (&mut entry)
+                .take(MAX_NAME_BYTES as u64 + 1)
+                .read_to_end(&mut target)
+                .map_err(|e| Error::BadArchive(format!("link `{}`: {e}", rel.display())))?;
+            up.make_symlink(&rel, &target)?;
+            continue;
         }
         // 0o100000 regular file, 0o040000 directory, 0 = no type recorded (archives made on Windows).
         if let Some(m) = mode
@@ -458,4 +476,142 @@ pub(crate) fn require_binary(dir: &Path, name: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::{ZipEntry, zip};
+
+    /// Unpack `entries` as a zip into a fresh directory; returns the directory (kept alive by the guard) and the result.
+    fn unzip(entries: &[ZipEntry], naming: Naming) -> (tempfile::TempDir, Result<Extracted>) {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("a.zip");
+        fs::write(&archive, zip(entries)).unwrap();
+        let out = dir.path().join("out");
+        fs::create_dir(&out).unwrap();
+        let r = extract_zip(&archive, &out, Limits::default(), naming);
+        (dir, r)
+    }
+
+    const FW: &str = "Chromium.app/Contents/Frameworks/Chromium Framework.framework";
+
+    /// The shape of Clearcote's macOS archive: an app bundle whose framework is held together by relative symlinks;
+    /// only some directories have an entry of their own.
+    fn bundle() -> Vec<ZipEntry> {
+        vec![
+            ZipEntry::dir("Chromium.app/"),
+            ZipEntry::dir("Chromium.app/Contents/"),
+            ZipEntry::file("Chromium.app/Contents/Info.plist", b"<plist/>"),
+            ZipEntry::exec("Chromium.app/Contents/MacOS/Chromium", b"\xcf\xfa\xed\xfe launcher"),
+            ZipEntry::exec(&format!("{FW}/Versions/150.0.1.2/Chromium Framework"), b"engine"),
+            ZipEntry::file(&format!("{FW}/Versions/150.0.1.2/Resources/en.lproj/x.pak"), b"pak"),
+            ZipEntry::symlink(&format!("{FW}/Versions/Current"), "150.0.1.2"),
+            ZipEntry::symlink(&format!("{FW}/Chromium Framework"), "Versions/Current/Chromium Framework"),
+            ZipEntry::symlink(&format!("{FW}/Resources"), "Versions/Current/Resources"),
+        ]
+    }
+
+    #[test]
+    fn a_macos_app_bundle_unpacks_with_its_links_and_exec_bits() {
+        let (dir, r) = unzip(&bundle(), Naming::Posix);
+        let stats = r.unwrap();
+        assert_eq!(stats.entries, bundle().len());
+        let out = dir.path().join("out");
+        let fw = out.join(FW);
+
+        // the links are links, with the targets the archive named, and they resolve
+        assert_eq!(fs::read_link(fw.join("Versions/Current")).unwrap(), Path::new("150.0.1.2"));
+        assert_eq!(
+            fs::read_link(fw.join("Chromium Framework")).unwrap(),
+            Path::new("Versions/Current/Chromium Framework")
+        );
+        assert_eq!(fs::read(fw.join("Chromium Framework")).unwrap(), b"engine");
+        assert_eq!(fs::read(fw.join("Resources/en.lproj/x.pak")).unwrap(), b"pak");
+
+        // the launcher is a regular executable file; the plist is not executable
+        require_binary(&out, "Chromium.app/Contents/MacOS/Chromium").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &str| fs::metadata(out.join(p)).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode("Chromium.app/Contents/MacOS/Chromium"), 0o755);
+            assert_eq!(mode("Chromium.app/Contents/Info.plist"), 0o644);
+        }
+        // a link is never accepted as the browser, even when it points at one
+        let e = require_binary(&out, &format!("{FW}/Chromium Framework")).unwrap_err();
+        assert!(matches!(e, Error::MissingBinary(_)), "{e}");
+    }
+
+    #[test]
+    fn links_in_a_windows_zip_are_still_refused() {
+        let (_dir, r) = unzip(&bundle(), Naming::Windows);
+        let e = r.unwrap_err();
+        assert!(matches!(&e, Error::UnsafeArchive(m) if m.contains("symbolic links")), "{e}");
+    }
+
+    #[test]
+    fn links_that_could_leave_the_install_are_refused() {
+        let bad: [(&str, &str, &str); 6] = [
+            ("absolute", "Chromium.app/a", "/etc/passwd"),
+            ("one level too far up", "Chromium.app/a", "../../x"),
+            ("up after a name", "Chromium.app/Contents/a", "b/../../../x"),
+            ("empty", "Chromium.app/a", ""),
+            ("a deep link going up past the root", "Chromium.app/Contents/Frameworks/a", "../../../../x"),
+            ("up to the root and beyond", "a", ".."),
+        ];
+        for (why, name, target) in bad {
+            let (_dir, r) = unzip(
+                &[ZipEntry::file("Chromium.app/Contents/x", b"x"), ZipEntry::symlink(name, target)],
+                Naming::Posix,
+            );
+            let e = r.expect_err(why);
+            assert!(matches!(e, Error::UnsafeArchive(_)), "{why}: {e}");
+        }
+        // an oversized target is refused, not buffered
+        let (_dir, r) = unzip(&[ZipEntry::symlink("a", &"x".repeat(100_000))], Naming::Posix);
+        assert!(matches!(r.unwrap_err(), Error::UnsafeArchive(_)));
+    }
+
+    #[test]
+    fn nothing_can_be_written_through_a_link_or_over_one() {
+        // `a -> b`, then a file below the link: the classic way out of the tree
+        let (dir, r) =
+            unzip(&[ZipEntry::dir("b/"), ZipEntry::symlink("a", "b"), ZipEntry::file("a/evil", b"x")], Naming::Posix);
+        assert!(matches!(r.unwrap_err(), Error::UnsafeArchive(m) if m.contains("below")));
+        assert!(!dir.path().join("out/b/evil").exists());
+        // the same path twice, as a link and as a directory (the zip writer refuses two identical names)
+        let (_dir, r) = unzip(&[ZipEntry::symlink("a", "b"), ZipEntry::dir("a/")], Naming::Posix);
+        assert!(matches!(r.unwrap_err(), Error::UnsafeArchive(m) if m.contains("twice")));
+        // a link in place of the archive root
+        let (_dir, r) = unzip(&[ZipEntry::symlink("./", "b")], Naming::Posix);
+        assert!(matches!(r.unwrap_err(), Error::UnsafeArchive(_)));
+    }
+
+    /// Clearcote's real macOS archive (about 230 MB, so not in the repository): download
+    /// `clearcote-<version>-macos-arm64.zip` from a release and run
+    /// `CITRO_REAL_MACOS_ZIP=<path> cargo test -p citro-install real_clearcote_macos -- --ignored`.
+    #[test]
+    #[ignore = "needs CITRO_REAL_MACOS_ZIP=<path to the real archive>"]
+    fn the_real_clearcote_macos_archive_unpacks() {
+        let archive = PathBuf::from(std::env::var_os("CITRO_REAL_MACOS_ZIP").expect("CITRO_REAL_MACOS_ZIP"));
+        let out = tempfile::tempdir().unwrap();
+        let stats = extract_zip(&archive, out.path(), Limits::default(), Naming::Posix).unwrap();
+        println!("{} entries, {} bytes", stats.entries, stats.bytes);
+        require_binary(out.path(), "Chromium.app/Contents/MacOS/Chromium").unwrap();
+        let fw = out.path().join("Chromium.app/Contents/Frameworks/Chromium Framework.framework");
+        let engine = fs::metadata(fw.join("Chromium Framework")).expect("the framework link resolves");
+        assert!(engine.len() > 100 << 20, "the engine is {} bytes", engine.len());
+        assert!(fs::symlink_metadata(fw.join("Versions/Current")).unwrap().file_type().is_symlink());
+    }
+
+    #[test]
+    fn names_in_a_unix_zip_may_hold_a_backslash_or_colon() {
+        // legal in a macOS file name; only a Windows archive reads `\` as a separator and refuses `:`
+        let (dir, r) = unzip(&[ZipEntry::file("Chromium.app/we\\ird:name", b"x")], Naming::Posix);
+        r.unwrap();
+        assert!(dir.path().join("out/Chromium.app/we\\ird:name").is_file());
+        let (_dir, r) = unzip(&[ZipEntry::file("Chromium.app/a:b", b"x")], Naming::Windows);
+        assert!(matches!(r.unwrap_err(), Error::UnsafeArchive(_)));
+    }
 }

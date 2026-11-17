@@ -1,12 +1,12 @@
 //! The install pipeline, and the list of what is installed.
 //!
 //! Layout contract (shared with `citro-core`): `<kernels_root>/clearcote-<version>/chrome` (`chrome.exe` on
-//! Windows) next to an `INSTALLED.json`.
+//! Windows, `Chromium.app/Contents/MacOS/Chromium` on macOS) next to an `INSTALLED.json`.
 
 use crate::error::{Error, IoContext, Result};
-use crate::extract::{self, Limits};
+use crate::extract::{self, Limits, Naming};
 use crate::http::{Http, display_url, read_error};
-use crate::platform::{ArchiveKind, host_binary_name};
+use crate::platform::{ArchiveKind, Platform, host_binary_path};
 use crate::release::{self, Plan};
 use crate::verify::{hex_encode, pinned_key};
 use crate::version::{compare_versions, is_valid_version};
@@ -24,7 +24,7 @@ pub const DIR_PREFIX: &str = "clearcote-";
 /// What is recorded about an install, next to the kernel.
 pub const METADATA_FILE: &str = "INSTALLED.json";
 
-/// The archive is ~120 MB; refuse anything beyond this.
+/// The archives are 120 MB (Linux) to 230 MB (macOS); refuse anything beyond this.
 const MAX_DOWNLOAD_BYTES: u64 = 2 << 30;
 const IO_CHUNK: usize = 256 * 1024;
 /// Leftovers of a killed install older than this are removed at the start of the next one.
@@ -87,8 +87,12 @@ pub struct Installed {
 /// The kernels in `kernels_root`: directories named `clearcote-<version>` that hold the browser binary, newest
 /// version first (numeric comparison: `151.0.7922.108` > `150.9.1` > `99.0.1`).
 pub fn list_installed(kernels_root: &Path) -> Vec<Installed> {
+    list_with(kernels_root, host_binary_path())
+}
+
+/// [`list_installed`] for a browser executable at `binary_path` inside each install directory.
+fn list_with(kernels_root: &Path, binary_path: &str) -> Vec<Installed> {
     let Ok(entries) = fs::read_dir(kernels_root) else { return Vec::new() };
-    let binary_name = host_binary_name();
     let mut found: Vec<Installed> = entries
         .filter_map(|e| e.ok())
         .filter_map(|e| {
@@ -97,7 +101,7 @@ pub fn list_installed(kernels_root: &Path) -> Vec<Installed> {
             if !is_valid_version(version) {
                 return None;
             }
-            let (dir, binary) = (e.path(), e.path().join(binary_name));
+            let (dir, binary) = (e.path(), e.path().join(binary_path));
             binary.is_file().then(|| Installed { version: version.to_owned(), dir, binary })
         })
         .collect();
@@ -129,13 +133,26 @@ pub(crate) fn install_with(
     progress: &mut dyn FnMut(Progress),
 ) -> Result<Installed> {
     progress(Progress::Resolving);
-    let platform = crate::platform::Platform::detect()?;
+    let platform = Platform::detect()?;
+    install_on(platform, root, opts, anchor, limits, progress)
+}
+
+/// [`install_with`] for a named platform instead of the one this program runs on (the unit tests install the macOS
+/// kernel on Linux).
+pub(crate) fn install_on(
+    platform: Platform,
+    root: &Path,
+    opts: &InstallOptions,
+    anchor: &SignedPublicKey,
+    limits: Limits,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<Installed> {
     fs::create_dir_all(root).context(|| format!("creating {}", root.display()))?;
     let http = Http::new(opts.timeout);
     let plan = release::plan(&http, opts, platform, anchor)?;
 
     let dir = root.join(format!("{DIR_PREFIX}{}", plan.release.version));
-    let installed = Installed { version: plan.release.version.clone(), binary: dir.join(platform.binary_name()), dir };
+    let installed = Installed { version: plan.release.version.clone(), binary: dir.join(platform.binary_path()), dir };
     if !opts.force && installed.binary.is_file() {
         progress(Progress::Done);
         return Ok(installed);
@@ -160,9 +177,10 @@ pub(crate) fn install_with(
         .context(|| format!("creating a temporary directory in {}", root.display()))?;
     match platform.archive_kind() {
         ArchiveKind::TarXz => extract::extract_tar_xz(download.file.path(), staging.path(), limits)?,
-        ArchiveKind::Zip => extract::extract_zip(download.file.path(), staging.path(), limits)?,
+        ArchiveKind::Zip => extract::extract_zip(download.file.path(), staging.path(), limits, Naming::Windows)?,
+        ArchiveKind::ZipUnix => extract::extract_zip(download.file.path(), staging.path(), limits, Naming::Posix)?,
     };
-    extract::require_binary(staging.path(), platform.binary_name())?;
+    extract::require_binary(staging.path(), platform.binary_path())?;
     write_metadata(staging.path(), &plan, &download.sha256)?;
     drop(download.file); // the archive is no longer needed; give the disk space back before the move
     #[cfg(unix)]
@@ -315,5 +333,88 @@ fn cleanup_stale(root: &Path) {
         if stale {
             let _ = if meta.is_dir() { fs::remove_dir_all(entry.path()) } else { fs::remove_file(entry.path()) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::{Mirror, Server, TestKey, ZipEntry, zip};
+
+    const VERSION: &str = "150.0.7871.114";
+    const FW: &str = "Chromium.app/Contents/Frameworks/Chromium Framework.framework";
+
+    /// Clearcote's macOS archive in miniature: one `Chromium.app` with a launcher, the engine in its framework and
+    /// the framework's relative links.
+    fn macos_zip(with_launcher: bool) -> Vec<u8> {
+        let mut entries = vec![
+            ZipEntry::dir("Chromium.app/"),
+            ZipEntry::exec(&format!("{FW}/Versions/{VERSION}/Chromium Framework"), b"engine"),
+            ZipEntry::symlink(&format!("{FW}/Versions/Current"), VERSION),
+            ZipEntry::symlink(&format!("{FW}/Chromium Framework"), "Versions/Current/Chromium Framework"),
+        ];
+        if with_launcher {
+            entries.push(ZipEntry::exec("Chromium.app/Contents/MacOS/Chromium", b"launcher"));
+        }
+        zip(&entries)
+    }
+
+    fn from(server: &Server) -> InstallOptions {
+        InstallOptions { base_url: Some(server.base.clone()), ..InstallOptions::default() }
+    }
+
+    fn install_macos(root: &Path, server: &Server, key: &TestKey, steps: &mut Vec<Progress>) -> Result<Installed> {
+        let progress = &mut |p| steps.push(p);
+        install_on(Platform::MacosArm64, root, &from(server), &key.public, Limits::default(), progress)
+    }
+
+    #[test]
+    fn the_macos_kernel_installs_from_a_signed_mirror_into_its_app_bundle() {
+        let key = TestKey::generate();
+        let name = Platform::MacosArm64.asset_name(VERSION);
+        let server = Server::mirror(&Mirror::signed(&key, &name, macos_zip(true)));
+        let root = tempfile::tempdir().unwrap();
+
+        let mut steps = Vec::new();
+        let k = install_macos(root.path(), &server, &key, &mut steps).unwrap();
+        assert_eq!(k.version, VERSION);
+        assert_eq!(k.dir, root.path().join(format!("clearcote-{VERSION}")));
+        assert_eq!(k.binary, k.dir.join("Chromium.app/Contents/MacOS/Chromium"));
+        assert!(k.binary.is_file());
+        // the framework's links came through as links
+        assert_eq!(fs::read_link(k.dir.join(FW).join("Versions/Current")).unwrap(), Path::new(VERSION));
+        assert_eq!(fs::read(k.dir.join(FW).join("Chromium Framework")).unwrap(), b"engine");
+        assert!(k.dir.join(METADATA_FILE).is_file());
+        assert!(steps.contains(&Progress::Extracting) && steps.last() == Some(&Progress::Done), "{steps:?}");
+
+        // kernels are listed by their platform's executable path: found as macOS, not as Linux
+        assert_eq!(list_with(root.path(), Platform::MacosArm64.binary_path()), vec![k.clone()]);
+        assert!(list_with(root.path(), Platform::LinuxX64.binary_path()).is_empty());
+
+        // a second install is a no-op: nothing is downloaded again
+        let again = install_macos(root.path(), &server, &key, &mut Vec::new()).unwrap();
+        assert_eq!(again, k);
+        assert_eq!(server.hits(&format!("/{name}")), 1);
+    }
+
+    #[test]
+    fn another_platforms_archive_never_stands_in_for_the_macos_one() {
+        let key = TestKey::generate();
+        let server = Server::mirror(&Mirror::signed(&key, &Platform::LinuxX64.asset_name(VERSION), b"x".to_vec()));
+        let root = tempfile::tempdir().unwrap();
+        let e = install_macos(root.path(), &server, &key, &mut Vec::new()).unwrap_err();
+        assert!(matches!(e, Error::NoArchive { .. }), "{e}");
+    }
+
+    #[test]
+    fn a_macos_archive_without_the_launcher_is_refused_and_leaves_nothing_behind() {
+        let key = TestKey::generate();
+        let name = Platform::MacosArm64.asset_name(VERSION);
+        let server = Server::mirror(&Mirror::signed(&key, &name, macos_zip(false)));
+        let root = tempfile::tempdir().unwrap();
+        let e = install_macos(root.path(), &server, &key, &mut Vec::new()).unwrap_err();
+        assert!(matches!(&e, Error::MissingBinary(b) if b == "Chromium.app/Contents/MacOS/Chromium"), "{e}");
+        let left: Vec<_> = fs::read_dir(root.path()).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert!(left.is_empty(), "left behind: {left:?}");
     }
 }

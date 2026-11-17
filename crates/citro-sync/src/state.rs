@@ -99,12 +99,18 @@ fn device_file(home: &Home) -> PathBuf {
     home.hub_dir().join("device.json")
 }
 
-fn hostname() -> String {
-    fs::read_to_string("/proc/sys/kernel/hostname")
-        .ok()
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("HOSTNAME").ok().filter(|s| !s.trim().is_empty()))
+/// The machine's name as the C library reports it (`/proc/sys/kernel/hostname` on Linux, the same call on macOS,
+/// where there is no `/proc`). What a device is called until its user picks another name.
+pub fn hostname() -> String {
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer is writable for its whole length; the name is NUL-terminated unless it was cut short.
+    let ok = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0;
+    let name = ok.then(|| {
+        let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+        String::from_utf8_lossy(&buf[..end]).trim().to_owned()
+    });
+    name.filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("HOSTNAME").ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()))
         .unwrap_or_else(|| "this-device".to_owned())
 }
 
@@ -228,9 +234,9 @@ pub fn session_alive(home: &Home, id: &str) -> bool {
     else {
         return false;
     };
-    // signal 0 only asks whether the process exists
+    // signal 0 only asks whether the process exists; EPERM means it does, but belongs to someone else
     // SAFETY: `kill` with signal 0 sends nothing.
-    unsafe { libc::kill(pid, 0) == 0 || *libc::__errno_location() == libc::EPERM }
+    unsafe { libc::kill(pid, 0) == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
 }
 
 /// A fresh path for an archive in transit.

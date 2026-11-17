@@ -61,13 +61,9 @@ impl Default for Settings {
     }
 }
 
+/// The machine's own name (`/etc/hostname` does not exist on macOS, so ask the C library, as the CLI does).
 fn default_device_name() -> String {
-    std::fs::read_to_string("/etc/hostname")
-        .ok()
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("HOSTNAME").ok().filter(|s| !s.is_empty()))
-        .unwrap_or_else(|| "this-device".to_owned())
+    citro_sync::hostname()
 }
 
 impl Settings {

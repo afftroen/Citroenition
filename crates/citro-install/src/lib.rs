@@ -20,6 +20,9 @@
 //! # }
 //! ```
 
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod common;
 mod error;
 mod extract;
 mod http;

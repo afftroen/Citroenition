@@ -4,7 +4,9 @@
 //! Everything here is offline and deterministic enough to run in parallel: servers bind to port 0 of 127.0.0.1.
 #![allow(dead_code)]
 
-use pgp::composed::{ArmorOptions, DetachedSignature, KeyType, SecretKeyParamsBuilder, SignedPublicKey, SignedSecretKey};
+use pgp::composed::{
+    ArmorOptions, DetachedSignature, KeyType, SecretKeyParamsBuilder, SignedPublicKey, SignedSecretKey,
+};
 use pgp::crypto::hash::HashAlgorithm;
 use pgp::ser::Serialize;
 use pgp::types::{KeyDetails, Password};

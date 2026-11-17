@@ -293,7 +293,61 @@ fn signal(pid: i32, sig: i32) {
     let _ = unsafe { libc::kill(pid, sig) };
 }
 
-/// Does a `/proc/<pid>/cmdline` blob carry `--user-data-dir=<data_dir>`?
+/// Process `pid`'s command line as NUL-terminated arguments, the shape of `/proc/<pid>/cmdline`; `None` when the
+/// process is gone (or is not ours to look at).
+#[cfg(not(target_os = "macos"))]
+fn cmdline_of(pid: u32) -> Option<Vec<u8>> {
+    fs::read(format!("/proc/{pid}/cmdline")).ok()
+}
+
+/// macOS has no `/proc`: `sysctl(CTL_KERN, KERN_PROCARGS2, pid)` hands out the arguments the process was started
+/// with, to the user that owns it. They cannot be rewritten by the process, unlike Linux's `cmdline`.
+#[cfg(target_os = "macos")]
+fn cmdline_of(pid: u32) -> Option<Vec<u8>> {
+    let pid = libc::c_int::try_from(pid).ok().filter(|p| *p > 0)?;
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    let mut size: libc::size_t = 0;
+    // SAFETY: a null output buffer only asks how much room the answer needs.
+    let sized = unsafe { libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0) };
+    if sized != 0 {
+        return None;
+    }
+    // The process may grow its argument block between the two calls: a few rounds, with more room each time.
+    for round in 1..=3 {
+        let mut buf = vec![0u8; size * round + 4096];
+        let mut len: libc::size_t = buf.len();
+        // SAFETY: `buf` is writable for `len` bytes and the kernel sets `len` to what it wrote.
+        let read =
+            unsafe { libc::sysctl(mib.as_mut_ptr(), 3, buf.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0) };
+        if read == 0 {
+            buf.truncate(len);
+            return procargs_cmdline(&buf);
+        }
+    }
+    None
+}
+
+/// The arguments in a `KERN_PROCARGS2` answer: `[argc: i32, native endian][executable path\0][NUL padding]
+/// [argv[0]\0 ... argv[argc-1]\0][environment...]`. Returned as NUL-terminated arguments, without the environment.
+#[cfg(any(target_os = "macos", test))]
+fn procargs_cmdline(buf: &[u8]) -> Option<Vec<u8>> {
+    let argc = i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?).max(0);
+    let rest = &buf[4..];
+    let mut args = &rest[rest.iter().position(|b| *b == 0)?..];
+    while let [0, tail @ ..] = args {
+        args = tail;
+    }
+    let mut out = Vec::new();
+    for _ in 0..argc {
+        let end = args.iter().position(|b| *b == 0).unwrap_or(args.len());
+        out.extend_from_slice(&args[..end]);
+        out.push(0);
+        args = args.get(end + 1..).unwrap_or(&[]);
+    }
+    Some(out)
+}
+
+/// Does a process's command line (NUL-separated arguments, see [`cmdline_of`]) carry `--user-data-dir=<data_dir>`?
 ///
 /// Chromium may rewrite its own argv into ONE space-joined string, so whole NUL-separated arguments cannot
 /// always be compared. Match on token boundaries instead: the flag must start the blob or follow a
@@ -308,7 +362,7 @@ fn cmdline_has_data_dir(raw: &[u8], data_dir: &Path) -> bool {
 }
 
 fn pid_is_browser(pid: u32, data_dir: &Path) -> bool {
-    fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|raw| cmdline_has_data_dir(&raw, data_dir))
+    cmdline_of(pid).is_some_and(|raw| cmdline_has_data_dir(&raw, data_dir))
 }
 
 /// A browser that exited since [`take_closed`] last looked.
@@ -568,6 +622,60 @@ mod tests {
         a.iter().find_map(|x| x.strip_prefix(prefix))
     }
 
+    /// Is there no process `pid` any more? Waits up to 5 s: the reaper thread collects a killed browser a moment
+    /// after the signal. (No `/proc` on macOS; signal 0 only asks whether the process exists.)
+    fn gone(pid: u32) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            // SAFETY: `kill` with signal 0 sends nothing.
+            let alive = unsafe { libc::kill(pid as i32, 0) } == 0
+                || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+            if !alive {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// What `KERN_PROCARGS2` returns for `argv`: argc, the executable path, NUL padding, the arguments, the
+    /// environment.
+    fn procargs(argc: i32, exe: &str, argv: &[&str], env: &[&str]) -> Vec<u8> {
+        let mut b = argc.to_ne_bytes().to_vec();
+        b.extend_from_slice(exe.as_bytes());
+        b.extend_from_slice(&[0, 0, 0]);
+        for a in argv.iter().chain(env) {
+            b.extend_from_slice(a.as_bytes());
+            b.push(0);
+        }
+        b
+    }
+
+    #[test]
+    fn the_macos_process_arguments_blob_yields_the_command_line_without_the_environment() {
+        let d = Path::new("/h/profiles/k1/data");
+        let blob = procargs(
+            3,
+            "/k/Chromium.app/Contents/MacOS/Chromium",
+            &["/k/Chromium.app/Contents/MacOS/Chromium", "--user-data-dir=/h/profiles/k1/data", "--x"],
+            &["HOME=/Users/a", "--user-data-dir=/elsewhere"],
+        );
+        let cmdline = procargs_cmdline(&blob).unwrap();
+        assert_eq!(cmdline, b"/k/Chromium.app/Contents/MacOS/Chromium\0--user-data-dir=/h/profiles/k1/data\0--x\0");
+        assert!(cmdline_has_data_dir(&cmdline, d));
+        // an environment entry that looks like the flag is not an argument
+        let other = procargs(1, "/bin/k", &["/bin/k"], &["--user-data-dir=/h/profiles/k1/data"]);
+        assert!(!cmdline_has_data_dir(&procargs_cmdline(&other).unwrap(), d));
+        // a short or empty answer, and an argc larger than what is there, are survivable
+        assert_eq!(procargs_cmdline(b""), None);
+        assert_eq!(procargs_cmdline(&[1, 0, 0, 0]), None);
+        assert_eq!(procargs_cmdline(&procargs(5, "/bin/k", &["/bin/k", "--a"], &[])).unwrap(), b"/bin/k\0--a\0\0\0\0");
+        assert_eq!(procargs_cmdline(&procargs(0, "/bin/k", &[], &[])).unwrap(), b"");
+        assert_eq!(procargs_cmdline(&procargs(-1, "/bin/k", &["/bin/k"], &[])).unwrap(), b"");
+    }
+
     fn env_of<'a>(p: &'a Prepared, key: &str) -> Option<&'a str> {
         p.env.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     }
@@ -743,7 +851,7 @@ mod tests {
         assert!(running(&home, &p.profile_id).is_none() && list_running(&home).is_empty());
         assert!(!stop(&home, &p.profile_id).unwrap());
         // the `sleep 60` the stand-in kernel forked went down with its group
-        assert!(!Path::new(&format!("/proc/{}", r.pid)).exists());
+        assert!(gone(r.pid), "process {} is still there", r.pid);
         purge(&home, &p.profile_id).unwrap();
         assert!(!home.profile_dir(&p.profile_id).exists());
         let _ = fs::remove_dir_all(&home.root);
@@ -774,10 +882,7 @@ mod tests {
         let r = start(&home, &kernel, &p, &LaunchOptions::default()).unwrap();
         // the window is closed by the user (here: the whole group is killed behind our back)
         signal(-(r.pid as i32), libc::SIGKILL);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Path::new(&format!("/proc/{}", r.pid)).exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        assert!(gone(r.pid), "process {} is still there", r.pid);
         assert!(running(&home, &p.profile_id).is_none());
         let closed = take_closed(&home);
         assert_eq!(closed.len(), 1);

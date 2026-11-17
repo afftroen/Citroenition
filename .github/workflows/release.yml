@@ -1,10 +1,15 @@
-# Builds the four programs, packages them (scripts/package-release.sh) and, for a version tag, publishes the GitHub
-# release with the archive, SHA256SUMS and the matching section of CHANGELOG.md as its notes:
+# Builds the programs for every platform (Linux x86-64, macOS Apple silicon), packages them with
+# scripts/package-release.sh and, for a version tag, publishes ONE GitHub release with both archives, a SHA256SUMS
+# that covers them and the matching section of CHANGELOG.md as its notes:
 #
-#   git tag -a v0.1.0 -m "Citroenition 0.1.0" && git push origin v0.1.0
+#   git tag -a v0.1.1 -m "Citroenition 0.1.1" && git push origin v0.1.1
 #
-# A push to the branch `release-check` runs everything except the publishing, and keeps the archive as a workflow
-# artifact: a dry run for the packaging itself.
+# A push to the branch `release-check` runs everything except the publishing: a dry run.
+#
+# The macOS job is the only place the macOS code ever runs: it runs the whole test suite on a Mac, then the packaged
+# programs against the REAL Clearcote kernel (scripts/smoke-kernel.sh: install, open, ask the browser, close). A
+# failure there stops the release. Its logs are left on the branch `ci-logs-macos` (always on a dry run, only after a
+# failure on a tag), because the Actions logs cannot be read without a token. Delete that branch when done.
 name: release
 
 on:
@@ -16,27 +21,15 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  linux:
     # the oldest glibc still on offer, so the programs run on Ubuntu 22.04 / Debian 12 and everything newer
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
-      - name: Version
-        run: |
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          echo "VERSION=$version" >> "$GITHUB_ENV"
-          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "the tag is $GITHUB_REF_NAME but Cargo.toml says v$version" >&2
-            exit 1
-          fi
-
-      - name: Release notes from CHANGELOG.md
-        run: |
-          awk -v v="$VERSION" '/^## /{ on = (index($0, "## " v) == 1) } on' CHANGELOG.md > notes.md
-          test -s notes.md || { echo "CHANGELOG.md has no section for $VERSION" >&2; exit 1; }
-          cat notes.md
+      - name: Version and release notes
+        run: scripts/release-meta.sh
 
       - name: Rust
         run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
@@ -45,7 +38,7 @@ jobs:
         run: cargo build --release --locked -p citro -p citro-hub -p citro-gui -p citro-install
 
       - name: Package
-        run: scripts/package-release.sh "$VERSION" target/release dist
+        run: scripts/package-release.sh "$VERSION" target/release dist x86_64-linux
 
       - name: Run what is in the archive
         run: |
@@ -56,7 +49,126 @@ jobs:
           done
           ls check/citroenition-v"$VERSION"-x86_64-linux check/citroenition-v"$VERSION"-x86_64-linux/docs
 
-      - name: Keep the archive (dry run)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux
+          path: dist/*.tar.gz
+          retention-days: 14
+
+  macos:
+    # Apple silicon: the only macOS kernel build Clearcote publishes is arm64
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version and release notes
+        run: scripts/release-meta.sh
+
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+
+      - name: GNU tar (the archive is reproducible)
+        run: command -v gtar > /dev/null || brew install gnu-tar
+
+      - name: Build
+        run: cargo build --release --locked -p citro -p citro-hub -p citro-gui -p citro-install
+
+      - name: Tests, on a Mac
+        run: |
+          set -o pipefail
+          cargo test --release --locked --workspace 2>&1 | tee test.log
+
+      - name: Package
+        run: scripts/package-release.sh "$VERSION" target/release dist aarch64-macos
+
+      - name: Run what is in the archive
+        run: |
+          set -eu
+          (cd dist && shasum -a 256 -c SHA256SUMS)
+          mkdir check && tar xzf dist/citroenition-v"$VERSION"-aarch64-macos.tar.gz -C check
+          d=check/citroenition-v"$VERSION"-aarch64-macos
+          for p in citro citro-gui citro-hub citro-install; do
+            "$d/$p" --version
+          done
+          lipo -archs "$d/citro" "$d/Citroenition.app/Contents/MacOS/citro-gui"
+          codesign --verify --deep --strict --verbose=2 "$d/Citroenition.app"
+          ls -l "$d" "$d/Citroenition.app/Contents" "$d/Citroenition.app/Contents/MacOS"
+          ls "$d/docs"
+
+      - name: The real kernel, headless (install, open, ask the browser, close)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          scripts/smoke-kernel.sh check/citroenition-v"$VERSION"-aarch64-macos headless 2>&1 | tee smoke.log
+
+      - name: The real kernel with a window (does not gate the release)
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          scripts/smoke-kernel.sh check/citroenition-v"$VERSION"-aarch64-macos window 2>&1 | tee smoke-window.log
+
+      - name: The desktop app draws a window (does not gate the release)
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          check/citroenition-v"$VERSION"-aarch64-macos/Citroenition.app/Contents/MacOS/citro-gui \
+            --demo --screenshot gui-profiles.png --page profiles --theme dark 2>&1 | tee gui.log
+          ls -l gui-profiles.png | tee -a gui.log
+
+      - name: Keep the logs (branch ci-logs-macos)
+        if: ${{ !cancelled() && (failure() || github.ref_type != 'tag') }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          d=$(mktemp -d)
+          for f in test.log smoke.log smoke-window.log gui.log gui-profiles.png; do
+            if [ -e "$f" ]; then cp "$f" "$d/"; fi
+          done
+          cd "$d"
+          git init -q -b ci-logs-macos
+          git config user.name "release workflow"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -q --allow-empty -m "macOS logs of run $GITHUB_RUN_ID ($GITHUB_SHA)"
+          git push -q -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:refs/heads/ci-logs-macos
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos
+          path: dist/*.tar.gz
+          retention-days: 14
+
+  publish:
+    needs: [linux, macos]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version and release notes
+        run: scripts/release-meta.sh
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: One SHA256SUMS for every archive
+        run: |
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+          test "$(wc -l < SHA256SUMS)" -eq 2
+          sha256sum -c SHA256SUMS
+
+      - name: Keep the archives (dry run)
         if: github.ref_type != 'tag'
         uses: actions/upload-artifact@v4
         with:

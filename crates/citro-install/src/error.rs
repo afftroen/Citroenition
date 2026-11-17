@@ -12,10 +12,11 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
-    /// There is no prebuilt Clearcote kernel for this OS/CPU (macOS and non-x86-64 hosts).
+    /// There is no prebuilt Clearcote kernel for this OS/CPU (Intel Macs, arm64 Linux and Windows, ...).
     #[error(
-        "no prebuilt Clearcote kernel is published for {os}/{arch} (only linux-x64 and windows-x64 are); use a kernel \
-         you provide yourself: set CITRO_KERNEL (or pass --kernel) to the path of its `chrome` binary"
+        "no prebuilt Clearcote kernel is published for {os}/{arch} (only linux-x64, windows-x64 and macos-arm64 are); \
+         use a kernel you provide yourself: set CITRO_KERNEL (or pass --kernel) to the path of its browser \
+         executable (`chrome`, or `Chromium.app/Contents/MacOS/Chromium` on macOS)"
     )]
     UnsupportedPlatform {
         /// `std::env::consts::OS` of the host.

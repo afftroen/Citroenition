@@ -68,27 +68,48 @@ store, under one lock.
 
 ## 2. Install
 
-Requirements: Linux x86-64, and a display (or Xvfb) for headful browsers; headless works without one. The desktop app
-needs an X11 session (XWayland on a Wayland desktop) and OpenGL. Linux only for now: process tracking uses `/proc`
-and POSIX signals. Clearcote also publishes Windows (and in some releases macOS) builds, which Citroenition does not
-drive yet.
+Requirements: **Linux x86-64** (glibc 2.35 or newer) or a **Mac with Apple silicon on macOS 12 or newer**. A headful
+browser needs a display (on Linux a desktop session or Xvfb; a Mac always has one); headless works without one. On
+Linux the desktop app needs an X11 session (XWayland on a Wayland desktop) and OpenGL; on a Mac it is an ordinary
+native window. Clearcote also publishes a Windows build, which Citroenition does not drive yet, and its macOS build is
+for Apple silicon only: an Intel Mac can run Citroenition only with a kernel you provide yourself (`--kernel`).
 
 ### 2.1 Get the programs
 
 **Download a release.** The [releases page](https://github.com/afftroen/Citroenition/releases/latest) has one archive
-with `citro`, `citro-gui`, `citro-hub` and `citro-install` (they need glibc 2.35 or newer: Ubuntu 22.04, Debian 12 or
-later) and a `SHA256SUMS` file:
+per platform, each with `citro`, `citro-gui`, `citro-hub` and `citro-install`, and one `SHA256SUMS` file that covers
+both. On Linux (glibc 2.35 or newer: Ubuntu 22.04, Debian 12 or later):
 
 ```sh
-V=0.1.0
+V=0.1.1
 curl -LO https://github.com/afftroen/Citroenition/releases/download/v$V/citroenition-v$V-x86_64-linux.tar.gz
 curl -LO https://github.com/afftroen/Citroenition/releases/download/v$V/SHA256SUMS
-sha256sum -c SHA256SUMS                       # citroenition-v0.1.0-x86_64-linux.tar.gz: OK
+sha256sum -c --ignore-missing SHA256SUMS      # citroenition-v0.1.1-x86_64-linux.tar.gz: OK
 tar xzf citroenition-v$V-x86_64-linux.tar.gz
 export PATH="$PWD/citroenition-v$V-x86_64-linux:$PATH"
 ```
 
-**Or build from source.** This needs a recent stable Rust toolchain and a C compiler (`gcc`, or `build-essential`):
+On a Mac (Apple silicon, macOS 12 or newer):
+
+```sh
+V=0.1.1
+curl -LO https://github.com/afftroen/Citroenition/releases/download/v$V/citroenition-v$V-aarch64-macos.tar.gz
+curl -LO https://github.com/afftroen/Citroenition/releases/download/v$V/SHA256SUMS
+grep aarch64-macos SHA256SUMS | shasum -a 256 -c      # citroenition-v0.1.1-aarch64-macos.tar.gz: OK
+tar xzf citroenition-v$V-aarch64-macos.tar.gz
+export PATH="$PWD/citroenition-v$V-aarch64-macos:$PATH"
+open citroenition-v$V-aarch64-macos/Citroenition.app      # the desktop app
+```
+
+The macOS archive carries the desktop app as `Citroenition.app` (and `citro-gui`, a link to the program inside it).
+The programs are signed *ad hoc*, which is what lets Apple silicon start them, but not with an Apple developer
+identity and not notarised. A file that came through `curl` starts without a word. One downloaded in a browser
+carries macOS's quarantine flag and is refused with "Apple cannot check it for malicious software": remove the flag
+once with `xattr -dr com.apple.quarantine citroenition-v$V-aarch64-macos`, or use *System Settings → Privacy &
+Security → Open Anyway*.
+
+**Or build from source.** This needs a recent stable Rust toolchain and a C compiler (`gcc`, or `build-essential`, on
+Linux; on a Mac `xcode-select --install`):
 
 ```sh
 git clone https://github.com/afftroen/Citroenition
@@ -98,8 +119,8 @@ export PATH="$PWD/target/release:$PATH"      # citro, citro-install, citro-hub, 
 ```
 
 TLS in every crate is `rustls` with the `ring` provider: there is no OpenSSL anywhere. `ring` compiles a little C and
-assembly, which is why the build wants a C compiler. The programs themselves need only glibc (2.35 or newer) and
-`libgcc_s`, which every glibc Linux has.
+assembly, which is why the build wants a C compiler. On Linux the programs themselves need only glibc (2.35 or newer)
+and `libgcc_s`, which every glibc Linux has; on a Mac only the system libraries.
 
 ### 2.2 Install the browser kernel
 
@@ -108,7 +129,7 @@ citro kernel install
 ```
 
 This asks GitHub for the latest Clearcote release for your platform, downloads the archive (about 117 MiB for the
-Linux build), verifies it, and unpacks it to `<home>/kernels/clearcote-<version>/`:
+Linux build, 218 MiB for macOS), verifies it, and unpacks it to `<home>/kernels/clearcote-<version>/`:
 
 1. the release's `SHA256SUMS.txt` must carry a **valid OpenPGP signature** from the signing key pinned inside
    `citro-install` (the key's fingerprint is printed by `citro-install verify-checksums`);
@@ -120,6 +141,12 @@ Linux build), verifies it, and unpacks it to `<home>/kernels/clearcote-<version>
 Nothing runs before it has been verified. A second `citro kernel install` is a no-op (`--force` reinstalls).
 `citro kernel list` shows what is installed. Several versions can sit side by side; the newest is used unless you
 pass `--kernel PATH` or set `CITRO_KERNEL`.
+
+**On a Mac** the kernel is `Chromium.app`, and the program to point `--kernel` at is
+`Chromium.app/Contents/MacOS/Chromium`. Clearcote has published a macOS build for one release only so far
+(`v0.1.0-pre.24`, Chromium 150; the newer releases have none), so on a Mac the installer takes the newest release
+that has an archive for your platform instead of failing on the newest release. The unpacker keeps what the app
+bundle is made of (symbolic links, executable bits) and never sets the quarantine flag.
 
 `citro-install` is also a standalone program (`citro-install latest`, `install`, `list`, `verify-checksums`), with
 `--base-url` for a mirror: the signature is still checked against the pinned key.
@@ -340,7 +367,8 @@ choice are mapped to the switches the engine reads:
 **Which OS to claim.** On a Linux host, the Linux and macOS personas pass iphey.com at 100 %; the Windows persona
 is currently flagged on iphey's *Browser* tile (a Windows claim has to survive font, GL and shader-dialect checks
 that a Linux host gives away). The default (`--os` omitted) is the host's own OS, which is also the most
-consistent choice.
+consistent choice. On a Mac that default is the macOS persona. The measurements above and in section 12 were taken on
+a Linux host: the Mac build has not been through iphey, BrowserScan and CreepJS yet.
 
 ## 7. Proxies
 
@@ -354,7 +382,7 @@ What Citroenition does when a proxy is set:
 * credentials go to the engine as `--socks5-credentials` (SOCKS5) or `--proxy-auth` (HTTP, HTTPS);
 * WebRTC is restricted to the proxied path (`disable_non_proxied_udp`) unless the profile says otherwise.
 
-**Credentials and `ps`.** A command line is readable by every local user (`/proc/<pid>/cmdline`). When the kernel
+**Credentials and `ps`.** A command line is readable by every local user (`ps`; on Linux `/proc/<pid>/cmdline`). When the kernel
 supports Clearcote's `--persona-from-env` switch, Citroenition moves the seed, every `--fingerprint-*` switch and
 the proxy credentials into the `CLEARCOTE_PERSONA_ARGS` environment variable (private to the process) and keeps
 them off the command line. The Clearcote 151 build does **not** have that switch yet (it is detected from the
@@ -471,8 +499,9 @@ the engine are verified together. More in [docs/KERNEL.md](docs/KERNEL.md#verifi
   open any profile and read its cookies through DevTools: treat the key like a root password and never expose the
   port without TLS.
 * **Command lines.** With the current Clearcote build (151) the proxy login and the seed are on the browser's command
-  line, which every local user can read in `/proc/<pid>/cmdline`. On a shared machine mount `/proc` with
-  `hidepid=2` or run Citroenition under a dedicated user; a kernel with `--persona-from-env` moves them into the
+  line, which every local user can read with `ps` (on Linux in `/proc/<pid>/cmdline`). On a shared Linux machine
+  mount `/proc` with `hidepid=2` or run Citroenition under a dedicated user; macOS has no `hidepid`, so on a Mac use a
+  dedicated user account or keep the machine to yourself. A kernel with `--persona-from-env` moves them into the
   process environment automatically.
 * **DevTools.** The browser's debugging port listens on `127.0.0.1` on a random port, for the Local API's
   clients. Other users on the same machine can reach it; see the note on shared machines in [section 7](#7-proxies).
@@ -488,12 +517,13 @@ the engine are verified together. More in [docs/KERNEL.md](docs/KERNEL.md#verifi
 | Symptom | Cause and fix |
 |---|---|
 | `no kernel found` | run `citro kernel install`, or point at one with `--kernel PATH` / `CITRO_KERNEL` |
-| the browser exits at once, error shows `kernel.log` | read the tail printed with the error; the commonest causes are no display (`DISPLAY` unset: use Xvfb or `--headless`) and a missing sandbox permission (the default is `--no-sandbox` as in AdsPower; `--sandbox` needs unprivileged user namespaces) |
+| the browser exits at once, error shows `kernel.log` | read the tail printed with the error; the commonest causes are no display (Linux: `DISPLAY` unset, use Xvfb or `--headless`) and a missing sandbox permission (the default is `--no-sandbox` as in AdsPower; `--sandbox` needs unprivileged user namespaces) |
 | `timed out waiting for the kernel's DevTools endpoint` | a slow machine or a first start that is building caches: raise `--timeout 90` |
 | a page has **no WebGL** / BrowserScan shows `WebGL exception` | on a host without a GPU WebGL needs `--ignore-gpu-blocklist` (always passed). Do **not** add `--use-angle=gl-egl`: it disables WebGL on display-only hosts |
 | iphey's *Browser* tile is red | you are on a Linux host with `--os windows`; use `--os linux` (or `macos`) |
 | proxy login keeps being asked / pages do not load | check the scheme (`socks5` vs `http`), the credentials, and that the proxy allows your IP; `citro open --dry-run` shows the flags with the login hidden |
 | a hub operation answers `409` with code `locked` (the CLI: *is open on another device: anna on anna-laptop*) | the profile is open on another device; the answer names the holder. Wait for them to close it, or a team owner or admin runs `citro hub unlock` ([HUB.md](docs/HUB.md#troubleshooting)) |
+| macOS: "Citroenition.app" or a program "cannot be opened because Apple cannot check it for malicious software" | the quarantine flag that a browser puts on downloads: `xattr -dr com.apple.quarantine <the folder>`, once. The kernel that `citro kernel install` unpacks never carries it |
 | `address already in use` from `citro serve` | another Local API (or AdsPower itself!) owns `:50325`; use `--bind 127.0.0.1:50326` |
 | two edits seem to overwrite each other | they cannot: every write takes `store.lock`; reload the list |
 

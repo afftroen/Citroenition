@@ -1,6 +1,33 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 (2026-11-17)
+
+**macOS on Apple silicon.** The programs and the kernel now run on a Mac (M1 or newer, macOS 12 or newer). The release
+has a second archive, `citroenition-v0.1.1-aarch64-macos.tar.gz`, and one `SHA256SUMS` that covers both archives.
+
+* **The kernel.** `citro kernel install` fetches Clearcote's macOS build (`Chromium.app`, Chromium 150). The archive is
+  a zip: the unpacker applies the same safety rules as for the Linux tarball and keeps what an app bundle is made of
+  (symbolic links, executable bits). Clearcote has published a macOS build for one release only so far
+  (`v0.1.0-pre.24`; the newer releases have none), so the installer takes the newest release that has an archive for
+  the platform instead of failing on the newest one. That release's signed checksum list is a test fixture.
+* **Process tracking** reads a process's arguments with `sysctl(KERN_PROCARGS2)` where Linux has `/proc`, and the
+  device name comes from `gethostname`, so closing, lock tracking and the team features work the same on a Mac.
+* **The desktop app** is `Citroenition.app` in the archive (and `citro-gui`, a link to the program inside it), signed
+  ad hoc so that Apple silicon starts it. It is not notarised: a browser download carries macOS's quarantine flag, see
+  [docs.md §2.1](docs.md#21-get-the-programs) for the one command that clears it.
+* **The release is checked on a Mac before it is published.** The release workflow builds on an Apple-silicon runner,
+  runs the whole test suite there, and runs the packaged programs against the real kernel: install it, open a
+  profile, ask the browser who it is over DevTools, check that `citro ps` sees the process, close it.
+* The Linux archive is built as before. The release workflow is now three jobs (Linux, macOS, publish) and the
+  packaging, the release notes and the kernel smoke test are scripts in `scripts/`.
+
+**Not on a Mac yet**
+
+* Intel Macs: Clearcote publishes no Intel build. Use `--kernel` with a build you provide.
+* The macOS kernel is Chromium 150, one major version behind the Linux and Windows builds.
+* The anti-detect measurements (iphey.com, BrowserScan, CreepJS) were taken on Linux and have not been repeated on a
+  Mac.
+* The programs are not notarised and carry no Apple developer identity.
 
 **A new look for the desktop app**, modelled on a reference design: a calm dark (and light) workspace instead of the
 dense tool window. Nothing about what the app does has changed.

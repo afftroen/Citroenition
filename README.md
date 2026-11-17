@@ -23,19 +23,19 @@ Everything above is Rust. The only non-Rust part is the browser engine itself, w
 
 ## Quick start
 
-Download the archive of the [latest release](https://github.com/afftroen/Citroenition/releases/latest) (Linux x86-64),
-or build the programs yourself:
+Download the archive of the [latest release](https://github.com/afftroen/Citroenition/releases/latest) for your
+machine (Linux x86-64, or macOS 12+ on Apple silicon), or build the programs yourself:
 
 ```sh
-tar xzf citroenition-v0.1.0-x86_64-linux.tar.gz
-export PATH="$PWD/citroenition-v0.1.0-x86_64-linux:$PATH"
+tar xzf citroenition-v0.1.1-x86_64-linux.tar.gz       # on a Mac: citroenition-v0.1.1-aarch64-macos.tar.gz
+export PATH="$PWD/citroenition-v0.1.1-x86_64-linux:$PATH"
 
 # or, from a clone: needs a recent stable Rust toolchain and a C compiler
 cargo build --release
 export PATH="$PWD/target/release:$PATH"
 
 citro kernel install                  # download + verify (OpenPGP + SHA-256) + unpack Clearcote
-citro new "shop-fr-1" --proxy socks5://user:pass@host:1080 --country fr --os linux
+citro new "shop-fr-1" --proxy socks5://user:pass@host:1080 --country fr --os linux   # --os macos on a Mac
 citro open 1                          # profile id or serial number
 citro ls
 citro close 1
@@ -46,8 +46,10 @@ Full manual: **[docs.md](docs.md)**, what changed: [CHANGELOG.md](CHANGELOG.md).
 
 ## Status
 
-Verified against the real kernel through a real SOCKS5 proxy that needs a login: see
-[docs/KERNEL.md](docs/KERNEL.md#verification) for what iphey.com, CreepJS and BrowserScan report.
+Verified against the real kernel through a real SOCKS5 proxy that needs a login, on Linux: see
+[docs/KERNEL.md](docs/KERNEL.md#verification) for what iphey.com, CreepJS and BrowserScan report. The macOS build runs
+the whole test suite and the real kernel on a Mac in the release workflow before every release; the anti-detect
+measurements have not been repeated on a Mac.
 
 ## License
 

@@ -94,14 +94,15 @@ struct RawAsset {
     state: Option<String>,
 }
 
-/// Latest release (`/releases/latest`) as GitHub reports it, or, with `opts.base_url`, the newest kernel in the
-/// mirror's signed list. `opts.version` is ignored here.
+/// The newest release that has a kernel for this host (GitHub's `/releases/latest`, or the newest recent release
+/// when that one has none: Clearcote builds macOS kernels for some releases only), or, with `opts.base_url`, the
+/// newest kernel in the mirror's signed list. `opts.version` is ignored here.
 pub fn latest_release(opts: &InstallOptions) -> Result<Release> {
     let platform = Platform::detect()?;
     let http = Http::new(opts.timeout);
     match mirror_base(opts)? {
         Some(base) => Ok(plan_mirror(&http, &base, platform, None, crate::verify::pinned_key()?)?.release),
-        None => github_latest(&http, API_ROOT, platform),
+        None => github_newest_for(&http, API_ROOT, platform),
     }
 }
 
@@ -139,7 +140,7 @@ pub(crate) fn plan(http: &Http, opts: &InstallOptions, platform: Platform, ancho
         return plan_mirror(http, &base, platform, want, anchor);
     }
     let release = match want {
-        None => github_latest(http, API_ROOT, platform)?,
+        None => github_newest_for(http, API_ROOT, platform)?,
         Some(v) if is_valid_version(v) => github_by_version(http, API_ROOT, platform, v)?,
         Some(tag) => github_by_tag(http, API_ROOT, platform, tag)?,
     };
@@ -221,13 +222,30 @@ pub(crate) fn github_by_version(http: &Http, api_root: &str, platform: Platform,
         Ok(_) | Err(Error::NoArchive { .. } | Error::MissingAsset { .. }) => {}
         Err(e) => return Err(e),
     }
+    search_recent(http, api_root, platform, Some(version))
+}
+
+/// The release to take when none was asked for: GitHub's latest one if it ships this platform's archive, else the
+/// newest of the most recent [`SEARCH_RELEASES`] that does. (macOS kernels are built for some releases only: the
+/// latest release can be Linux and Windows alone.)
+pub(crate) fn github_newest_for(http: &Http, api_root: &str, platform: Platform) -> Result<Release> {
+    match github_latest(http, api_root, platform) {
+        Err(Error::NoArchive { .. } | Error::MissingAsset { .. }) => search_recent(http, api_root, platform, None),
+        other => other,
+    }
+}
+
+/// The first (newest) of the most recent [`SEARCH_RELEASES`] releases that has this platform's archive (of version
+/// `want`, if given) and the checksum files.
+fn search_recent(http: &Http, api_root: &str, platform: Platform, want: Option<&str>) -> Result<Release> {
     let url = releases_url(api_root, &format!("?per_page={SEARCH_RELEASES}"));
     let all: Vec<RawRelease> = fetch_json(http, &url)?;
-    all.into_iter().filter_map(|r| release_from_raw(r, platform, Some(version)).ok()).next().ok_or_else(|| {
-        Error::MissingAsset {
-            tag: format!("(the latest {SEARCH_RELEASES} releases)"),
-            name: platform.asset_name(version),
-        }
+    all.into_iter().filter_map(|r| release_from_raw(r, platform, want).ok()).next().ok_or_else(|| Error::MissingAsset {
+        tag: format!("(the latest {SEARCH_RELEASES} releases)"),
+        name: match want {
+            Some(v) => platform.asset_name(v),
+            None => format!("clearcote-<version>-{}", platform.asset_suffix()),
+        },
     })
 }
 
@@ -360,6 +378,70 @@ mod tests {
         let pending = full_assets().join(",").replace(r#""state":"uploaded""#, r#""state":"starter""#);
         let r = raw(&format!(r#"{{"tag_name":"t","assets":[{pending}]}}"#));
         assert!(release_from_raw(r, Platform::LinuxX64, None).is_err());
+    }
+
+    /// A release whose assets are `assets` (as built by [`asset`]).
+    fn release_with(tag: &str, assets: &[String]) -> String {
+        format!(
+            r#"{{"tag_name":"{tag}","draft":false,"prerelease":true,"html_url":"https://github.com/x/y/releases/tag/{tag}","assets":[{}]}}"#,
+            assets.join(",")
+        )
+    }
+
+    #[test]
+    fn a_platform_the_latest_release_lacks_is_taken_from_the_newest_release_that_has_it() {
+        use crate::common::{Body, Server};
+        use std::time::Duration;
+        let gh24 = "https://github.com/clearcotelabs/clearcote-browser/releases/download/v0.1.0-pre.24";
+        let latest = release_with("v0.1.0-pre.25", &full_assets());
+        let older = release_with(
+            "v0.1.0-pre.24",
+            &[
+                asset("clearcote-150.0.7871.114-linux-x64.tar.xz", 9, gh24),
+                asset("clearcote-150.0.7871.114-macos-arm64.zip", 551_000_000, gh24),
+                asset("SHA256SUMS.txt", 1, gh24),
+                asset("SHA256SUMS.txt.asc", 1, gh24),
+            ],
+        );
+        let list_path = releases_url("", &format!("?per_page={SEARCH_RELEASES}"));
+        let server = Server::start(vec![
+            (releases_url("", "/latest"), Body::Ok(latest.clone().into_bytes())),
+            (list_path.clone(), Body::Ok(format!("[{latest},{older}]").into_bytes())),
+        ]);
+        let http = Http::new(Duration::from_secs(10));
+
+        // the latest release has no macOS archive: the next one down that has it
+        let mac = github_newest_for(&http, &server.base, Platform::MacosArm64).unwrap();
+        assert_eq!((mac.tag.as_str(), mac.version.as_str()), ("v0.1.0-pre.24", "150.0.7871.114"));
+        assert_eq!(mac.asset.name, "clearcote-150.0.7871.114-macos-arm64.zip");
+        assert_eq!(server.hits(&list_path), 1);
+
+        // Linux and Windows have it in the latest release: one request, no search
+        let linux = github_newest_for(&http, &server.base, Platform::LinuxX64).unwrap();
+        assert_eq!((linux.tag.as_str(), linux.version.as_str()), ("v0.1.0-pre.25", "151.0.7922.108"));
+        let windows = github_newest_for(&http, &server.base, Platform::WindowsX64).unwrap();
+        assert_eq!(windows.tag, "v0.1.0-pre.25");
+        assert_eq!(server.hits(&list_path), 1, "only the macOS lookup searched");
+
+        // a version that is only in the older release is found the same way
+        let by_version = github_by_version(&http, &server.base, Platform::MacosArm64, "150.0.7871.114").unwrap();
+        assert_eq!(by_version.tag, "v0.1.0-pre.24");
+    }
+
+    #[test]
+    fn no_release_with_the_platforms_archive_is_an_error_that_says_so() {
+        use crate::common::{Body, Server};
+        use std::time::Duration;
+        let latest = release_with("v0.1.0-pre.25", &full_assets());
+        let server = Server::start(vec![
+            (releases_url("", "/latest"), Body::Ok(latest.clone().into_bytes())),
+            (releases_url("", &format!("?per_page={SEARCH_RELEASES}")), Body::Ok(format!("[{latest}]").into_bytes())),
+        ]);
+        let e = github_newest_for(&Http::new(Duration::from_secs(10)), &server.base, Platform::MacosArm64).unwrap_err();
+        assert!(
+            matches!(&e, Error::MissingAsset { tag, name } if tag.contains("latest") && name.ends_with("macos-arm64.zip")),
+            "{e}"
+        );
     }
 
     #[test]

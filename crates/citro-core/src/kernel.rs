@@ -3,7 +3,8 @@
 //! Citroenition does not bundle a browser. The kernel is [Clearcote](https://github.com/clearcotelabs/clearcote-browser),
 //! an open-source Chromium build whose identity surface (hardware, screen, GPU, canvas, audio, TLS, ...) is
 //! decided inside the engine from one seed. `citro kernel install` downloads, verifies and unpacks it to
-//! `<home>/kernels/clearcote-<version>/chrome`; this module only finds what is installed.
+//! `<home>/kernels/clearcote-<version>/chrome` (on macOS the executable of the `Chromium.app` bundle in that
+//! directory); this module only finds what is installed.
 
 use crate::store::Home;
 use crate::{Error, Result};
@@ -11,8 +12,11 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-/// The executable inside a kernel directory.
-pub const BINARY: &str = "chrome";
+/// The executable inside a kernel directory: `chrome`, or on macOS the one inside the app bundle Clearcote's
+/// archive unpacks to.
+pub const BINARY: &str = if cfg!(target_os = "macos") { MACOS_BINARY } else { "chrome" };
+/// Where the macOS archive puts the browser, relative to the install directory.
+pub const MACOS_BINARY: &str = "Chromium.app/Contents/MacOS/Chromium";
 /// Install directories are named `clearcote-<version>`.
 pub const DIR_PREFIX: &str = "clearcote-";
 
@@ -40,33 +44,52 @@ pub fn kernels_dir(home: &Home) -> PathBuf {
     home.root.join("kernels")
 }
 
+/// The `X.app` directory when `binary` is `X.app/Contents/MacOS/<name>` (a macOS app bundle's executable).
+fn app_bundle(binary: &Path) -> Option<&Path> {
+    let macos = binary.parent()?;
+    let contents = macos.parent()?;
+    let app = contents.parent()?;
+    (macos.file_name()? == "MacOS" && contents.file_name()? == "Contents" && app.extension()? == "app").then_some(app)
+}
+
+/// The directory a kernel's files live in (`clearcote-<version>`): the one holding the executable, or, for an app
+/// bundle, the one holding the bundle.
+fn install_dir(binary: &Path) -> &Path {
+    match app_bundle(binary) {
+        Some(app) => app.parent().unwrap_or(app),
+        None => binary.parent().unwrap_or_else(|| Path::new(".")),
+    }
+}
+
 impl Kernel {
     pub fn from_path(binary: impl Into<PathBuf>) -> Result<Self> {
         let binary = binary.into();
         if !binary.is_file() {
             return Err(Error::KernelNotFound(binary.display().to_string()));
         }
-        let version = binary
-            .parent()
-            .and_then(Path::file_name)
-            .and_then(|n| n.to_str())
-            .and_then(parse_version)
-            .unwrap_or_default();
+        let version =
+            install_dir(&binary).file_name().and_then(|n| n.to_str()).and_then(parse_version).unwrap_or_default();
         let major = version.split('.').next().and_then(|m| m.parse().ok()).unwrap_or(0);
         Ok(Self { binary, version, major })
     }
 
+    /// The install directory: where the binary is, or, on macOS, where the app bundle is.
     pub fn dir(&self) -> &Path {
-        self.binary.parent().unwrap_or_else(|| Path::new("."))
+        install_dir(&self.binary)
     }
 
     /// Every kernel installed under `<home>/kernels`, newest first.
     pub fn installed(home: &Home) -> Vec<Kernel> {
-        let Ok(entries) = std::fs::read_dir(kernels_dir(home)) else { return Vec::new() };
+        Self::installed_in(&kernels_dir(home), BINARY)
+    }
+
+    /// [`Kernel::installed`] for kernels whose executable is at `binary` (relative) inside each install directory.
+    fn installed_in(root: &Path, binary: &str) -> Vec<Kernel> {
+        let Ok(entries) = std::fs::read_dir(root) else { return Vec::new() };
         let mut found: Vec<Kernel> = entries
             .flatten()
             .filter(|e| e.file_name().to_str().and_then(parse_version).is_some())
-            .filter_map(|e| Kernel::from_path(e.path().join(BINARY)).ok())
+            .filter_map(|e| Kernel::from_path(e.path().join(binary)).ok())
             .collect();
         found.sort_by_key(|k| std::cmp::Reverse(version_key(&k.version)));
         found
@@ -102,7 +125,19 @@ impl Kernel {
     /// (`proxy-auth` does not match the `proxy-authenticate` header name). Any failure answers `false`.
     pub fn supports_switch(&self, name: &str) -> bool {
         let needle = [&[0u8][..], name.as_bytes(), &[0u8][..]].concat();
-        file_contains(&self.binary, &needle, 8 << 20).unwrap_or(false)
+        file_contains(&self.engine_image(), &needle, 8 << 20).unwrap_or(false)
+    }
+
+    /// The file that holds the engine's code, where switch names are looked up: the executable itself, except in a
+    /// macOS app bundle, where `Contents/MacOS/Chromium` is a small launcher and the engine is the framework next
+    /// to it (`Contents/Frameworks/Chromium Framework.framework/Chromium Framework`).
+    pub fn engine_image(&self) -> PathBuf {
+        let framework =
+            app_bundle(&self.binary).zip(self.binary.file_name().and_then(|n| n.to_str())).map(|(app, name)| {
+                let dir = app.join("Contents").join("Frameworks").join(format!("{name} Framework.framework"));
+                dir.join(format!("{name} Framework"))
+            });
+        framework.filter(|p| p.is_file()).unwrap_or_else(|| self.binary.clone())
     }
 }
 
@@ -170,6 +205,59 @@ mod tests {
         assert_eq!(Kernel::discover(&home, None).unwrap().binary, newest);
         assert_eq!(all[0].major, 151);
         let _ = fs::remove_dir_all(&home.root);
+    }
+
+    /// `<root>/clearcote-<version>` laid out like Clearcote's macOS archive: a launcher, and the engine in the
+    /// framework next to it, reached through the framework's relative links.
+    fn macos_install(root: &Path, version: &str, engine: &[u8]) -> PathBuf {
+        use std::os::unix::fs::symlink;
+        let dir = root.join(format!("{DIR_PREFIX}{version}"));
+        let fw = dir.join("Chromium.app/Contents/Frameworks/Chromium Framework.framework");
+        fs::create_dir_all(dir.join("Chromium.app/Contents/MacOS")).unwrap();
+        fs::create_dir_all(fw.join("Versions").join(version)).unwrap();
+        fs::write(dir.join(MACOS_BINARY), b"launcher: the engine is not in here").unwrap();
+        fs::write(fw.join("Versions").join(version).join("Chromium Framework"), engine).unwrap();
+        symlink(version, fw.join("Versions/Current")).unwrap();
+        symlink("Versions/Current/Chromium Framework", fw.join("Chromium Framework")).unwrap();
+        dir.join(MACOS_BINARY)
+    }
+
+    #[test]
+    fn a_macos_app_bundle_is_versioned_and_probed_through_the_directory_and_framework_around_it() {
+        let root = tmp("bundle");
+        let launcher = macos_install(&root, "150.0.7871.114", b"xx\0persona-from-env\0yy");
+        let k = Kernel::from_path(&launcher).unwrap();
+        assert_eq!((k.version.as_str(), k.major), ("150.0.7871.114", 150));
+        assert_eq!(k.dir(), root.join("clearcote-150.0.7871.114"));
+        // the launcher stub holds no switch names; the engine does
+        assert_eq!(k.engine_image().file_name().unwrap(), "Chromium Framework");
+        assert!(k.supports_switch("persona-from-env"));
+        assert!(!k.supports_switch("socks5-credentials"));
+        // found by `installed` the way kernels are on this platform, or not at all
+        macos_install(&root, "99.0.1.1", b"old");
+        let found = Kernel::installed_in(&root, MACOS_BINARY);
+        assert_eq!(found.iter().map(|k| k.version.as_str()).collect::<Vec<_>>(), ["150.0.7871.114", "99.0.1.1"]);
+        assert!(Kernel::installed_in(&root, "chrome").is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn only_an_app_bundles_executable_counts_as_one() {
+        for not_a_bundle in
+            ["/k/clearcote-1.2.3/chrome", "/k/MacOS/Chromium", "/k/X.app/Contents/Resources/y", "/k/X/Contents/MacOS/y"]
+        {
+            assert_eq!(app_bundle(Path::new(not_a_bundle)), None, "{not_a_bundle}");
+            assert_eq!(install_dir(Path::new(not_a_bundle)), Path::new(not_a_bundle).parent().unwrap());
+        }
+        let bundle = Path::new("/k/clearcote-1.2.3/Chromium.app/Contents/MacOS/Chromium");
+        assert_eq!(app_bundle(bundle), Some(Path::new("/k/clearcote-1.2.3/Chromium.app")));
+        assert_eq!(install_dir(bundle), Path::new("/k/clearcote-1.2.3"));
+        // a flat install still has everything next to the binary, whatever its name
+        let root = tmp("flat");
+        let flat = install(&Home { root: root.clone() }, "151.0.7922.108");
+        let k = Kernel::from_path(&flat).unwrap();
+        assert_eq!((k.dir(), k.engine_image()), (flat.parent().unwrap(), flat.clone()));
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

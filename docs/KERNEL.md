@@ -8,7 +8,7 @@ fingerprint controls live inside the engine rather than in page scripts.
 |---|---|
 | Licence | BSD-3-Clause (checked against the repository's `LICENSE`: "Copyright (c) 2026, Clearcote Labs and the Clearcote contributors") |
 | Version used | `151.0.7922.108` (release `v0.1.0-pre.25`); the project tracks Chromium stable, previous releases were 150 and 149 |
-| Platforms of the project | Linux x64 and Windows x64 in every release, macOS arm64 in some. Citroenition drives Linux x64 |
+| Platforms of the project | Linux x64 and Windows x64 in every release, macOS arm64 in some (so far only `v0.1.0-pre.24`, Chromium 150). Citroenition drives Linux x64 and macOS arm64 |
 | Integrity | every archive has a `.sha256` and an OpenPGP signature; `SHA256SUMS.txt` is signed too |
 | What Citroenition ships | no browser at all. `citro kernel install` downloads it ([docs.md §2.2](../docs.md#22-install-the-browser-kernel)) |
 
@@ -104,6 +104,8 @@ Findings from the measurement work that are worth keeping:
 
 * The locale chain is the biggest tell. Chrome derives UI locale and `navigator.languages` from the OS locale; a
   persona that sets them independently is flagged. Following Chrome's own rule fixed it.
+* Everything above was measured on a Linux host. On a Mac the engine is Clearcote's macOS build (Chromium 150); it
+  has not been through iphey, BrowserScan and CreepJS yet.
 * On a Linux host the macOS persona passes iphey; the Windows persona is flagged on the *Browser* tile. The locale
   fix did not change that, and the cause is unproven (font, GL and shader-dialect checks are the suspects).
 * `--use-angle=gl-egl` removes WebGL on hosts without a GPU; the default backend does not.

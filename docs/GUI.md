@@ -51,9 +51,13 @@ citro-gui --demo                       # fake in-memory data; nothing is read fr
 
 Both `--flag value` and `--flag=value` work. An unknown option prints the usage and exits with code 2.
 
-It needs an X11 session (on a Wayland desktop it runs through XWayland) and OpenGL; Mesa's software renderer is
-enough. The libraries it loads at start-up (`libxkbcommon`, `libGL`, the X11 client libraries) are on every desktop
-Linux. On a server without them, use `citro`: everything the app does is in the command line too.
+On Linux it needs an X11 session (on a Wayland desktop it runs through XWayland) and OpenGL; Mesa's software
+renderer is enough. The libraries it loads at start-up (`libxkbcommon`, `libGL`, the X11 client libraries) are on
+every desktop Linux. On a server without them, use `citro`: everything the app does is in the command line too.
+
+On a Mac it is an ordinary native window (macOS 12 or newer, Apple silicon): open `Citroenition.app` from the
+release archive, or run `citro-gui` from a terminal. See [docs.md §2.1](../docs.md#21-get-the-programs) for the
+first-start warning that a browser download triggers.
 
 The app shares its data directory with `citro` and `citro serve`, so the profiles, the groups, the logs and the team
 login are the same in all three. Its own preferences live in `<home>/gui-settings.json` (never written in demo mode).
