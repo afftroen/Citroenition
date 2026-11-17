@@ -18,7 +18,7 @@ was never published.
 * **Local API**: `POST /api/v1/user/regroup`, `POST /api/v2/browser-profile/delete-cache` (cookie, local_storage,
   indexeddb, extension_cache, history, image_file), `GET /api/v2/browser-profile/cookies`, and `profile_tags` in profile
   lists.
-* The repository names no other product any more; `citro import adspower` is now `citro import api`
+* The repository names no other product any more: the import command is now `citro import api`
   (`$ANTIDETECT_API_KEY`), and the importer's default address is `http://127.0.0.1:50325`.
 
 ## 0.1.6 (2026-11-17)
