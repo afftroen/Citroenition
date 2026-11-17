@@ -144,6 +144,9 @@ impl CitroApp {
             },
             Msg::KernelProgress { done, total } => self.kernel_ui.progress = Some((done, total)),
             Msg::UpdateChecked(r) => self.update_checked(r),
+            Msg::Extensions(r) => self.extensions_loaded(r),
+            Msg::DataMoved(r) => self.data_moved(r),
+            Msg::ExtensionAdded(r) => self.extension_added(r),
             Msg::UpdateProgress { done, total } => self.update_progress(done, total),
             Msg::UpdateDone(r) => self.update_done(r),
             Msg::KernelInstalled(result) => {

@@ -21,6 +21,7 @@
 //! ```
 
 pub mod app_update;
+pub mod chrome_store;
 #[cfg(test)]
 #[path = "../tests/common/mod.rs"]
 mod common;

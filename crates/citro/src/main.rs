@@ -98,6 +98,12 @@ enum Cmd {
         #[command(subcommand)]
         cmd: GroupCmd,
     },
+    /// Chrome extensions loaded into profiles (all of them, or the profiles of chosen groups)
+    #[command(visible_alias = "ext")]
+    Extension {
+        #[command(subcommand)]
+        cmd: ExtCmd,
+    },
     /// Share profiles with a team through a Citroenition hub: one device at a time, the data follows the profile
     Hub {
         #[command(subcommand)]
@@ -180,6 +186,24 @@ enum GroupCmd {
     /// List groups
     #[command(visible_alias = "ls")]
     List,
+}
+
+#[derive(Subcommand)]
+enum ExtCmd {
+    /// Download an extension from the Chrome Web Store (a store link or the 32-letter id) and load it into profiles
+    Add {
+        /// https://chromewebstore.google.com/detail/<name>/<id>, or the id
+        extension: String,
+        /// Only for the profiles of these groups (name or id; repeat). Default: every profile
+        #[arg(long = "group")]
+        groups: Vec<String>,
+    },
+    /// List installed extensions
+    #[command(visible_alias = "ls")]
+    List,
+    /// Remove an extension
+    #[command(visible_alias = "rm")]
+    Remove { id: String },
 }
 
 /// Settings shared by `new` and `edit`. Anything not given keeps its current value.
@@ -843,6 +867,43 @@ fn run(cli: Cli) -> Result<()> {
             }
             let g = store::locked(&home, |s| s.create_group(name, &remark))?;
             println!("{}", g.group_id);
+        }
+        Cmd::Extension { cmd: ExtCmd::Add { extension, groups } } => {
+            let id = citro_core::extensions::id_from_input(&extension)
+                .ok_or_else(|| anyhow!("`{extension}` is not a Chrome Web Store link or extension id"))?;
+            let major = Kernel::discover(&home, cli.kernel.as_deref()).map(|k| k.major).unwrap_or(150);
+            let group_ids = groups
+                .iter()
+                .map(|g| store::locked(&home, |s| s.group_id_for(g)))
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let work = citro_core::extensions::root(&home).join(".download");
+            let unpacked =
+                citro_install::chrome_store::download_extension(&id, major, &work, std::time::Duration::from_secs(60))?;
+            let e = citro_core::extensions::install(&home, &id, &unpacked, now_secs())?;
+            let _ = std::fs::remove_dir_all(&work);
+            if !group_ids.is_empty() {
+                citro_core::extensions::assign(&home, &id, false, group_ids)?;
+            }
+            println!("installed {} {} ({})", e.name, e.version, e.id);
+        }
+        Cmd::Extension { cmd: ExtCmd::List } => {
+            let s = Store::open(&home)?;
+            let body: Vec<Vec<String>> = citro_core::extensions::list(&home)
+                .iter()
+                .map(|e| {
+                    let to = if e.all_profiles {
+                        "all profiles".to_owned()
+                    } else {
+                        e.groups.iter().map(|g| s.group_name(g)).collect::<Vec<_>>().join(", ")
+                    };
+                    vec![e.id.clone(), e.name.clone(), e.version.clone(), to]
+                })
+                .collect();
+            table(&["ID", "NAME", "VERSION", "LOADED INTO"], &body);
+        }
+        Cmd::Extension { cmd: ExtCmd::Remove { id } } => {
+            citro_core::extensions::remove(&home, id.trim())?;
+            println!("removed {id}");
         }
         Cmd::Group { cmd: GroupCmd::List } => {
             let s = Store::open(&home)?;

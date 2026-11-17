@@ -56,6 +56,7 @@ pub struct EditDialog {
     os: String,
     brand: String,
     ua: String,
+    search_engine: String,
     cookie: String,
     cookie_stored: bool,
     // proxy
@@ -114,6 +115,8 @@ pub struct EditDialog {
     jump: Option<usize>,
     /// The section at the top of the scrolled form (the highlighted tab).
     current: usize,
+    /// Editing Settings' defaults for new profiles, not a profile.
+    pub template: bool,
 }
 
 enum Do {
@@ -164,6 +167,7 @@ impl EditDialog {
             os: String::new(),
             brand: String::new(),
             ua: String::new(),
+            search_engine: String::new(),
             cookie: String::new(),
             cookie_stored: false,
             url: String::new(),
@@ -212,6 +216,7 @@ impl EditDialog {
             focus_name: false,
             jump: None,
             current: 0,
+            template: false,
         }
     }
 
@@ -252,6 +257,10 @@ impl EditDialog {
         self.plat_pass.clear();
         self.plat_pass_stored = !p.password.is_empty();
         self.launch_args = p.launch_args.join("\n");
+        self.search_engine = p.search_engine.trim().to_ascii_lowercase();
+        if self.search_engine == "google" {
+            self.search_engine.clear();
+        }
 
         let fp = &p.fingerprint_config;
         self.brand = fp_get(fp, "brand").to_ascii_lowercase();
@@ -480,6 +489,9 @@ impl EditDialog {
     // validation
 
     fn name_problem(&self) -> Option<String> {
+        if self.template {
+            return None;
+        }
         let n = self.name.trim();
         if n.is_empty() {
             Some("Give the profile a name.".to_owned())
@@ -616,7 +628,38 @@ impl EditDialog {
         };
         p.launch_args = self.launch_args.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect();
         p.fingerprint_config = self.fingerprint();
+        p.search_engine = self.search_engine.clone();
         Some(p)
+    }
+
+    /// The settings a new profile starts with: `t` without anything that belongs to one profile.
+    pub fn defaults_of(t: &Profile) -> Profile {
+        let mut d = Profile {
+            persona_os: t.persona_os.clone(),
+            search_engine: t.search_engine.clone(),
+            country: t.country.clone(),
+            tabs: t.tabs.clone(),
+            domain_name: t.domain_name.clone(),
+            launch_args: t.launch_args.clone(),
+            fingerprint_config: t.fingerprint_config.clone(),
+            user_proxy_config: t.user_proxy_config.clone(),
+            ..Default::default()
+        };
+        // a proxy login and the seed belong to one profile
+        d.user_proxy_config.proxy_user = None;
+        d.user_proxy_config.proxy_password = None;
+        d.fingerprint_config.0.remove("seed");
+        d
+    }
+
+    /// The editor for Settings' defaults (`None` = the built-in ones).
+    pub fn for_defaults(t: Option<&Profile>) -> EditDialog {
+        let mut d = EditDialog::blank();
+        d.template = true;
+        if let Some(t) = t {
+            d.fill(&EditDialog::defaults_of(t));
+        }
+        d
     }
 }
 
@@ -637,6 +680,9 @@ impl CitroApp {
                 });
             }
             None => {
+                if let Some(t) = self.settings.new_profile.clone() {
+                    d.fill(&EditDialog::defaults_of(&t));
+                }
                 d.group = self.profiles.query.group.clone().unwrap_or_else(|| "0".to_owned());
                 d.focus_name = true;
             }
@@ -658,6 +704,15 @@ impl CitroApp {
         }
         match act {
             Do::Cancel => return,
+            Do::Save if d.template => {
+                d.tried = true;
+                if let Some(profile) = d.build() {
+                    self.settings.new_profile = Some(EditDialog::defaults_of(&profile));
+                    self.save_settings();
+                    return;
+                }
+                d.jump = d.first_problem_section();
+            }
             Do::Save => {
                 d.tried = true;
                 if let Some(profile) = d.build() {
@@ -687,7 +742,7 @@ impl CitroApp {
                 });
             }
             Do::CreateGroup(name) => {
-                let g = Group { group_id: String::new(), group_name: name, remark: String::new() };
+                let g = Group { group_id: String::new(), group_name: name, remark: String::new(), tabs: Vec::new() };
                 self.tasks.spawn(true, move |w| w.send(Msg::GroupCreated(w.backend.save_group(g))));
             }
             Do::Nothing => {}

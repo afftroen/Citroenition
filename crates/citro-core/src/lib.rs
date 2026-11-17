@@ -4,9 +4,13 @@
 //! The profile and API formats in here were reverse engineered from a local AdsPower install; see
 //! `docs/REVERSE_ENGINEERING.md` in the repository root. The browser itself is Clearcote, see `docs/KERNEL.md`.
 
+pub mod browser_prefs;
+pub mod cdp;
 pub mod codec;
+pub mod cookies;
 pub mod csv;
 pub mod error;
+pub mod extensions;
 pub mod fingerprint;
 pub mod kernel;
 pub mod kernel_env;

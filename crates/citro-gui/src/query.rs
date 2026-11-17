@@ -105,8 +105,8 @@ mod tests {
 
     fn groups() -> Vec<Group> {
         vec![
-            Group { group_id: "1".into(), group_name: "Vinted FR".into(), remark: String::new() },
-            Group { group_id: "2".into(), group_name: "eBay DE".into(), remark: String::new() },
+            Group { group_id: "1".into(), group_name: "Vinted FR".into(), remark: String::new(), tabs: Vec::new() },
+            Group { group_id: "2".into(), group_name: "eBay DE".into(), remark: String::new(), tabs: Vec::new() },
         ]
     }
 

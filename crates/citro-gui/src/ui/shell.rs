@@ -14,8 +14,11 @@ use std::time::Duration;
 const SIDEBAR_W: f32 = 220.0;
 
 /// The sidebar's sections: a heading (none for the first) and its pages. Groups lives in the Profiles tab strip.
-const NAV: [(&str, &[Page]); 3] =
-    [("", &[Page::Profiles]), ("Browser", &[Page::Kernel, Page::Logs]), ("Workspace", &[Page::Teams, Page::Settings])];
+const NAV: [(&str, &[Page]); 3] = [
+    ("", &[Page::Profiles]),
+    ("Browser", &[Page::Kernel, Page::Extensions, Page::Logs]),
+    ("Workspace", &[Page::Teams, Page::Settings]),
+];
 
 impl CitroApp {
     pub(super) fn sidebar(&mut self, ui: &mut Ui) {

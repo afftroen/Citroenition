@@ -29,7 +29,7 @@ impl Theme {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub theme: Theme,
@@ -45,6 +45,9 @@ pub struct Settings {
     pub hub_url: String,
     /// How this machine is called in a team ("MIA-LAPTOP").
     pub device_name: String,
+    /// What a new profile starts with (Settings -> New profiles); `None` = the built-in defaults. Never holds a
+    /// password, a proxy login, cookies or a seed (`EditDialog::defaults_of`).
+    pub new_profile: Option<citro_core::profile::Profile>,
 }
 
 impl Default for Settings {
@@ -57,6 +60,7 @@ impl Default for Settings {
             csv_bom: true,
             hub_url: String::new(),
             device_name: default_device_name(),
+            new_profile: None,
         }
     }
 }

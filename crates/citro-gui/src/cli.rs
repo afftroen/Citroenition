@@ -15,8 +15,8 @@ OPTIONS:
     --kernel PATH       use this browser kernel binary for this run
     --demo              fake in-memory data: nothing is read from or written to disk
     --screenshot OUT    draw the window, write a PNG and exit (needs a display: xvfb-run on a server)
-    --page PAGE         page for --screenshot: profiles groups logs logs-browser kernel teams settings
-                        edit new export error (default: profiles)
+    --page PAGE         page for --screenshot: profiles groups logs logs-browser kernel extensions teams
+                        settings edit new export error (default: profiles)
     --size WxH          window size (default 1280x800, minimum 960x600)
     --theme dark|light  colour theme for this run (default: the saved setting)
     -V, --version       print the version
@@ -32,6 +32,7 @@ pub enum StartPage {
     Logs,
     LogsBrowser,
     Kernel,
+    Extensions,
     Teams,
     Settings,
     /// The profiles page with the edit dialog open on the first profile.
@@ -52,6 +53,7 @@ impl StartPage {
             "logs" => StartPage::Logs,
             "logs-browser" | "browser" => StartPage::LogsBrowser,
             "kernel" => StartPage::Kernel,
+            "extensions" => StartPage::Extensions,
             "teams" => StartPage::Teams,
             "settings" => StartPage::Settings,
             "edit" => StartPage::Edit,
@@ -182,6 +184,7 @@ mod tests {
             "logs",
             "logs-browser",
             "kernel",
+            "extensions",
             "teams",
             "settings",
             "edit",

@@ -81,10 +81,10 @@ per platform, each with `citro`, `citro-gui`, `citro-hub` and `citro-install`, a
 both. On Linux (glibc 2.35 or newer: Ubuntu 22.04, Debian 12 or later):
 
 ```sh
-V=0.1.4
+V=0.1.5
 curl -LO https://github.com/afftroen/Citroenition/releases/download/v$V/citroenition-v$V-x86_64-linux.tar.gz
 curl -LO https://github.com/afftroen/Citroenition/releases/download/v$V/SHA256SUMS
-sha256sum -c --ignore-missing SHA256SUMS      # citroenition-v0.1.4-x86_64-linux.tar.gz: OK
+sha256sum -c --ignore-missing SHA256SUMS      # citroenition-v0.1.5-x86_64-linux.tar.gz: OK
 tar xzf citroenition-v$V-x86_64-linux.tar.gz
 export PATH="$PWD/citroenition-v$V-x86_64-linux:$PATH"
 ```
@@ -92,10 +92,10 @@ export PATH="$PWD/citroenition-v$V-x86_64-linux:$PATH"
 On a Mac (Apple silicon, macOS 12 or newer):
 
 ```sh
-V=0.1.4
+V=0.1.5
 curl -LO https://github.com/afftroen/Citroenition/releases/download/v$V/citroenition-v$V-aarch64-macos.tar.gz
 curl -LO https://github.com/afftroen/Citroenition/releases/download/v$V/SHA256SUMS
-grep aarch64-macos SHA256SUMS | shasum -a 256 -c      # citroenition-v0.1.4-aarch64-macos.tar.gz: OK
+grep aarch64-macos SHA256SUMS | shasum -a 256 -c      # citroenition-v0.1.5-aarch64-macos.tar.gz: OK
 tar xzf citroenition-v$V-aarch64-macos.tar.gz
 export PATH="$PWD/citroenition-v$V-aarch64-macos:$PATH"
 open citroenition-v$V-aarch64-macos/Citroenition.app      # the desktop app

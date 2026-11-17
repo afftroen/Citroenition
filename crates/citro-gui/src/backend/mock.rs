@@ -42,6 +42,7 @@ struct State {
     teams: Vec<TeamInfo>,
     /// The profiles that belong to the team hub (the others are private to this device).
     shared: HashSet<String>,
+    extensions: Vec<super::Extension>,
 }
 
 pub struct MockBackend {
@@ -255,13 +256,42 @@ fn fake_id(i: usize) -> String {
     id
 }
 
+fn demo_extensions(now: i64) -> Vec<super::Extension> {
+    let e = |id: &str, name: &str, version: &str, desc: &str, all: bool, groups: &[&str]| super::Extension {
+        id: id.into(),
+        name: name.into(),
+        version: version.into(),
+        description: desc.into(),
+        all_profiles: all,
+        groups: groups.iter().map(|g| (*g).to_owned()).collect(),
+        added: now - 86_400,
+    };
+    vec![
+        e("ddkjiahejlhfcafbddmgiahcphecmpfh", "uBlock Origin Lite", "2026.1116.1650", "A content blocker.", true, &[]),
+        e(
+            "nkbihfbeogaeaoehlefnkodbefgpgknn",
+            "MetaMask",
+            "13.4.2",
+            "An Ethereum wallet in your browser.",
+            false,
+            &["1"],
+        ),
+        e("bhghoamapcdpbohphigoooaddinpkbai", "Authenticator", "8.0.2", "Two-factor codes.", false, &["1", "2"]),
+    ]
+}
+
 impl MockBackend {
     /// ~14 realistic fake profiles, 5 groups, a fake team and a fake kernel, relative to `now`.
     pub fn demo_at(now: i64) -> MockBackend {
         let groups: Vec<Group> = GROUPS
             .iter()
             .enumerate()
-            .map(|(i, (n, r))| Group { group_id: (i + 1).to_string(), group_name: (*n).into(), remark: (*r).into() })
+            .map(|(i, (n, r))| Group {
+                group_id: (i + 1).to_string(),
+                group_name: (*n).into(),
+                remark: (*r).into(),
+                tabs: Vec::new(),
+            })
             .collect();
         let mut profiles = Vec::new();
         let (mut running, mut locks, mut failing) = (HashMap::new(), HashMap::new(), Vec::new());
@@ -397,6 +427,7 @@ impl MockBackend {
                 },
                 teams,
                 shared,
+                extensions: demo_extensions(now),
             }),
             latency: Duration::from_millis(900),
             kind: BackendKind::Demo,
@@ -660,6 +691,43 @@ impl Backend for MockBackend {
                 p.last_close_time = now_ts();
             }
             Self::log(&mut st, Level::Info, Some(id), format!("closed {name}"));
+        }
+        Ok(())
+    }
+
+    fn extensions(&self) -> BResult<Vec<super::Extension>> {
+        Ok(self.state.lock().unwrap_or_else(|e| e.into_inner()).extensions.clone())
+    }
+
+    fn add_extension(&self, input: &str) -> BResult<super::Extension> {
+        std::thread::sleep(self.latency);
+        let id = citro_core::extensions::id_from_input(input)
+            .ok_or_else(|| BackendError::Invalid("Paste a Chrome Web Store link or an extension id".into()))?;
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(e) = st.extensions.iter().find(|e| e.id == id) {
+            return Ok(e.clone());
+        }
+        let e = super::Extension {
+            id,
+            name: "Demo extension".into(),
+            version: "1.0".into(),
+            all_profiles: true,
+            ..Default::default()
+        };
+        st.extensions.push(e.clone());
+        Ok(e)
+    }
+
+    fn remove_extension(&self, id: &str) -> BResult<()> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).extensions.retain(|e| e.id != id);
+        Ok(())
+    }
+
+    fn assign_extension(&self, id: &str, all_profiles: bool, groups: Vec<String>) -> BResult<()> {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(e) = st.extensions.iter_mut().find(|e| e.id == id) {
+            e.all_profiles = all_profiles;
+            e.groups = groups;
         }
         Ok(())
     }

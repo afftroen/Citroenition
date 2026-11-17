@@ -23,10 +23,11 @@ profiles.
 5. [Groups](#groups)
 6. [Logs](#logs)
 7. [Kernel](#kernel)
-8. [Teams](#teams)
-9. [Settings](#settings)
-10. [Export to CSV](#export-to-csv)
-11. [Quitting with team browsers open](#quitting-with-team-browsers-open)
+8. [Extensions](#extensions)
+9. [Teams](#teams)
+10. [Settings](#settings)
+11. [Export to CSV](#export-to-csv)
+12. [Quitting with team browsers open](#quitting-with-team-browsers-open)
 
 ## Starting it
 
@@ -206,8 +207,16 @@ right, or **New** next to the seed) picks a fresh seed, which changes every deri
   100 % ([the evidence](../docs.md#12-verification-how-we-know-it-works)); the Windows persona is currently flagged on
   Linux hosts, which the hint says when it is chosen.
 * *User-Agent*: empty = automatic. A custom one (`ua`) picks the OS and brand; the version is the installed kernel's.
+* *Search engine*: Google (the default), Microsoft Bing, DuckDuckGo, Brave Search, Yahoo, Ecosia, Startpage, or
+  *Leave it to the browser*. Clearcote ships without Google (its default is "No Search", so a search typed in the
+  address bar went nowhere); Citroenition writes the chosen engine into the browser's protected preferences with the
+  MAC Chromium checks, on the first launch and whenever the choice here changes. A change made in the browser's own
+  settings stays until then.
 * *Group*: a group, or *Ungrouped*; **+ New group** creates one without leaving the page.
-* *Cookie*: JSON, Netscape or `name=value`. Kept with the profile (masked like a password) and synced through the hub.
+* *Cookie*: JSON (Cookie-Editor, EditThisCookie, AdsPower), Netscape `cookies.txt` or `name=value` (for the platform's
+  site). Kept with the profile (masked like a password), synced through the hub, and **imported into the browser** the
+  next time it opens; again only after the field changes, so cookies sites renew later are not overwritten. The
+  profile's `kernel.log` says how many went in.
 * *Remark*: a note that appears in the list, up to 2000 characters.
 
 **Proxy.**
@@ -226,7 +235,9 @@ right, or **New** next to the seed) picks a fresh seed, which changes every deri
 
 * *Platform* (`domain_name`): opened on start when there are no start URLs. *Username* / *Password*: the account on
   that platform, stored (the password masked) and shared with the team, never typed in for you.
-* *Start URLs*: one per line; a line without a scheme gets `https://`; `about:` pages stay as they are.
+* *Start URLs*: one per line; a line without a scheme gets `https://`; `about:` pages stay as they are. The group's
+  start pages open first. When the browser restores its last session, start pages that are new or changed since the
+  last launch open next to it (before 0.1.5 a restored session ignored edits here).
 
 **Fingerprint.** Every control writes an AdsPower `fingerprint_config` key the launcher reads (see the table at the
 top of `crates/citro-core/src/fingerprint.rs`); keys the page does not know are kept.
@@ -263,8 +274,11 @@ of the Profiles card.
   that exists already, in any capitalisation, is refused.
 * The table shows each group with its number of profiles and its remark. The first row, *Ungrouped*, is built in and
   only has **View**.
-* **View** jumps to Profiles filtered on that group. **Rename** edits the name and the remark in place. **Delete**
-  asks first; the group's profiles move to *Ungrouped* and are kept.
+* **View** jumps to Profiles filtered on that group. **Settings** opens the group's settings: its name and remark,
+  its **start pages** (every profile of the group opens them, before its own) and its **extensions** (which of the
+  installed extensions the group's profiles load; those set to *All profiles* are shown ticked and greyed). So a
+  "TikTok" group can open tiktok.com with its own extensions in every profile. **Delete** asks first; the group's
+  profiles move to *Ungrouped* and are kept.
 
 Groups are per device. A profile that goes on the team hub carries its group's *name*, and a pull creates a missing
 group by that name.
@@ -316,6 +330,23 @@ installs or updates it.
 
 When no kernel is found, profiles cannot open and the Kernel entry in the sidebar carries a red `!`.
 
+## Extensions
+
+Chrome extensions for your profiles, like AdsPower's team extensions.
+
+![The Extensions page](screenshots/extensions.png)
+
+* **Add**: open an extension in the Chrome Web Store (**Open Chrome Web Store** at the top right), copy the address
+  from the address bar, paste it (or just the 32-letter id) and press **Add**. Citroenition downloads it from Google's
+  update service the way Chrome does, unpacks it into `<data dir>/extensions/<id>/` and keeps the store's id (the
+  store's public key goes into its manifest), so its storage stays the same wherever the data folder is.
+* **Loaded into**: *All profiles*, or *Chosen groups* with a box per group. A group's Settings window offers the same
+  choice from the other side.
+* **Remove** deletes the extension's files. Changes apply the next time a profile opens (`--load-extension`).
+
+From the command line: `citro extension add <store link or id> [--group NAME]`, `citro extension ls`,
+`citro extension rm <id>`.
+
 ## Teams
 
 Teams, the roles, the locking of profiles and the hosted cookies are explained in the [hub guide](HUB.md). This page
@@ -366,6 +397,9 @@ lock again and supervises it, and says so in a notice.
   version is put back). **Restart now** starts the new version; open browsers keep running and profiles, kernels and
   settings are not touched. This works for an unpacked release folder the app can write to; a development build or an
   app moved out of its folder is told to download the release instead. The demo never goes online.
+* **New profiles**: the defaults a new profile starts with, like AdsPower's Preferences. **Edit defaults…** opens the
+  profile editor without the per-profile parts (name, group, proxy login, platform account, cookies, seed); **Save
+  defaults** keeps them in the settings file, **Use built-in defaults** forgets them.
 * **Appearance**: *Dark* or *Light*, applied at once.
 * **Opening browsers**:
   * *Headless: open browsers without a window*. For servers and automation.
@@ -375,7 +409,12 @@ lock again and supervises it, and says so in a notice.
     line below the field says whether the path exists and is usable.
   * *Start CSV exports with a UTF-8 byte-order mark*: Excel needs it to show accented names correctly.
 * **This device and its data**: the *device name* (what teammates see in lock messages and logs), the data directory,
-  the settings file and the version, each with **Copy**.
+  the settings file and the version, each with **Copy**. **Move the data folder**: type a new or empty folder and
+  press **Move and restart** (with every browser closed). Everything moves (profiles with their cookies, the kernel,
+  extensions, the settings) by a rename on the same disk or a full copy that replaces the old folder only when it is
+  complete. A one-line pointer (`~/Library/Application Support/Citroenition/data-folder` on macOS,
+  `~/.config/citroenition/data-folder` on Linux) makes the app and `citro` use the new place; `$CITRO_HOME` and
+  `--home` still win.
 
 **Save settings** is enabled when something changed; **Revert** takes the changes back. The page says *Unsaved changes*
 or *All changes saved*.

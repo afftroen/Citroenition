@@ -85,6 +85,17 @@ impl Install {
     }
 }
 
+/// Start this program again (a new instance of the app bundle on macOS) so the caller can quit.
+pub fn relaunch_current() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let bundle = exe.ancestors().find(|a| a.extension().is_some_and(|e| e == "app")).map(Path::to_path_buf);
+    let spawned = match bundle {
+        Some(b) => std::process::Command::new("open").arg("-n").arg(b).spawn(),
+        None => std::process::Command::new(exe).args(std::env::args_os().skip(1)).spawn(),
+    };
+    spawned.map(drop).map_err(|e| format!("could not start Citroenition again: {e}"))
+}
+
 /// Replace every entry of `root` that `new_root` has with the new one. All or nothing.
 fn swap(root: &Path, new_root: &Path) -> Result<(), String> {
     let backup = root.join(BACKUP);

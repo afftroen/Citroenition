@@ -356,6 +356,7 @@ impl CitroApp {
                                 group_id: String::new(),
                                 group_name: name2,
                                 remark: String::new(),
+                                tabs: Vec::new(),
                             })?;
                             b.move_to_group(&ids2, &g.group_id)
                         },

@@ -5,7 +5,7 @@ use super::shot::Shot;
 use super::tasks::{Msg, OpDone, Refresh, Tasks};
 use super::theme::{self, Palette};
 use super::widgets::Icon;
-use super::{edit, export, groups, kernel, logs, profiles, settings, teams, update};
+use super::{edit, export, extensions, groups, kernel, logs, profiles, settings, teams, update};
 use crate::backend::{
     BResult, Backend, BackendInfo, BackendKind, HubStatus, KernelStatus, OpenOpts, Query, Row, RunState, TeamInfo,
 };
@@ -30,6 +30,7 @@ pub enum Page {
     Groups,
     Logs,
     Kernel,
+    Extensions,
     Teams,
     Settings,
 }
@@ -41,6 +42,7 @@ impl Page {
             Page::Groups => "Groups",
             Page::Logs => "Logs",
             Page::Kernel => "Kernel",
+            Page::Extensions => "Extensions",
             Page::Teams => "Teams",
             Page::Settings => "Settings",
         }
@@ -52,6 +54,7 @@ impl Page {
             Page::Groups => Icon::Groups,
             Page::Logs => Icon::Logs,
             Page::Kernel => Icon::Kernel,
+            Page::Extensions => Icon::Puzzle,
             Page::Teams => Icon::Teams,
             Page::Settings => Icon::Settings,
         }
@@ -62,6 +65,7 @@ impl Page {
             StartPage::Groups => Page::Groups,
             StartPage::Logs | StartPage::LogsBrowser => Page::Logs,
             StartPage::Kernel => Page::Kernel,
+            StartPage::Extensions => Page::Extensions,
             StartPage::Teams => Page::Teams,
             StartPage::Settings => Page::Settings,
             _ => Page::Profiles,
@@ -173,6 +177,7 @@ pub struct CitroApp {
     pub kernel_ui: kernel::State,
     pub teams_ui: teams::State,
     pub settings_ui: settings::State,
+    pub extensions_ui: extensions::State,
     pub update: update::State,
 
     pub(super) scenario: Option<StartPage>,
@@ -232,6 +237,7 @@ impl CitroApp {
             kernel_ui: kernel::State::default(),
             teams_ui: teams::State::default(),
             settings_ui: settings::State::default(),
+            extensions_ui: extensions::State::default(),
             update: update::State::default(),
             scenario: Some(o.start),
             demo_failing: o.demo_failing,
@@ -308,6 +314,7 @@ impl CitroApp {
         self.page = page;
         match page {
             Page::Kernel => self.refresh_kernel(),
+            Page::Extensions => self.refresh_extensions(),
             Page::Teams => self.refresh_teams(),
             Page::Logs => self.logs_ui.mark_dirty(),
             _ => {}
@@ -535,6 +542,7 @@ impl eframe::App for CitroApp {
                             Page::Groups => self.groups_page(ui),
                             Page::Logs => self.logs_page(ui),
                             Page::Kernel => self.kernel_page(ui),
+                            Page::Extensions => self.extensions_page(ui),
                             Page::Teams => self.teams_page(ui),
                             Page::Settings => self.settings_page(ui),
                         }

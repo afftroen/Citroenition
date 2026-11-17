@@ -24,15 +24,42 @@ pub struct Home {
     pub root: PathBuf,
 }
 
+/// Where the "my data lives elsewhere" pointer is kept: a one-line file outside the data folder
+/// (`~/Library/Application Support/Citroenition/data-folder` on macOS, `$XDG_CONFIG_HOME/citroenition/data-folder`
+/// elsewhere). Written by [`move_data`].
+pub fn data_pointer() -> PathBuf {
+    let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let home = env("HOME").unwrap_or_default();
+    if cfg!(target_os = "macos") {
+        home.join("Library/Application Support/Citroenition/data-folder")
+    } else {
+        env("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config")).join("citroenition/data-folder")
+    }
+}
+
+fn pointed_data_folder() -> Option<PathBuf> {
+    let text = fs::read_to_string(data_pointer()).ok()?;
+    let p = PathBuf::from(text.lines().next()?.trim());
+    p.is_absolute().then_some(p)
+}
+
 impl Home {
+    /// `--home`, else `$CITRO_HOME`, else the folder chosen with [`move_data`], else `$XDG_DATA_HOME/citroenition`,
+    /// else `~/.local/share/citroenition`.
     pub fn discover(explicit: Option<&Path>) -> Home {
         let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
         let root = explicit
             .map(Path::to_path_buf)
             .or_else(|| env("CITRO_HOME"))
+            .or_else(pointed_data_folder)
             .or_else(|| env("XDG_DATA_HOME").map(|p| p.join("citroenition")))
             .unwrap_or_else(|| env("HOME").unwrap_or_default().join(".local/share/citroenition"));
         Home { root }
+    }
+
+    /// `true` when `$CITRO_HOME` decides (a moved folder is then not used).
+    pub fn from_env() -> bool {
+        std::env::var_os("CITRO_HOME").is_some_and(|v| !v.is_empty())
     }
 
     pub fn profile_dir(&self, id: &str) -> PathBuf {
@@ -254,7 +281,12 @@ impl Store {
 
     pub fn create_group(&mut self, name: &str, remark: &str) -> Result<Group> {
         let next = self.data.groups.iter().filter_map(|g| g.group_id.parse::<u64>().ok()).max().unwrap_or(0) + 1;
-        let g = Group { group_id: next.to_string(), group_name: name.to_owned(), remark: remark.to_owned() };
+        let g = Group {
+            group_id: next.to_string(),
+            group_name: name.to_owned(),
+            remark: remark.to_owned(),
+            tabs: Vec::new(),
+        };
         self.data.groups.push(g.clone());
         self.save()?;
         Ok(g)
@@ -265,6 +297,112 @@ impl Store {
             return "Ungrouped".into();
         }
         self.data.groups.iter().find(|g| g.group_id == id).map(|g| g.group_name.clone()).unwrap_or_default()
+    }
+}
+
+/// Copy a tree exactly: directories, regular files with their permission bits, and symbolic links as links (a macOS
+/// kernel bundle is full of them).
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::create_dir_all(to)?;
+    fs::set_permissions(to, fs::Permissions::from_mode(fs::metadata(from)?.permissions().mode()))?;
+    for e in fs::read_dir(from)? {
+        let e = e?;
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        let t = e.file_type()?;
+        if t.is_symlink() {
+            std::os::unix::fs::symlink(fs::read_link(&src)?, &dst)?;
+        } else if t.is_dir() {
+            copy_tree(&src, &dst)?;
+        } else if t.is_file() {
+            fs::copy(&src, &dst)?;
+        }
+        // sockets and fifos (a running browser's) are not data
+    }
+    Ok(())
+}
+
+/// Move all data (profiles and their browser data, kernels, extensions, the app's settings) from `home` to `to` and
+/// make `to` the data folder from now on. `to` must not exist yet or be empty. Refused while a browser runs. A rename
+/// when both are on one disk, else a full copy that replaces the old folder only once it is complete.
+pub fn move_data(home: &Home, to: &Path) -> Result<()> {
+    move_data_with(home, to, &data_pointer())
+}
+
+fn move_data_with(home: &Home, to: &Path, pointer: &Path) -> Result<()> {
+    let to = if to.is_absolute() { to.to_path_buf() } else { std::env::current_dir()?.join(to) };
+    let from = fs::canonicalize(&home.root).unwrap_or_else(|_| home.root.clone());
+    if to == from {
+        return Ok(());
+    }
+    if to.starts_with(&from) || from.starts_with(&to) {
+        return Err(Error::Invalid(
+            "the new data folder cannot be inside the current one, or the other way round".into(),
+        ));
+    }
+    if crate::launch::any_running(home) {
+        return Err(Error::Invalid("close every browser first: an open browser is using the data folder".into()));
+    }
+    if to.exists() && fs::read_dir(&to)?.next().is_some() {
+        return Err(Error::Invalid(format!("{} is not empty: choose a new or empty folder", to.display())));
+    }
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if to.exists() {
+        fs::remove_dir(&to)?;
+    }
+    if fs::rename(&from, &to).is_err() {
+        // another disk: copy everything, then drop the original
+        let staging =
+            to.with_file_name(format!(".{}.citro-moving", to.file_name().and_then(|n| n.to_str()).unwrap_or("data")));
+        let _ = fs::remove_dir_all(&staging);
+        if let Err(e) = copy_tree(&from, &staging) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(e.into());
+        }
+        fs::rename(&staging, &to)?;
+        fs::remove_dir_all(&from)?;
+    }
+    if let Some(dir) = pointer.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    fs::write(pointer, format!("{}\n", to.display()))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod move_tests {
+    use super::*;
+
+    #[test]
+    fn data_moves_with_its_links_and_the_pointer_follows() {
+        let t = std::env::temp_dir().join(format!("citro-move-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        let old = t.join("old");
+        fs::create_dir_all(old.join("kernels/k/App.app/Contents")).unwrap();
+        fs::write(old.join("store.json"), "{}").unwrap();
+        fs::write(old.join("kernels/k/App.app/Contents/bin"), "x").unwrap();
+        std::os::unix::fs::symlink("App.app/Contents/bin", old.join("kernels/k/link")).unwrap();
+        let home = Home { root: old.clone() };
+        let pointer = t.join("cfg/data-folder");
+        // inside itself: refused
+        assert!(move_data_with(&home, &old.join("sub"), &pointer).is_err());
+        // a non-empty target: refused
+        fs::create_dir_all(t.join("busy")).unwrap();
+        fs::write(t.join("busy/f"), "").unwrap();
+        assert!(move_data_with(&home, &t.join("busy"), &pointer).is_err());
+        let new = t.join("elsewhere/data");
+        move_data_with(&home, &new, &pointer).unwrap();
+        assert!(!old.exists());
+        assert_eq!(fs::read_to_string(new.join("store.json")).unwrap(), "{}");
+        assert_eq!(fs::read_link(new.join("kernels/k/link")).unwrap(), PathBuf::from("App.app/Contents/bin"));
+        assert_eq!(fs::read_to_string(&pointer).unwrap().trim(), new.display().to_string());
+        // the copy path (as across disks) keeps links and modes too
+        let copy = t.join("copy");
+        copy_tree(&new, &copy).unwrap();
+        assert_eq!(fs::read_link(copy.join("kernels/k/link")).unwrap(), PathBuf::from("App.app/Contents/bin"));
+        let _ = fs::remove_dir_all(&t);
     }
 }
 

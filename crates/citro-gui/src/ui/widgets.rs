@@ -527,6 +527,7 @@ pub enum Icon {
     Sort,
     SortUp,
     SortDown,
+    Puzzle,
 }
 
 fn arc(cx: f32, cy: f32, r: f32, a0: f32, a1: f32, n: usize) -> Vec<(f32, f32)> {
@@ -612,6 +613,30 @@ pub fn paint_icon_scaled(g: &Painter, c: Pos2, icon: Icon, col: Color32, s: f32)
             seg((-2.4, -3.0), (2.4, -3.0));
             seg((-2.4, 0.0), (2.4, 0.0));
             seg((-2.4, 3.0), (0.4, 3.0));
+        }
+        Icon::Puzzle => {
+            // a jigsaw piece: a body with a knob on top and one on the right
+            poly(
+                &[
+                    (-6.5, -3.0),
+                    (-3.0, -3.0),
+                    (-3.0, -4.6),
+                    (-1.6, -6.4),
+                    (0.4, -6.4),
+                    (1.6, -4.6),
+                    (1.6, -3.0),
+                    (4.5, -3.0),
+                    (4.5, 0.2),
+                    (6.2, 0.4),
+                    (7.4, 1.8),
+                    (7.4, 3.4),
+                    (6.2, 4.8),
+                    (4.5, 5.0),
+                    (4.5, 7.0),
+                    (-6.5, 7.0),
+                ],
+                true,
+            );
         }
         Icon::Kernel => {
             rrect(-4.5, -4.5, 4.5, 4.5, 1.5);
@@ -818,4 +843,11 @@ pub fn logo(ui: &mut Ui, size: f32) -> Response {
         ui.painter().image(t.id(), rect, uv, Color32::WHITE);
     }
     resp
+}
+
+/// A 44 px rounded tile with an icon in it (the Extensions list).
+pub fn paint_icon_box(ui: &mut Ui, p: &Palette, icon: Icon) {
+    let (rect, _) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::hover());
+    ui.painter().rect_filled(rect, CornerRadius::same(10), p.active);
+    paint_icon_scaled(ui.painter(), rect.center(), icon, p.strong, 1.1);
 }

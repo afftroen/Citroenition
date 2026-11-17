@@ -5,6 +5,7 @@ pub mod app;
 pub mod dialogs;
 pub mod edit;
 pub mod export;
+pub mod extensions;
 pub mod groups;
 pub mod kernel;
 pub mod logs;

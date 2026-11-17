@@ -2,6 +2,7 @@
 //! Edits go to `CitroApp::settings` (the theme applies at once); `Save settings` writes them to the settings file.
 
 use super::app::{CitroApp, ToastKind};
+use super::tasks::Msg;
 use super::widgets::{self, dim, mono, small_dim};
 use crate::settings::Theme;
 use crate::util;
@@ -11,6 +12,9 @@ use std::path::{Path, PathBuf};
 #[derive(Default)]
 pub struct State {
     pub error: Option<String>,
+    /// Where the data folder should move to.
+    pub move_to: String,
+    pub moving: bool,
 }
 
 /// What the pinned-kernel field says about its content.
@@ -59,6 +63,8 @@ impl CitroApp {
         ui.add_space(10.0);
         ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             self.settings_updates(ui);
+            ui.add_space(12.0);
+            self.settings_new_profiles(ui);
             ui.add_space(12.0);
             self.settings_look(ui);
             ui.add_space(12.0);
@@ -146,6 +152,7 @@ impl CitroApp {
             .map(|f| util::tildify(&f.display().to_string(), home.as_deref()))
             .unwrap_or_else(|| "not saved to disk (demo data)".to_owned());
         let mut copy: Option<String> = None;
+        let mut move_now = false;
         widgets::card(ui, &p, |ui| {
             ui.set_width(ui.available_width());
             widgets::section_title(ui, "This device and its data");
@@ -173,10 +180,119 @@ impl CitroApp {
                 });
             }
             widgets::kv(ui, &p, "Version", RichText::new(format!("Citroenition {}", env!("CARGO_PKG_VERSION"))));
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(8.0);
+            ui.label(widgets::semibold("Move the data folder", 13.5));
+            ui.add_space(4.0);
+            let demo = self.settings_path.is_none();
+            let pinned = citro_core::store::Home::from_env();
+            let open = self.open_count();
+            ui.horizontal(|ui| {
+                let w = (ui.available_width() - 210.0).max(200.0);
+                ui.add_enabled(
+                    !demo && !pinned && !self.settings_ui.moving,
+                    TextEdit::singleline(&mut self.settings_ui.move_to)
+                        .hint_text("~/Documents/Citroenition data")
+                        .margin(egui::Margin::symmetric(10, 8))
+                        .desired_width(w),
+                );
+                let ready = !demo
+                    && !pinned
+                    && open == 0
+                    && !self.settings_ui.moving
+                    && !self.settings_ui.move_to.trim().is_empty();
+                if widgets::primary_button(ui, &p, "Move and restart", ready).clicked() {
+                    move_now = true;
+                }
+                if self.settings_ui.moving {
+                    ui.add(egui::Spinner::new().size(16.0));
+                }
+            });
+            let note = if demo {
+                "Not available with demo data.".to_owned()
+            } else if pinned {
+                "CITRO_HOME is set in the environment, so it decides where the data lives.".to_owned()
+            } else if open > 0 {
+                format!("Close the {open} open browser(s) first: they are using the data folder.")
+            } else {
+                "A new or empty folder. Everything moves: profiles with their cookies and logins, the browser kernel, \
+                 extensions and these settings. The command line follows too. Citroenition restarts afterwards."
+                    .to_owned()
+            };
+            ui.label(small_dim(&p, note));
         });
         if let Some(t) = copy {
             self.ctx.copy_text(t);
             self.toast(ToastKind::Info, "Copied");
+        }
+        if move_now {
+            self.start_move_data();
+        }
+    }
+
+    fn start_move_data(&mut self) {
+        let to = self.settings_ui.move_to.trim().to_owned();
+        let target = util::expand_tilde(&to, self.home.as_deref());
+        // a kernel pinned inside the data folder moves with it
+        let old = self.info.data_dir.clone();
+        if !old.is_empty() && self.settings.kernel_path.starts_with(&old) {
+            self.settings.kernel_path = format!("{}{}", target.display(), &self.settings.kernel_path[old.len()..]);
+            self.save_settings();
+        }
+        self.settings_ui.moving = true;
+        self.settings_ui.error = None;
+        self.tasks.spawn(true, move |w| w.send(Msg::DataMoved(w.backend.move_data(&to))));
+    }
+
+    pub fn data_moved(&mut self, r: crate::backend::BResult<()>) {
+        self.settings_ui.moving = false;
+        match r {
+            Ok(()) => match crate::updater::relaunch_current() {
+                Ok(()) => self.ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                Err(e) => self.toast(ToastKind::Warn, format!("Data moved; start Citroenition again yourself ({e})")),
+            },
+            Err(e) => {
+                self.settings_ui.error = Some(e.to_string());
+                self.toast(ToastKind::Err, format!("Could not move the data: {e}"));
+            }
+        }
+    }
+
+    /// Settings -> New profiles: the defaults a new profile starts with (AdsPower's Preferences).
+    fn settings_new_profiles(&mut self, ui: &mut Ui) {
+        let p = self.pal;
+        let (mut edit, mut reset) = (false, false);
+        widgets::card(ui, &p, |ui| {
+            ui.set_width(ui.available_width());
+            widgets::section_title(ui, "New profiles");
+            ui.add_space(6.0);
+            let line = match &self.settings.new_profile {
+                Some(_) => RichText::new("New profiles start with your defaults.").color(p.ok),
+                None => RichText::new("New profiles start with the built-in defaults.").color(p.text),
+            };
+            ui.label(line);
+            ui.label(small_dim(
+                &p,
+                "Browser, OS, search engine, proxy type, start pages, fingerprint and launch arguments: the same \
+                 options as a profile. Each new profile can still change them.",
+            ));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if widgets::primary_button(ui, &p, "Edit defaults\u{2026}", true).clicked() {
+                    edit = true;
+                }
+                if self.settings.new_profile.is_some() && widgets::button(ui, "Use built-in defaults", true).clicked() {
+                    reset = true;
+                }
+            });
+        });
+        if edit {
+            self.edit = Some(super::edit::EditDialog::for_defaults(self.settings.new_profile.as_ref()));
+        }
+        if reset {
+            self.settings.new_profile = None;
+            self.save_settings();
         }
     }
 

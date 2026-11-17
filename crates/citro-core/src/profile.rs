@@ -161,6 +161,9 @@ pub struct Profile {
     pub category_id: String,
     /// The operating system the browser presents: `windows`, `macos`, `linux`, or empty = the host's own.
     pub persona_os: String,
+    /// The browser's default search engine (`google`, `bing`, ... see `crate::browser_prefs`); empty = Google,
+    /// `browser` = leave it to the browser.
+    pub search_engine: String,
     pub created_time: i64,
     /// Unix seconds; `0` = never.
     pub last_open_time: i64,
@@ -174,6 +177,9 @@ pub struct Group {
     pub group_id: String,
     pub group_name: String,
     pub remark: String,
+    /// Start pages every profile of the group opens (before the profile's own). Extensions per group are in
+    /// `crate::extensions`.
+    pub tabs: Vec<String>,
 }
 
 #[cfg(test)]

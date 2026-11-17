@@ -85,6 +85,31 @@ pub struct Prepared {
     /// The proxy needs a login this kernel cannot send: [`start`] runs a [`crate::relay`] and points the browser
     /// at it (`args` then has no `--proxy-server` yet).
     pub relay: Option<crate::relay::Upstream>,
+    /// Every start page the profile wants (its group's, then its own). Opened on a fresh start; with a restored
+    /// session only the ones not opened before ([`start`] remembers them in `start-urls.json`).
+    pub start_urls: Vec<String>,
+    /// Start pages [`start`] opens through DevTools once the browser is up: headless Chromium refuses more than one
+    /// URL on its command line ("Multiple targets are not supported in headless mode").
+    pub later_tabs: Vec<String>,
+}
+
+/// `example.com` -> `https://example.com`; `about:` and URLs with a scheme stay as they are.
+fn start_url(t: &str) -> Option<String> {
+    let t = t.trim();
+    if t.is_empty() {
+        None
+    } else if t.contains("://") || t.starts_with("about:") || t.starts_with("chrome:") {
+        Some(t.to_owned())
+    } else {
+        Some(format!("https://{t}"))
+    }
+}
+
+fn opened_start_urls(home: &Home, id: &str) -> Vec<String> {
+    fs::read(home.profile_dir(id).join("start-urls.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
 }
 
 /// Flags every launch carries. Deliberately small: each one changes what a page can observe or how the
@@ -248,6 +273,12 @@ pub fn prepare(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) 
         }
     }
     args.extend(kernel_env::gpu_backend_args(resolved.os, &user_args));
+    // the extensions for every profile and for this profile's group
+    let extensions = crate::extensions::folders_for(home, &p.group_id);
+    if !extensions.is_empty() {
+        let list: Vec<String> = extensions.iter().map(|d| d.display().to_string()).collect();
+        args.push(format!("--load-extension={}", list.join(",")));
+    }
     args.extend(user_args);
     let mut args = merge_list_flags(args);
 
@@ -267,20 +298,37 @@ pub fn prepare(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) 
         env.push((kernel_env::PERSONA_ENV.into(), payload));
     }
 
-    if opts.last_opened_tabs && data_dir.join("Default/Sessions").is_dir() {
-        args.push("--restore-last-session".into());
-    } else {
-        let mut urls: Vec<String> = p.tabs.iter().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()).collect();
-        if urls.is_empty() && !p.domain_name.trim().is_empty() {
-            let d = p.domain_name.trim();
-            urls.push(if d.contains("://") { d.to_owned() } else { format!("https://{d}") });
+    // the group's start pages, then the profile's own, each once
+    let group_tabs = crate::store::Store::open(home)
+        .ok()
+        .and_then(|s| {
+            s.groups().iter().find(|g| !p.group_id.is_empty() && g.group_id == p.group_id).map(|g| g.tabs.clone())
+        })
+        .unwrap_or_default();
+    let mut wanted: Vec<String> = Vec::new();
+    for u in group_tabs.iter().chain(&p.tabs).filter_map(|t| start_url(t)) {
+        if !wanted.contains(&u) {
+            wanted.push(u);
         }
-        if urls.is_empty() {
-            urls.push("about:blank".into());
-        }
-        args.extend(urls);
     }
-    Ok(Prepared { args, env, data_dir, relay })
+    if wanted.is_empty()
+        && let Some(d) = start_url(&p.domain_name)
+    {
+        wanted.push(d);
+    }
+    let mut urls: Vec<String> = if opts.last_opened_tabs && data_dir.join("Default/Sessions").is_dir() {
+        // the last session comes back; a start page that is new or was changed since opens next to it
+        args.push("--restore-last-session".into());
+        let before = opened_start_urls(home, id);
+        wanted.iter().filter(|u| !before.contains(u)).cloned().collect()
+    } else if wanted.is_empty() {
+        vec!["about:blank".into()]
+    } else {
+        wanted.clone()
+    };
+    let later_tabs = if opts.headless && urls.len() > 1 { urls.split_off(1) } else { Vec::new() };
+    args.extend(urls);
+    Ok(Prepared { args, env, data_dir, relay, start_urls: wanted, later_tabs })
 }
 
 fn read_devtools_port(data_dir: &Path) -> Option<(u16, String)> {
@@ -435,6 +483,11 @@ pub fn running(home: &Home, id: &str) -> Option<Running> {
     None
 }
 
+/// `true` while any browser of this data folder runs.
+pub fn any_running(home: &Home) -> bool {
+    run_ids(home).iter().any(|id| running(home, id).is_some())
+}
+
 fn run_ids(home: &Home) -> Vec<String> {
     let Ok(entries) = fs::read_dir(home.run_dir()) else { return Vec::new() };
     let mut ids: Vec<String> =
@@ -499,6 +552,28 @@ pub fn start(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) ->
 
     let log_path = kernel_log(home, &p.profile_id);
     let log = OpenOptions::new().create(true).append(true).mode(0o600).open(&log_path)?;
+    let pdir = home.profile_dir(&p.profile_id);
+    {
+        use std::io::Write;
+        let note = |m: String| {
+            let _ = writeln!(&log, "citroenition: {m}");
+        };
+        // the search engine Citroenition was told to use (first launch, or after the choice changed)
+        match crate::browser_prefs::apply_search_choice(&prep.data_dir, &pdir.join("search-engine"), &p.search_engine) {
+            Ok(true) => note(format!(
+                "default search engine set ({})",
+                if p.search_engine.trim().is_empty() { "google" } else { p.search_engine.trim() }
+            )),
+            Ok(false) => {}
+            Err(e) => note(format!("could not set the default search engine: {e}")),
+        }
+        // macOS: a page asking for a downloadable font must not pop up "needs to download the font"
+        if cfg!(target_os = "macos")
+            && let Some(app) = kernel.binary.ancestors().find(|a| a.extension().is_some_and(|e| e == "app"))
+        {
+            crate::browser_prefs::disable_font_downloads(&crate::browser_prefs::kernel_bundle_ids(app));
+        }
+    }
     let relay = match &prep.relay {
         Some(up) => {
             let r = crate::relay::Relay::start(up, log.try_clone()?)
@@ -572,6 +647,15 @@ pub fn start(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) ->
     };
     fs::create_dir_all(home.run_dir())?;
     write_private(&home.run_file(&r.profile_id), &serde_json::to_vec_pretty(&r)?)?;
+    let _ = fs::write(pdir.join("start-urls.json"), serde_json::to_vec(&prep.start_urls)?);
+    if !prep.later_tabs.is_empty()
+        && let Ok(mut cdp) = crate::cdp::Cdp::connect(&r.ws)
+    {
+        for url in &prep.later_tabs {
+            let _ = cdp.call("Target.createTarget", serde_json::json!({ "url": url }));
+        }
+    }
+    import_cookies(&pdir, &log_path, p, &prep.start_urls, &r.ws);
 
     // Reap the child when it exits (no zombies in a long-lived server) and drop our run record, unless a
     // newer launch has already replaced it.
@@ -587,6 +671,36 @@ pub fn start(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) ->
         }
     });
     Ok(r)
+}
+
+/// Put the profile's `cookie` field into the browser, once per change of the field (a digest in `cookies-imported`
+/// remembers what went in), so cookies that sites renew later are not overwritten on every launch. Problems are
+/// written to the kernel log and never stop the launch.
+fn import_cookies(pdir: &Path, log_path: &Path, p: &Profile, start_urls: &[String], ws: &str) {
+    use sha2::Digest;
+    use std::io::Write;
+    let text = p.cookie.trim();
+    let marker = pdir.join("cookies-imported");
+    if text.is_empty() {
+        let _ = fs::remove_file(&marker);
+        return;
+    }
+    let digest = format!("{:x}", sha2::Sha256::digest(text.as_bytes()));
+    if fs::read_to_string(&marker).is_ok_and(|m| m.trim() == digest) {
+        return;
+    }
+    let domain = crate::cookies::default_domain(&p.domain_name, start_urls);
+    let outcome = crate::cookies::parse(text, &domain).and_then(|c| crate::cookies::import(ws, &c));
+    let line = match &outcome {
+        Ok(n) => format!("imported {n} cookies from the profile"),
+        Err(e) => format!("could not import the profile's cookies: {e}"),
+    };
+    if let Ok(mut f) = OpenOptions::new().append(true).open(log_path) {
+        let _ = writeln!(f, "citroenition: {line}");
+    }
+    if outcome.is_ok() {
+        let _ = fs::write(&marker, digest);
+    }
 }
 
 /// Close the profile: SIGTERM so Chromium shuts down cleanly (cookies and session are flushed), then

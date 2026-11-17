@@ -13,6 +13,7 @@ use super::{
 use crate::eventlog::EventLog;
 use crate::installer::{KernelInstaller, StubInstaller};
 use crate::query;
+use crate::timefmt;
 use crate::util::mask_secrets_in_text;
 use citro_core::csv::{self, CsvRow};
 use citro_core::kernel::Kernel;
@@ -489,6 +490,46 @@ impl Backend for LocalBackend {
         Ok(())
     }
 
+    // extensions ----------------------------------------------------------------------------------------------
+    fn extensions(&self) -> BResult<Vec<super::Extension>> {
+        let mut all = citro_core::extensions::list(&self.home);
+        all.sort_by_key(|e| e.name.to_lowercase());
+        Ok(all)
+    }
+
+    fn add_extension(&self, input: &str) -> BResult<super::Extension> {
+        let id = citro_core::extensions::id_from_input(input).ok_or_else(|| {
+            BackendError::Invalid(
+                "Paste a Chrome Web Store link (chromewebstore.google.com/detail/…) or an extension id".into(),
+            )
+        })?;
+        // the store hands out the build for the browser that asks; without a kernel, a recent Chromium
+        let major = self.kernel().map(|k| k.major).unwrap_or(150);
+        let work = citro_core::extensions::root(&self.home).join(".download");
+        let unpacked = citro_install::chrome_store::download_extension(&id, major, &work, Duration::from_secs(60))
+            .map_err(|e| BackendError::Other(e.to_string()))?;
+        let e = citro_core::extensions::install(&self.home, &id, &unpacked, timefmt::now_ts())?;
+        let _ = std::fs::remove_dir_all(&work);
+        self.events.info(None, format!("installed extension {} {}", e.name, e.version));
+        Ok(e)
+    }
+
+    fn remove_extension(&self, id: &str) -> BResult<()> {
+        citro_core::extensions::remove(&self.home, id)?;
+        self.events.info(None, format!("removed extension {id}"));
+        Ok(())
+    }
+
+    fn assign_extension(&self, id: &str, all_profiles: bool, groups: Vec<String>) -> BResult<()> {
+        Ok(citro_core::extensions::assign(&self.home, id, all_profiles, groups)?)
+    }
+
+    fn move_data(&self, to: &str) -> BResult<()> {
+        let to = crate::util::expand_tilde(to.trim(), crate::util::home_dir().as_deref());
+        store::move_data(&self.home, &to)?;
+        Ok(())
+    }
+
     // groups --------------------------------------------------------------------------------------------------
     fn groups(&self) -> BResult<Vec<Group>> {
         Ok(Store::open(&self.home)?.groups().to_vec())
@@ -500,6 +541,7 @@ impl Backend for LocalBackend {
             return Err(BackendError::Invalid("the group name must not be empty".into()));
         }
         let remark = g.remark.trim().to_owned();
+        let tabs: Vec<String> = g.tabs.iter().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()).collect();
         let taken = |groups: &[Group], except: &str| {
             groups.iter().any(|x| x.group_id != except && x.group_name.eq_ignore_ascii_case(&name))
         };
@@ -510,11 +552,13 @@ impl Backend for LocalBackend {
                 }
                 s.create_group(&name, &remark)
             })?;
+            let created =
+                if tabs.is_empty() { created } else { self.save_group(Group { tabs: tabs.clone(), ..created })? };
             self.events.info(None, format!("created group {}", created.group_name));
             return Ok(created);
         }
         let id = g.group_id.clone();
-        let mut saved = Group { group_id: id.clone(), group_name: name.clone(), remark };
+        let mut saved = Group { group_id: id.clone(), group_name: name.clone(), remark, tabs };
         edit_store_file(&self.home, |doc| {
             let arr = group_array(doc)?;
             let others: Vec<Group> = arr.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect();
@@ -527,6 +571,7 @@ impl Backend for LocalBackend {
                 .ok_or_else(|| BackendError::NotFound(format!("group {id}")))?;
             slot["group_name"] = Value::String(saved.group_name.clone());
             slot["remark"] = Value::String(saved.remark.clone());
+            slot["tabs"] = serde_json::json!(saved.tabs);
             saved = serde_json::from_value(slot.clone()).unwrap_or(saved.clone());
             Ok(())
         })?;
@@ -869,17 +914,24 @@ mod tests {
                 group_id: g1.group_id.clone(),
                 group_name: "eBay Germany".into(),
                 remark: "new remark".into(),
+                tabs: vec![" https://www.ebay.de/ ".into(), "".into()],
             })
             .unwrap();
         assert_eq!((renamed.group_name.as_str(), renamed.remark.as_str()), ("eBay Germany", "new remark"));
+        assert_eq!(renamed.tabs, ["https://www.ebay.de/"], "group start pages are saved, trimmed");
         assert!(
             b.save_group(Group { group_id: g1.group_id.clone(), group_name: "vinted fr".into(), ..Default::default() })
                 .is_err(),
             "renaming onto another group's name is refused"
         );
         // keeping its own name while changing the remark is fine
-        b.save_group(Group { group_id: g2.group_id.clone(), group_name: "Vinted FR".into(), remark: "x".into() })
-            .unwrap();
+        b.save_group(Group {
+            group_id: g2.group_id.clone(),
+            group_name: "Vinted FR".into(),
+            remark: "x".into(),
+            tabs: Vec::new(),
+        })
+        .unwrap();
         assert!(
             b.save_group(Group { group_id: "404".into(), group_name: "Nope".into(), ..Default::default() }).is_err()
         );

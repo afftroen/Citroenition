@@ -22,10 +22,16 @@ pub struct State {
     rename: Option<Rename>,
 }
 
+/// The open "Group settings" window.
 struct Rename {
     id: String,
     name: String,
     remark: String,
+    tabs: Vec<String>,
+    /// The start pages as typed, one per line.
+    tabs_text: String,
+    /// Extension id -> loaded into this group's profiles.
+    extensions: Vec<(String, bool)>,
 }
 
 impl State {
@@ -88,7 +94,8 @@ impl CitroApp {
         // table -------------------------------------------------------------------------------------------------
         let mut entries: Vec<Option<&Group>> = vec![None];
         entries.extend(self.groups.iter().map(Some));
-        let rename_id = self.groups_ui.rename.as_ref().map(|r| r.id.clone());
+        // the settings window replaced editing in the row
+        let rename_id: Option<String> = None;
         let avail = ui.available_height();
         egui::Frame::NONE
             .fill(p.surface)
@@ -171,7 +178,8 @@ impl CitroApp {
                                     acts.push(Act::View(id.clone()));
                                 }
                                 if let Some(g) = g {
-                                    if ui.button("Rename").clicked() {
+                                    if ui.button("Settings").on_hover_text("Name, start pages and extensions").clicked()
+                                    {
                                         acts.push(Act::StartRename(g.clone()));
                                     }
                                     if ui.button(RichText::new("Delete").color(p.err)).clicked() {
@@ -192,8 +200,78 @@ impl CitroApp {
                 ));
             });
         }
+        if self.groups_ui.rename.is_some() {
+            self.group_settings_modal(ui.ctx(), &mut acts);
+        }
         for a in acts {
             self.groups_act(a, &counts);
+        }
+    }
+
+    /// Name, remark, the group's start pages and its extensions.
+    fn group_settings_modal(&mut self, ctx: &egui::Context, acts: &mut Vec<Act>) {
+        let p = self.pal;
+        let exts = self.extensions_ui.list.clone().unwrap_or_default();
+        let Some(r) = self.groups_ui.rename.as_mut() else { return };
+        let mut close = false;
+        let resp = widgets::modal(ctx, &p, "group-settings", 560.0, |ui| {
+            ui.label(widgets::semibold("Group settings", 18.0));
+            ui.add_space(12.0);
+            ui.spacing_mut().item_spacing.y = 6.0;
+            widgets::field_label(ui, &p, "Name");
+            ui.add(
+                TextEdit::singleline(&mut r.name).margin(egui::Margin::symmetric(10, 8)).desired_width(f32::INFINITY),
+            );
+            ui.add_space(8.0);
+            widgets::field_label(ui, &p, "Remark");
+            ui.add(
+                TextEdit::singleline(&mut r.remark).margin(egui::Margin::symmetric(10, 8)).desired_width(f32::INFINITY),
+            );
+            ui.add_space(8.0);
+            widgets::field_label(ui, &p, "Start pages");
+            ui.add(
+                TextEdit::multiline(&mut r.tabs_text)
+                    .hint_text("https://www.tiktok.com/")
+                    .margin(egui::Margin::symmetric(10, 8))
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY),
+            );
+            ui.label(widgets::small_dim(
+                &p,
+                "One per line. Every profile of the group opens them, before its own start pages.",
+            ));
+            ui.add_space(8.0);
+            widgets::field_label(ui, &p, "Extensions");
+            if exts.is_empty() {
+                ui.label(widgets::small_dim(&p, "No extensions installed yet: add them on the Extensions page."));
+            }
+            for e in &exts {
+                if e.all_profiles {
+                    let mut on = true;
+                    ui.add_enabled(false, egui::Checkbox::new(&mut on, format!("{}  (every profile)", e.name)));
+                } else {
+                    let slot = match r.extensions.iter().position(|(id, _)| *id == e.id) {
+                        Some(i) => i,
+                        None => {
+                            r.extensions.push((e.id.clone(), e.groups.contains(&r.id)));
+                            r.extensions.len() - 1
+                        }
+                    };
+                    ui.checkbox(&mut r.extensions[slot].1, &e.name);
+                }
+            }
+            widgets::footer(ui, |ui| {
+                if widgets::primary_button(ui, &p, "Save", !r.name.trim().is_empty()).clicked() {
+                    r.tabs = r.tabs_text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect();
+                    acts.push(Act::SaveRename);
+                }
+                if widgets::button(ui, "Cancel", true).clicked() {
+                    close = true;
+                }
+            });
+        });
+        if close || resp.should_close() {
+            acts.push(Act::CancelRename);
         }
     }
 
@@ -214,7 +292,16 @@ impl CitroApp {
                 self.go(Page::Profiles);
             }
             Act::StartRename(g) => {
-                self.groups_ui.rename = Some(Rename { id: g.group_id, name: g.group_name, remark: g.remark });
+                self.refresh_extensions();
+                let tabs_text = g.tabs.join("\n");
+                self.groups_ui.rename = Some(Rename {
+                    id: g.group_id,
+                    name: g.group_name,
+                    remark: g.remark,
+                    tabs: g.tabs,
+                    tabs_text,
+                    extensions: Vec::new(),
+                });
             }
             Act::CancelRename => self.groups_ui.rename = None,
             Act::SaveRename => {
@@ -225,10 +312,38 @@ impl CitroApp {
                     self.groups_ui.rename = Some(r);
                     return;
                 }
-                let g = Group { group_id: r.id, group_name: name.clone(), remark: r.remark.trim().to_owned() };
+                let gid = r.id.clone();
+                // the extensions whose box changed: add or drop this group
+                let exts = self.extensions_ui.list.clone().unwrap_or_default();
+                let changes: Vec<(String, Vec<String>)> = r
+                    .extensions
+                    .iter()
+                    .filter_map(|(id, on)| {
+                        let e = exts.iter().find(|e| e.id == *id && !e.all_profiles)?;
+                        let has = e.groups.contains(&gid);
+                        (has != *on).then(|| {
+                            let mut gs: Vec<String> = e.groups.iter().filter(|g| **g != gid).cloned().collect();
+                            if *on {
+                                gs.push(gid.clone());
+                            }
+                            (id.clone(), gs)
+                        })
+                    })
+                    .collect();
+                let g = Group {
+                    group_id: r.id,
+                    group_name: name.clone(),
+                    remark: r.remark.trim().to_owned(),
+                    tabs: r.tabs.clone(),
+                };
                 self.run_op(Vec::new(), format!("Saved group {name}"), Refresh::ROWS_GROUPS, move |b| {
-                    b.save_group(g).map(|_| ())
+                    b.save_group(g)?;
+                    for (id, gs) in changes {
+                        b.assign_extension(&id, false, gs)?;
+                    }
+                    Ok(())
                 });
+                self.refresh_extensions();
             }
             Act::Delete(id) => {
                 let name = group_label(&self.groups, &id);
@@ -252,6 +367,7 @@ impl CitroApp {
                     group_id: String::new(),
                     group_name: s.new_name.trim().to_owned(),
                     remark: s.new_remark.trim().to_owned(),
+                    tabs: Vec::new(),
                 };
                 if g.group_name.is_empty() {
                     return;

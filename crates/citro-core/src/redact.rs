@@ -105,6 +105,8 @@ mod tests {
             env: vec![(PERSONA_ENV.to_owned(), payload.clone()), ("LANGUAGE".into(), "fr".into())],
             data_dir: PathBuf::from("/d"),
             relay: None,
+            start_urls: Vec::new(),
+            later_tabs: Vec::new(),
         };
         let (shown_args, shown_env) = command_line(&prep);
         assert_eq!(shown_args, ["--lang=fr", "--persona-from-env"]);

@@ -10,6 +10,7 @@
 //! The team features of [`local::LocalBackend`] sit on `citro-sync`, the layer the command line and the Local API
 //! use too, so every way of opening a team profile obeys the hub's lock.
 
+pub use citro_core::extensions::Extension;
 use citro_core::profile::{Group, Profile, ProxyConfig};
 use std::fmt;
 
@@ -449,6 +450,28 @@ pub trait Backend: Send + Sync {
     /// The group's profiles move to Ungrouped.
     fn delete_group(&self, id: &str) -> BResult<()>;
 
+    // extensions -------------------------------------------------------------------------------------------
+    fn extensions(&self) -> BResult<Vec<Extension>> {
+        Ok(Vec::new())
+    }
+    /// Download from the Chrome Web Store (`input` = a store link or the id) and install; a new extension is
+    /// loaded into every profile until it is assigned to groups.
+    fn add_extension(&self, _input: &str) -> BResult<Extension> {
+        Err(BackendError::Unsupported("extensions".into()))
+    }
+    fn remove_extension(&self, _id: &str) -> BResult<()> {
+        Err(BackendError::Unsupported("extensions".into()))
+    }
+    /// Which profiles load `id`: every one, or those of `groups`.
+    fn assign_extension(&self, _id: &str, _all_profiles: bool, _groups: Vec<String>) -> BResult<()> {
+        Err(BackendError::Unsupported("extensions".into()))
+    }
+
+    /// Move all data to `to` (a new or empty folder) and use it from now on; refused while a browser runs.
+    fn move_data(&self, _to: &str) -> BResult<()> {
+        Err(BackendError::Unsupported("moving the data folder".into()))
+    }
+
     // export / logs ----------------------------------------------------------------------------------------
     /// `ids` wins over `group`; both `None` = every profile. The text is UTF-8 (with a BOM when `bom`).
     fn export_csv(&self, ids: Option<Vec<String>>, group: Option<String>, bom: bool) -> BResult<Vec<u8>>;
@@ -600,7 +623,12 @@ mod tests {
 
     #[test]
     fn group_labels() {
-        let g = vec![Group { group_id: "3".into(), group_name: "Vinted FR".into(), remark: String::new() }];
+        let g = vec![Group {
+            group_id: "3".into(),
+            group_name: "Vinted FR".into(),
+            remark: String::new(),
+            tabs: Vec::new(),
+        }];
         assert_eq!(group_label(&g, "3"), "Vinted FR");
         assert_eq!(group_label(&g, "0"), "Ungrouped");
         assert_eq!(group_label(&g, "99"), "Ungrouped");

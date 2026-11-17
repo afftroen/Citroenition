@@ -90,6 +90,9 @@ pub enum Msg {
     Notices(Vec<Notice>),
     /// The team browsers are closed and uploaded: the app may quit.
     QuitDone(Vec<String>),
+    Extensions(BResult<Vec<crate::backend::Extension>>),
+    DataMoved(BResult<()>),
+    ExtensionAdded(BResult<crate::backend::Extension>),
     UpdateChecked(Result<Option<crate::updater::AppRelease>, String>),
     UpdateProgress {
         done: u64,

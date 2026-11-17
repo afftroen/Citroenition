@@ -16,17 +16,32 @@ use eframe::egui::{
     TextEdit, Ui, vec2,
 };
 
-const LABEL_W: f32 = 160.0;
+const LABEL_W: f32 = 170.0;
+/// Between a label and its control.
+const LABEL_GAP: f32 = 32.0;
+/// Between two rows of the form.
+const ROW_GAP: f32 = 26.0;
 /// The widest a form control gets: wide enough to breathe, narrow enough to read.
-const FIELD_W: f32 = 560.0;
+const FIELD_W: f32 = 580.0;
 const OVERVIEW_W: f32 = 340.0;
-const FOOTER_H: f32 = 64.0;
+const FOOTER_H: f32 = 72.0;
 
 const OS_CHOICES: [(&str, &str); 4] = [("", "Auto"), ("windows", "Windows"), ("macos", "macOS"), ("linux", "Linux")];
 const OS_HINT: &str = "Auto uses this computer's OS. Linux and macOS personas pass iphey.com at 100 %; the Windows \
                        persona is currently flagged on Linux hosts.";
 const BRANDS: [(&str, &str); 4] =
     [("", "Chrome"), ("edge", "Microsoft Edge"), ("opera", "Opera"), ("vivaldi", "Vivaldi")];
+/// `Profile::search_engine` values (see `citro_core::browser_prefs`).
+const SEARCH_CHOICES: [(&str, &str); 8] = [
+    ("", "Google"),
+    ("bing", "Microsoft Bing"),
+    ("duckduckgo", "DuckDuckGo"),
+    ("brave", "Brave Search"),
+    ("yahoo", "Yahoo"),
+    ("ecosia", "Ecosia"),
+    ("startpage", "Startpage"),
+    ("browser", "Leave it to the browser"),
+];
 const WEBRTC: [(&str, &str); 3] = [("disabled", "Disabled"), ("proxy", "Replace (proxy IP)"), ("local", "Real")];
 const SCREENS: [&str; 12] = [
     "1280 x 720",
@@ -88,20 +103,24 @@ fn zones_and_languages() -> (Vec<&'static str>, Vec<&'static str>) {
 
 /// `Label   control` with the label centred on the control's first line, however tall the control gets.
 fn form_row<R>(ui: &mut Ui, p: &Palette, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = 16.0;
-        ui.allocate_ui_with_layout(vec2(LABEL_W, 34.0), Layout::right_to_left(Align::Center), |ui| {
-            ui.set_min_width(LABEL_W);
-            ui.label(RichText::new(label).color(p.text));
-        });
-        ui.vertical(|ui| {
-            ui.set_max_width(FIELD_W.min(ui.available_width()));
-            ui.spacing_mut().item_spacing.y = 8.0;
-            add(ui)
+    let r = ui
+        .horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = LABEL_GAP;
+            ui.allocate_ui_with_layout(vec2(LABEL_W, 36.0), Layout::right_to_left(Align::Center), |ui| {
+                ui.set_min_width(LABEL_W);
+                ui.label(RichText::new(label).size(14.0).color(p.strong));
+            });
+            ui.vertical(|ui| {
+                ui.set_max_width(FIELD_W.min(ui.available_width()));
+                ui.spacing_mut().item_spacing.y = 8.0;
+                ui.spacing_mut().item_spacing.x = 10.0;
+                add(ui)
+            })
+            .inner
         })
-        .inner
-    })
-    .inner
+        .inner;
+    ui.add_space(ROW_GAP);
+    r
 }
 
 fn field(text: &mut String) -> TextEdit<'_> {
@@ -154,7 +173,14 @@ impl EditDialog {
             }
             let (sep, _) = ui.allocate_exact_size(vec2(1.0, 18.0), Sense::hover());
             ui.painter().rect_filled(sep, CornerRadius::ZERO, p.border_strong);
-            ui.label(semibold(if existing { "Edit profile" } else { "New profile" }, 21.0));
+            let title = if self.template {
+                "Defaults for new profiles"
+            } else if existing {
+                "Edit profile"
+            } else {
+                "New profile"
+            };
+            ui.label(semibold(title, 21.0));
             if existing {
                 widgets::badge(ui, &format!("#{}", self.serial), p.accent_hover);
             }
@@ -163,7 +189,11 @@ impl EditDialog {
             }
         });
         ui.add_space(6.0);
+        let template = self.template;
         if let Some(i) = widgets::tab_header(ui, p, &SECTIONS, self.current, |ui| {
+            if template {
+                return;
+            }
             let r = ui.add(egui::Button::new(RichText::new("New fingerprint").color(p.accent_hover)).frame(false));
             if r.on_hover_text("A fresh seed: every derived value (hardware, screen, GPU, noise) changes at once")
                 .clicked()
@@ -204,7 +234,13 @@ impl EditDialog {
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             ui.add_space(LABEL_W + 16.0);
-            let label = if existing { "Save changes" } else { "Create profile" };
+            let label = if self.template {
+                "Save defaults"
+            } else if existing {
+                "Save changes"
+            } else {
+                "Create profile"
+            };
             if widgets::primary_button(ui, p, label, !self.saving && !self.loading).clicked() {
                 act = Do::Save;
             }
@@ -236,7 +272,8 @@ impl EditDialog {
         let mut tops = [0.0f32; 5];
         let out =
             ScrollArea::vertical().id_salt("edit-form").max_height(h).auto_shrink([false, false]).show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 16.0;
+                // rows space themselves (`ROW_GAP`)
+                ui.spacing_mut().item_spacing.y = 0.0;
                 Frame::NONE.inner_margin(Margin { left: 0, right: 18, top: 0, bottom: 24 }).show(ui, |ui| {
                     for (i, top) in tops.iter_mut().enumerate() {
                         *top = ui.cursor().top();
@@ -269,34 +306,32 @@ impl EditDialog {
     }
 
     fn section_title(&self, ui: &mut Ui, p: &Palette, i: usize) {
-        ui.add_space(if i == 0 { 4.0 } else { 10.0 });
+        ui.add_space(if i == 0 { 8.0 } else { 18.0 });
         ui.horizontal(|ui| {
-            ui.label(semibold(SECTIONS[i], 15.5));
-            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::hover());
+            ui.label(semibold(SECTIONS[i], 17.0));
+            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::hover());
             let y = r.center().y;
-            ui.painter().hline(r.left() + 6.0..=r.right(), y, Stroke::new(1.0, p.border));
+            ui.painter().hline(r.left() + 10.0..=r.right(), y, Stroke::new(1.0, p.border));
         });
+        ui.add_space(22.0);
     }
 
     // ----------------------------------------------------------------------------------------------------------
 
     fn general(&mut self, ui: &mut Ui, p: &Palette, groups: &[Group], act: &mut Do) -> bool {
         let mut ch = false;
-        form_row(ui, p, "Name", |ui| {
-            let r = ui.add(field(&mut self.name).hint_text("e.g. Vinted FR - Camille"));
-            if std::mem::take(&mut self.focus_name) {
-                r.request_focus();
-            }
-            ch |= r.changed();
-            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                *act = Do::Save;
-            }
-            if self.tried
-                && let Some(m) = self.name_problem()
-            {
-                error_line(ui, p, &m);
-            }
-        });
+        if self.template {
+            form_row(ui, p, "", |ui| {
+                hint(
+                    ui,
+                    p,
+                    "Every new profile starts with these settings; change them per profile as you like. Names, groups, \
+                     proxy logins, accounts and cookies are set per profile.",
+                );
+            });
+        } else {
+            ch |= self.identity_rows(ui, p, groups, act);
+        }
         form_row(ui, p, "Browser", |ui| {
             let shown = BRANDS.iter().find(|b| b.0 == self.brand).map_or("Chrome", |b| b.1);
             ComboBox::from_id_salt("edit-brand").width(240.0).icon(widgets::chevron_icon).selected_text(shown).show_ui(
@@ -329,6 +364,48 @@ impl EditDialog {
                  the OS and brand; the version always comes from the installed kernel.",
             );
         });
+        form_row(ui, p, "Search engine", |ui| {
+            let shown = SEARCH_CHOICES.iter().find(|c| c.0 == self.search_engine).map_or("Google", |c| c.1);
+            ComboBox::from_id_salt("edit-search")
+                .width(240.0)
+                .icon(widgets::chevron_icon)
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    for (v, label) in SEARCH_CHOICES {
+                        ch |= ui.selectable_value(&mut self.search_engine, v.to_owned(), label).changed();
+                    }
+                });
+            hint(
+                ui,
+                p,
+                "What the address bar searches with. Set when the browser first opens and whenever you change it here; \
+                 you can still pick another one inside the browser.",
+            );
+        });
+        if !self.template {
+            ch |= self.account_rows(ui, p);
+        }
+        ch
+    }
+
+    /// Name and group (not part of the defaults).
+    fn identity_rows(&mut self, ui: &mut Ui, p: &Palette, groups: &[Group], act: &mut Do) -> bool {
+        let mut ch = false;
+        form_row(ui, p, "Name", |ui| {
+            let r = ui.add(field(&mut self.name).hint_text("e.g. Vinted FR - Camille"));
+            if std::mem::take(&mut self.focus_name) {
+                r.request_focus();
+            }
+            ch |= r.changed();
+            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                *act = Do::Save;
+            }
+            if self.tried
+                && let Some(m) = self.name_problem()
+            {
+                error_line(ui, p, &m);
+            }
+        });
         form_row(ui, p, "Group", |ui| {
             ui.horizontal(|ui| {
                 ComboBox::from_id_salt("edit-group")
@@ -356,12 +433,23 @@ impl EditDialog {
                     }
                 });
             }
+            hint(
+                ui,
+                p,
+                "A group can add its own start pages and extensions (Profiles \u{2192} Groups \u{2192} Settings).",
+            );
         });
+        ch
+    }
+
+    /// Cookie and remark (not part of the defaults).
+    fn account_rows(&mut self, ui: &mut Ui, p: &Palette) -> bool {
+        let mut ch = false;
         form_row(ui, p, "Cookie", |ui| {
             let hint_text = if self.cookie_stored {
-                "Cookies saved \u{2013} paste new ones to replace them"
+                "Saved. Paste new cookies here to replace them."
             } else {
-                "Formats: JSON, Netscape, Name=Value"
+                "Paste cookies: JSON (Cookie-Editor, EditThisCookie), Netscape cookies.txt or name=value"
             };
             let r = ui.add(
                 TextEdit::multiline(&mut self.cookie)
@@ -372,13 +460,21 @@ impl EditDialog {
                     .desired_width(f32::INFINITY),
             );
             ch |= r.changed();
-            ui.horizontal(|ui| {
-                hint(ui, p, "Kept with the profile and synced through the team hub.");
-                if self.cookie_stored && self.cookie.is_empty() && ui.small_button("Clear saved cookies").clicked() {
-                    self.cookie_stored = false;
-                    ch = true;
-                }
-            });
+            if self.cookie_stored && self.cookie.trim().is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("\u{2713} Cookies saved").color(p.ok).size(12.5));
+                    if ui.small_button("Clear").on_hover_text("Forget the saved cookies").clicked() {
+                        self.cookie_stored = false;
+                        ch = true;
+                    }
+                });
+            }
+            hint(
+                ui,
+                p,
+                "Imported into the browser the next time it opens (and again only after you change them here), so \
+                 sites can keep renewing them. A name=value list uses the platform's site.",
+            );
         });
         form_row(ui, p, "Remark", |ui| {
             let r = ui.add(
@@ -432,6 +528,8 @@ impl EditDialog {
                     fields |= ui.add(field(&mut self.port).hint_text("port").desired_width(110.0)).changed();
                 });
             });
+        }
+        if !direct && !self.template {
             form_row(ui, p, "Proxy username", |ui| {
                 fields |= ui.add(field(&mut self.user).hint_text("optional")).changed();
             });
@@ -531,6 +629,33 @@ impl EditDialog {
             ch |= ui.add(field(&mut self.domain).hint_text("e.g. google.com")).changed();
             hint(ui, p, "Opened when the browser starts and there are no start URLs.");
         });
+        if !self.template {
+            ch |= self.platform_account(ui, p);
+        }
+        form_row(ui, p, "Start URLs", |ui| {
+            let r = ui.add(
+                TextEdit::multiline(&mut self.tabs)
+                    .hint_text("https://example.com")
+                    .margin(Margin::symmetric(10, 8))
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY),
+            );
+            ch |= r.changed();
+            match self.tabs_problem() {
+                Some(m) if self.tried => error_line(ui, p, &m),
+                _ => hint(
+                    ui,
+                    p,
+                    "One address per line, each in its own tab. When the browser brings back its last session, start \
+                     pages you added or changed since also open. The group's start pages open first.",
+                ),
+            }
+        });
+        ch
+    }
+
+    fn platform_account(&mut self, ui: &mut Ui, p: &Palette) -> bool {
+        let mut ch = false;
         form_row(ui, p, "Username", |ui| {
             ch |= ui.add(field(&mut self.plat_user).hint_text("The account on this platform (optional)")).changed();
         });
@@ -546,20 +671,6 @@ impl EditDialog {
                 }
             });
             hint(ui, p, "Stored for your reference and shared with the team; never typed in for you.");
-        });
-        form_row(ui, p, "Start URLs", |ui| {
-            let r = ui.add(
-                TextEdit::multiline(&mut self.tabs)
-                    .hint_text("https://example.com")
-                    .margin(Margin::symmetric(10, 8))
-                    .desired_rows(3)
-                    .desired_width(f32::INFINITY),
-            );
-            ch |= r.changed();
-            match self.tabs_problem() {
-                Some(m) if self.tried => error_line(ui, p, &m),
-                _ => hint(ui, p, "One address per line, each opened in its own tab when the browser starts."),
-            }
         });
         ch
     }
@@ -713,25 +824,39 @@ impl EditDialog {
             ch |= hw_combo(ui, "edit-ram", &mut self.ram, &RAMS, "GB");
             hint(ui, p, "Chrome never reports more than 8 GB.");
         });
-        form_row(ui, p, "Fingerprint seed", |ui| {
-            ui.horizontal(|ui| {
-                let w = (ui.available_width() - 150.0).max(160.0);
-                let auto =
-                    if self.id.is_empty() { "the profile id (assigned on create)".to_owned() } else { self.id.clone() };
-                ch |= ui
-                    .add(field(&mut self.custom_seed).font(egui::TextStyle::Monospace).hint_text(auto).desired_width(w))
-                    .changed();
-                if ui.button("New").on_hover_text("Generate a new fingerprint").clicked() {
-                    self.new_fingerprint();
-                    ch = true;
-                }
-                let seed = self.resolved().seed;
-                if ui.button("Copy").clicked() {
-                    ui.ctx().copy_text(seed);
-                }
+        if !self.template {
+            form_row(ui, p, "Fingerprint seed", |ui| {
+                ui.horizontal(|ui| {
+                    let w = (ui.available_width() - 150.0).max(160.0);
+                    let auto = if self.id.is_empty() {
+                        "the profile id (assigned on create)".to_owned()
+                    } else {
+                        self.id.clone()
+                    };
+                    ch |= ui
+                        .add(
+                            field(&mut self.custom_seed)
+                                .font(egui::TextStyle::Monospace)
+                                .hint_text(auto)
+                                .desired_width(w),
+                        )
+                        .changed();
+                    if ui.button("New").on_hover_text("Generate a new fingerprint").clicked() {
+                        self.new_fingerprint();
+                        ch = true;
+                    }
+                    let seed = self.resolved().seed;
+                    if ui.button("Copy").clicked() {
+                        ui.ctx().copy_text(seed);
+                    }
+                });
+                hint(
+                    ui,
+                    p,
+                    "One seed is one coherent machine. Empty = the profile id, so a profile keeps its identity.",
+                );
             });
-            hint(ui, p, "One seed is one coherent machine. Empty = the profile id, so a profile keeps its identity.");
-        });
+        }
         if self.tried
             && let Some(m) = self.fingerprint_problem()
         {

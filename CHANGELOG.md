@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.5 (2026-11-17)
+
+**Extensions, group settings, default preferences, a search engine, and fixes for cookies and start pages.**
+
+* **Chrome extensions.** A new Extensions page installs extensions from a Chrome Web Store link (or id) and loads
+  them into every profile or into chosen groups (`--load-extension`). They keep the store's id (the store's public key
+  goes into the manifest), so their data survives a moved data folder. CLI: `citro extension add|ls|rm`.
+* **Group settings.** A group can have its own start pages and extensions (Groups -> Settings), opened and loaded in
+  every profile of the group.
+* **Defaults for new profiles** (Settings -> New profiles), like AdsPower's Preferences: the profile editor without
+  the per-profile fields; every new profile starts from them.
+* **A search engine.** Clearcote ships without Google and searches nowhere from the address bar. Profiles now get
+  Google by default (or Bing, DuckDuckGo, Brave, Yahoo, Ecosia, Startpage), written into Chromium's protected
+  preferences with the MAC it checks; it can still be changed in the browser.
+* **Cookies from the Cookie field are imported.** They used to be stored but never reached the browser. JSON,
+  Netscape and `name=value` go in through DevTools on the next launch, once per change of the field.
+* **Edited start pages open.** A restored session used to ignore the start pages; new or changed ones now open next
+  to the restored tabs.
+* **No more "needs to download the font" dialogs** on macOS: font auto-activation is turned off for the kernel.
+* **Headless with several start pages** works (Chromium refuses more than one URL headless; the rest open through
+  DevTools).
+* **Move the data folder** (Settings): everything moves, a pointer file makes the app and `citro` follow.
+* **A roomier profile editor**: wider label column, more space between label and field and between rows.
+
 ## 0.1.4 (2026-11-17)
 
 **Proxies with a login work on macOS.**
