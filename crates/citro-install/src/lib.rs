@@ -27,6 +27,7 @@ pub mod chrome_store;
 mod common;
 mod error;
 mod extract;
+pub mod github;
 mod http;
 mod install;
 mod platform;

@@ -548,6 +548,7 @@ pub enum Icon {
     SortUp,
     SortDown,
     Puzzle,
+    Plug,
 }
 
 fn arc(cx: f32, cy: f32, r: f32, a0: f32, a1: f32, n: usize) -> Vec<(f32, f32)> {
@@ -657,6 +658,14 @@ pub fn paint_icon_scaled(g: &Painter, c: Pos2, icon: Icon, col: Color32, s: f32)
                 ],
                 true,
             );
+        }
+        Icon::Plug => {
+            // a power plug: two prongs, the body, the cable
+            seg((-2.4, -7.0), (-2.4, -3.6));
+            seg((2.4, -7.0), (2.4, -3.6));
+            rrect(-5.0, -3.6, 5.0, 2.0, 1.6);
+            poly(&[(-2.6, 2.0), (0.0, 4.4), (2.6, 2.0)], false);
+            seg((0.0, 4.4), (0.0, 7.4));
         }
         Icon::Kernel => {
             rrect(-4.5, -4.5, 4.5, 4.5, 1.5);

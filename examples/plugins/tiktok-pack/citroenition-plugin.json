@@ -1,0 +1,23 @@
+{
+  "id": "tiktok-pack",
+  "name": "TikTok pack",
+  "version": "0.1.0",
+  "author": "Citroenition",
+  "description": "An example plugin: TikTok account fields, the Ads Manager as a start page and a few bookmarks.",
+  "homepage": "https://github.com/afftroen/Citroenition/tree/main/examples/plugins/tiktok-pack",
+  "fields": [
+    { "key": "email", "label": "TikTok e-mail" },
+    { "key": "password", "label": "TikTok password", "type": "secret" },
+    { "key": "twofa", "label": "2FA secret", "type": "secret", "hint": "The base32 secret from the authenticator setup" },
+    { "key": "ad_account", "label": "Ad account ID" },
+    { "key": "status", "label": "Account status", "type": "select", "options": ["new", "warming up", "active", "restricted", "banned"] },
+    { "key": "notes", "label": "Notes", "type": "note" }
+  ],
+  "start_pages": ["https://ads.tiktok.com/i18n/home"],
+  "bookmarks": [
+    { "name": "Ads Manager", "url": "https://ads.tiktok.com/i18n/home" },
+    { "name": "Business Center", "url": "https://business.tiktok.com/" },
+    { "name": "TikTok", "url": "https://www.tiktok.com/" }
+  ],
+  "extensions": []
+}

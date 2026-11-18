@@ -382,14 +382,67 @@ impl Store {
         &self.data.groups
     }
 
+    /// A group as the team hub has it: found by its hub id (or else its name) and made like the hub's, or created.
+    /// Returns the local group id.
+    pub fn upsert_hub_group(&mut self, hub: &Group) -> Result<String> {
+        let slot =
+            self.data.groups.iter().position(|g| !hub.hub_id.is_empty() && g.hub_id == hub.hub_id).or_else(|| {
+                self.data.groups.iter().position(|g| g.group_name.eq_ignore_ascii_case(hub.group_name.trim()))
+            });
+        let i = match slot {
+            Some(i) => i,
+            None => {
+                let id = self.create_group(hub.group_name.trim(), &hub.remark)?.group_id;
+                self.data.groups.iter().position(|g| g.group_id == id).expect("just created")
+            }
+        };
+        let g = &mut self.data.groups[i];
+        let before = g.clone();
+        g.group_name = hub.group_name.clone();
+        g.remark = hub.remark.clone();
+        g.tabs = hub.tabs.clone();
+        g.bookmarks = hub.bookmarks.clone();
+        g.new_profile = hub.new_profile.clone();
+        g.access = hub.access.clone();
+        g.hub_id = hub.hub_id.clone();
+        g.local_only = false;
+        let (changed, id) = (*g != before, g.group_id.clone());
+        if changed {
+            self.save()?;
+        }
+        Ok(id)
+    }
+
+    /// Save a group as it is (found by its id).
+    pub fn update_group(&mut self, g: Group) -> Result<()> {
+        let slot = self
+            .data
+            .groups
+            .iter_mut()
+            .find(|x| x.group_id == g.group_id)
+            .ok_or_else(|| Error::Invalid(format!("no group {}", g.group_id)))?;
+        *slot = g;
+        self.save()
+    }
+
+    /// Remember the hub's id of a local group.
+    pub fn set_group_hub_id(&mut self, group_id: &str, hub_id: &str) -> Result<()> {
+        if let Some(g) = self.data.groups.iter_mut().find(|g| g.group_id == group_id)
+            && g.hub_id != hub_id
+        {
+            g.hub_id = hub_id.to_owned();
+            self.save()?;
+        }
+        Ok(())
+    }
+
     pub fn create_group(&mut self, name: &str, remark: &str) -> Result<Group> {
         let next = self.data.groups.iter().filter_map(|g| g.group_id.parse::<u64>().ok()).max().unwrap_or(0) + 1;
         let g = Group {
             group_id: next.to_string(),
             group_name: name.to_owned(),
             remark: remark.to_owned(),
-            tabs: Vec::new(),
-            bookmarks: Vec::new(),
+            ..Group::default()
         };
         self.data.groups.push(g.clone());
         self.save()?;
@@ -406,7 +459,7 @@ impl Store {
 
 /// Copy a tree exactly: directories, regular files with their permission bits, and symbolic links as links (a macOS
 /// kernel bundle is full of them).
-fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+pub(crate) fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     fs::create_dir_all(to)?;
     fs::set_permissions(to, fs::Permissions::from_mode(fs::metadata(from)?.permissions().mode()))?;

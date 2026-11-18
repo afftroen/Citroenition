@@ -20,12 +20,14 @@ pub mod kernel_env;
 pub mod kernel_patch;
 pub mod launch;
 pub mod locale;
+pub mod plugins;
 pub mod probe;
 pub mod profile;
 pub mod redact;
 pub mod relay;
 pub mod rng;
 pub mod store;
+pub mod team;
 pub mod windows;
 
 pub use error::{Error, Result};

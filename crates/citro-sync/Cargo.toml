@@ -11,8 +11,8 @@ name = "citro_sync"
 path = "src/lib.rs"
 
 [dependencies]
-citro-core = { version = "0.1.0", path = "../citro-core" }
-citro-hub = { version = "0.1.0", path = "../citro-hub" }
+citro-core = { version = "0.2.0", path = "../citro-core" }
+citro-hub = { version = "0.2.0", path = "../citro-hub" }
 flate2 = "1.1.11"
 libc = "0.2.191"
 serde = { version = "1.0.229", features = ["derive"] }

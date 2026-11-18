@@ -20,6 +20,7 @@ pub struct State {
     new_name: String,
     new_remark: String,
     rename: Option<Rename>,
+    pub people: TeamPeople,
 }
 
 /// The open "Group settings" window.
@@ -34,7 +35,16 @@ struct Rename {
     extensions: Vec<(String, bool)>,
     /// `Name | URL` per line.
     bookmarks_text: String,
+    /// The group as it was opened (rules, defaults, hub id, ...).
+    group: Group,
+    local_only: bool,
+    access: citro_core::team::GroupAccess,
+    /// Clear the group's own defaults for new profiles when saving.
+    clear_defaults: bool,
 }
+
+/// The team as the group window needs it: loading (`None`), not on a hub (`Some(Ok(None))`), or the people.
+pub type TeamPeople = Option<Result<Option<citro_sync::People>, String>>;
 
 impl State {
     /// The group was created: empty the form for the next one.
@@ -49,6 +59,7 @@ enum Act {
     StartRename(Group),
     SaveRename,
     CancelRename,
+    EditDefaults,
     Delete(String),
     Create,
 }
@@ -219,66 +230,181 @@ impl CitroApp {
         let resp = widgets::modal(ctx, &p, "group-settings", 560.0, |ui| {
             ui.label(widgets::semibold("Group settings", 18.0));
             ui.add_space(12.0);
-            ui.spacing_mut().item_spacing.y = 6.0;
-            widgets::field_label(ui, &p, "Name");
-            ui.add(
-                TextEdit::singleline(&mut r.name).margin(egui::Margin::symmetric(10, 8)).desired_width(f32::INFINITY),
-            );
-            ui.add_space(8.0);
-            widgets::field_label(ui, &p, "Remark");
-            ui.add(
-                TextEdit::singleline(&mut r.remark).margin(egui::Margin::symmetric(10, 8)).desired_width(f32::INFINITY),
-            );
-            ui.add_space(8.0);
-            widgets::field_label(ui, &p, "Start pages");
-            widgets::capped(
-                ui,
-                "tabs_text-box",
-                TextEdit::multiline(&mut r.tabs_text)
-                    .hint_text("https://www.tiktok.com/")
-                    .margin(egui::Margin::symmetric(10, 8))
-                    .desired_rows(3)
-                    .desired_width(f32::INFINITY),
-            );
-            ui.label(widgets::small_dim(
+            let max_h = (ctx.content_rect().height() - 220.0).max(260.0);
+            egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                widgets::field_label(ui, &p, "Name");
+                ui.add(
+                    TextEdit::singleline(&mut r.name)
+                        .margin(egui::Margin::symmetric(10, 8))
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(8.0);
+                widgets::field_label(ui, &p, "Remark");
+                ui.add(
+                    TextEdit::singleline(&mut r.remark)
+                        .margin(egui::Margin::symmetric(10, 8))
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(8.0);
+                widgets::field_label(ui, &p, "Start pages");
+                widgets::capped(
+                    ui,
+                    "tabs_text-box",
+                    TextEdit::multiline(&mut r.tabs_text)
+                        .hint_text("https://www.tiktok.com/")
+                        .margin(egui::Margin::symmetric(10, 8))
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY),
+                );
+                ui.label(widgets::small_dim(
+                    &p,
+                    "One per line. Every profile of the group opens them, before its own start pages.",
+                ));
+                ui.add_space(8.0);
+                widgets::field_label(ui, &p, "Bookmarks");
+                widgets::capped(
+                    ui,
+                    "bookmarks_text-box",
+                    TextEdit::multiline(&mut r.bookmarks_text)
+                        .hint_text("TikTok Ads | https://ads.tiktok.com/")
+                        .margin(egui::Margin::symmetric(10, 8))
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY),
+                );
+                ui.label(widgets::small_dim(
+                    &p,
+                    "Name | URL, one per line: on the bookmarks bar of every profile in the group.",
+                ));
+                ui.add_space(8.0);
+                // defaults for new profiles ------------------------------------------------------------------------
+                ui.add_space(8.0);
+                widgets::field_label(ui, &p, "New profiles in this group");
+                ui.horizontal(|ui| {
+                    let custom = r.group.new_profile.is_some() && !r.clear_defaults;
+                    ui.label(widgets::small_dim(
+                        &p,
+                        if custom {
+                            "Start with this group's own defaults."
+                        } else {
+                            "Start with the app's defaults (Settings)."
+                        },
+                    ));
+                    if ui.button(if custom { "Edit defaults\u{2026}" } else { "Set defaults\u{2026}" }).clicked() {
+                        acts.push(Act::EditDefaults);
+                    }
+                    if custom && ui.small_button("Use the app's").clicked() {
+                        r.clear_defaults = true;
+                    }
+                });
+
+                // the team ----------------------------------------------------------------------------------------
+                ui.add_space(8.0);
+                widgets::field_label(ui, &p, "Team");
+                widgets::switch(ui, &p, &mut r.local_only, "Keep this group on this computer only");
+                ui.label(widgets::small_dim(
                 &p,
-                "One per line. Every profile of the group opens them, before its own start pages.",
+                "Otherwise its profiles are shared with the team automatically, and synced when they open and close.",
             ));
-            ui.add_space(8.0);
-            widgets::field_label(ui, &p, "Bookmarks");
-            widgets::capped(
-                ui,
-                "bookmarks_text-box",
-                TextEdit::multiline(&mut r.bookmarks_text)
-                    .hint_text("TikTok Ads | https://ads.tiktok.com/")
-                    .margin(egui::Margin::symmetric(10, 8))
-                    .desired_rows(3)
-                    .desired_width(f32::INFINITY),
-            );
-            ui.label(widgets::small_dim(
-                &p,
-                "Name | URL, one per line: on the bookmarks bar of every profile in the group.",
-            ));
-            ui.add_space(8.0);
-            widgets::field_label(ui, &p, "Extensions");
-            if exts.is_empty() {
-                ui.label(widgets::small_dim(&p, "No extensions installed yet: add them on the Extensions page."));
-            }
-            for e in &exts {
-                if e.all_profiles {
-                    let mut on = true;
-                    ui.add_enabled(false, egui::Checkbox::new(&mut on, format!("{}  (every profile)", e.name)));
-                } else {
-                    let slot = match r.extensions.iter().position(|(id, _)| *id == e.id) {
-                        Some(i) => i,
-                        None => {
-                            r.extensions.push((e.id.clone(), e.groups.contains(&r.id)));
-                            r.extensions.len() - 1
+                match (&self.groups_ui.people, r.local_only) {
+                    (_, true) => {}
+                    (None, _) => {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Spinner::new().size(12.0));
+                            ui.label(widgets::small_dim(&p, "Asking the team hub\u{2026}"));
+                        });
+                    }
+                    (Some(Ok(None)), _) => {
+                        ui.label(widgets::small_dim(
+                            &p,
+                            "Connect a team hub (Teams) to decide who may use this group.",
+                        ));
+                    }
+                    (Some(Err(e)), _) => {
+                        ui.label(RichText::new(format!("The team hub did not answer: {e}")).color(p.warn).size(12.5));
+                    }
+                    (Some(Ok(Some(people))), false) => {
+                        use citro_core::team::TeamRole;
+                        let admin = people.role >= TeamRole::Admin;
+                        ui.add_enabled_ui(admin, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(dim(&p, "Who sees its profiles"));
+                                widgets::segmented(
+                                    ui,
+                                    &p,
+                                    &mut r.access.see,
+                                    &[
+                                        (TeamRole::Viewer, "Everyone"),
+                                        (TeamRole::Member, "Members+"),
+                                        (TeamRole::Admin, "Admins+"),
+                                        (TeamRole::Owner, "Owners"),
+                                    ],
+                                );
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label(dim(&p, "Who opens and edits them"));
+                                widgets::segmented(
+                                    ui,
+                                    &p,
+                                    &mut r.access.open,
+                                    &[
+                                        (TeamRole::Member, "Members+"),
+                                        (TeamRole::Admin, "Admins+"),
+                                        (TeamRole::Owner, "Owners"),
+                                    ],
+                                );
+                            });
+                            let others: Vec<&citro_hub::model::Member> =
+                                people.members.iter().filter(|m| m.role != TeamRole::Owner).collect();
+                            if !others.is_empty() {
+                                ui.label(dim(&p, "Also allowed, whatever their role"));
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 16.0;
+                                    for m in others {
+                                        let mut on = r.access.people.contains(&m.user_id);
+                                        if ui
+                                            .checkbox(&mut on, format!("{} ({})", m.user_name, m.role.as_str()))
+                                            .changed()
+                                        {
+                                            r.access.people.retain(|u| *u != m.user_id);
+                                            if on {
+                                                r.access.people.push(m.user_id.clone());
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                        ui.label(widgets::small_dim(
+                            &p,
+                            format!("{}. Owners always see and open everything.", r.access.describe()),
+                        ));
+                        if !admin {
+                            ui.label(widgets::small_dim(&p, "Only team owners and admins change who may use a group."));
                         }
-                    };
-                    ui.checkbox(&mut r.extensions[slot].1, &e.name);
+                    }
                 }
-            }
+                ui.add_space(8.0);
+                widgets::field_label(ui, &p, "Extensions");
+                if exts.is_empty() {
+                    ui.label(widgets::small_dim(&p, "No extensions installed yet: add them on the Extensions page."));
+                }
+                for e in &exts {
+                    if e.all_profiles {
+                        let mut on = true;
+                        ui.add_enabled(false, egui::Checkbox::new(&mut on, format!("{}  (every profile)", e.name)));
+                    } else {
+                        let slot = match r.extensions.iter().position(|(id, _)| *id == e.id) {
+                            Some(i) => i,
+                            None => {
+                                r.extensions.push((e.id.clone(), e.groups.contains(&r.id)));
+                                r.extensions.len() - 1
+                            }
+                        };
+                        ui.checkbox(&mut r.extensions[slot].1, &e.name);
+                    }
+                }
+            });
             widgets::footer(ui, |ui| {
                 if widgets::primary_button(ui, &p, "Save", !r.name.trim().is_empty()).clicked() {
                     r.tabs = r.tabs_text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect();
@@ -312,16 +438,32 @@ impl CitroApp {
             }
             Act::StartRename(g) => {
                 self.refresh_extensions();
+                self.groups_ui.people = None;
+                self.tasks
+                    .spawn(false, |w| w.send(Msg::TeamPeople(w.backend.team_people().map_err(|e| e.to_string()))));
                 let tabs_text = g.tabs.join("\n");
                 self.groups_ui.rename = Some(Rename {
-                    id: g.group_id,
-                    name: g.group_name,
-                    remark: g.remark,
-                    tabs: g.tabs,
+                    id: g.group_id.clone(),
+                    name: g.group_name.clone(),
+                    remark: g.remark.clone(),
+                    tabs: g.tabs.clone(),
                     tabs_text,
                     extensions: Vec::new(),
                     bookmarks_text: citro_core::bookmarks::to_lines(&g.bookmarks),
+                    local_only: g.local_only,
+                    access: g.access.clone(),
+                    clear_defaults: false,
+                    group: g,
                 });
+            }
+            Act::EditDefaults => {
+                // the full editor, for this group's defaults; the window comes back after it
+                let Some(r) = self.groups_ui.rename.take() else { return };
+                let mut d = super::edit::EditDialog::for_defaults(
+                    r.group.new_profile.as_deref().or(self.settings.new_profile.as_ref()),
+                );
+                d.group_target = Some((r.group.group_id.clone(), r.group.group_name.clone()));
+                self.edit = Some(d);
             }
             Act::CancelRename => self.groups_ui.rename = None,
             Act::SaveRename => {
@@ -356,6 +498,10 @@ impl CitroApp {
                     remark: r.remark.trim().to_owned(),
                     tabs: r.tabs.clone(),
                     bookmarks: citro_core::bookmarks::parse_lines(&r.bookmarks_text),
+                    new_profile: if r.clear_defaults { None } else { r.group.new_profile.clone() },
+                    access: r.access.clone(),
+                    local_only: r.local_only,
+                    hub_id: r.group.hub_id.clone(),
                 };
                 self.run_op(Vec::new(), format!("Saved group {name}"), Refresh::ROWS_GROUPS, move |b| {
                     b.save_group(g)?;
@@ -388,8 +534,7 @@ impl CitroApp {
                     group_id: String::new(),
                     group_name: s.new_name.trim().to_owned(),
                     remark: s.new_remark.trim().to_owned(),
-                    tabs: Vec::new(),
-                    bookmarks: Vec::new(),
+                    ..Group::default()
                 };
                 if g.group_name.is_empty() {
                     return;

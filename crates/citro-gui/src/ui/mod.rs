@@ -12,6 +12,7 @@ pub mod import;
 pub mod kernel;
 pub mod logs;
 pub mod messages;
+pub mod plugins;
 pub mod profiles;
 pub mod proxy_dialog;
 pub mod settings;

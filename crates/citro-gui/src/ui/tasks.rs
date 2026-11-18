@@ -114,6 +114,14 @@ pub enum Msg {
     /// The team browsers are closed and uploaded: the app may quit.
     QuitDone(Vec<String>),
     Extensions(BResult<Vec<crate::backend::Extension>>),
+    Plugins(BResult<Vec<citro_core::plugins::Plugin>>),
+    TeamPeople(Result<Option<citro_sync::People>, String>),
+    PluginFetched(BResult<crate::backend::PluginPreview>),
+    PluginInstalled(BResult<citro_core::plugins::Plugin>),
+    PluginNewest {
+        id: String,
+        result: BResult<Option<(String, String)>>,
+    },
     DataMoved(BResult<()>),
     Tags(BResult<Vec<crate::backend::Tag>>),
     ImportRead(Result<citro_core::import::Parsed, String>),

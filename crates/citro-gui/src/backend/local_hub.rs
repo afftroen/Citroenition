@@ -190,6 +190,16 @@ fn refresh(home: &Home, state: &HubState, events: &EventLog, pull: bool) {
                 return;
             }
         }
+        // every profile is a team profile unless it (or its group) is kept on this computer
+        for (e, r) in hub.share_new() {
+            match r {
+                Ok(r) => events.info(
+                    Some(&r.profile.profile_id),
+                    format!("shared {} with the team automatically: {}", e.name, r.outcome.summary()),
+                ),
+                Err(err) => events.warn(Some(&e.id), format!("could not share {} with the team: {err}", e.name)),
+            }
+        }
     }
     match hub.locks() {
         Ok(rows) => {

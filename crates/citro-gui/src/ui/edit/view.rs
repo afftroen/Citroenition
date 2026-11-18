@@ -173,12 +173,11 @@ impl EditDialog {
             }
             let (sep, _) = ui.allocate_exact_size(vec2(1.0, 18.0), Sense::hover());
             ui.painter().rect_filled(sep, CornerRadius::ZERO, p.border_strong);
-            let title = if self.template {
-                "Defaults for new profiles"
-            } else if existing {
-                "Edit profile"
-            } else {
-                "New profile"
+            let title = match (&self.group_target, self.template, existing) {
+                (Some((_, g)), true, _) => format!("Defaults for new profiles in {g}"),
+                (None, true, _) => "Defaults for new profiles".to_owned(),
+                (_, false, true) => "Edit profile".to_owned(),
+                _ => "New profile".to_owned(),
             };
             ui.label(semibold(title, 21.0));
             if existing {
@@ -384,6 +383,78 @@ impl EditDialog {
         });
         if !self.template {
             ch |= self.account_rows(ui, p, act);
+            ch |= self.plugin_rows(ui, p);
+        }
+        ch
+    }
+
+    /// The fields of the plugins switched on for the profile's group.
+    fn plugin_rows(&mut self, ui: &mut Ui, p: &Palette) -> bool {
+        use citro_core::plugins::FieldKind;
+        let mut ch = false;
+        let group = if self.group == "0" { String::new() } else { self.group.clone() };
+        let shown: Vec<citro_core::plugins::Plugin> =
+            self.plugins.iter().filter(|pl| pl.applies_to(&group) && !pl.manifest.fields.is_empty()).cloned().collect();
+        for pl in shown {
+            let id = pl.id().to_owned();
+            form_row(ui, p, "", |ui| {
+                ui.horizontal(|ui| {
+                    widgets::paint_icon_box(ui, p, widgets::Icon::Plug);
+                    ui.label(semibold(&pl.manifest.name, 14.5));
+                    widgets::badge(ui, "plugin", p.accent_hover);
+                });
+            });
+            for f in &pl.manifest.fields {
+                let label = if f.label.is_empty() { f.key.clone() } else { f.label.clone() };
+                let slot = format!("{id}/{}", f.key);
+                let value = self.plugin_data.entry(id.clone()).or_default().entry(f.key.clone()).or_default();
+                form_row(ui, p, &label, |ui| {
+                    match f.kind {
+                        FieldKind::Text => ch |= ui.add(field(value)).changed(),
+                        FieldKind::Note => {
+                            ch |= widgets::capped(
+                                ui,
+                                &format!("plugin-{slot}"),
+                                TextEdit::multiline(value)
+                                    .margin(Margin::symmetric(10, 8))
+                                    .desired_rows(3)
+                                    .desired_width(f32::INFINITY),
+                            )
+                            .changed()
+                        }
+                        FieldKind::Secret => {
+                            ui.horizontal(|ui| {
+                                let open = self.revealed.contains(&slot);
+                                let w = (ui.available_width() - 80.0).max(160.0);
+                                ch |= ui.add(field(value).password(!open).desired_width(w)).changed();
+                                if ui.small_button(if open { "Hide" } else { "Show" }).clicked() {
+                                    if open {
+                                        self.revealed.remove(&slot);
+                                    } else {
+                                        self.revealed.insert(slot.clone());
+                                    }
+                                }
+                            });
+                        }
+                        FieldKind::Select => {
+                            let shown = if value.is_empty() { "\u{2013}".to_owned() } else { value.clone() };
+                            ComboBox::from_id_salt(format!("plugin-{slot}"))
+                                .width(280.0)
+                                .icon(widgets::chevron_icon)
+                                .selected_text(shown)
+                                .show_ui(ui, |ui| {
+                                    ch |= ui.selectable_value(value, String::new(), "\u{2013}").changed();
+                                    for o in &f.options {
+                                        ch |= ui.selectable_value(value, o.clone(), o).changed();
+                                    }
+                                });
+                        }
+                    }
+                    if !f.hint.is_empty() {
+                        hint(ui, p, &f.hint);
+                    }
+                });
+            }
         }
         ch
     }
@@ -974,6 +1045,17 @@ impl EditDialog {
 
     fn advanced(&mut self, ui: &mut Ui, p: &Palette) -> bool {
         let mut ch = false;
+        if !self.template {
+            form_row(ui, p, "Team", |ui| {
+                ch |= widgets::switch(ui, p, &mut self.local_only, "Keep this profile on this computer only");
+                hint(
+                    ui,
+                    p,
+                    "With a team hub connected, profiles are shared with the team automatically and synced when they \
+                     open and close. This one is not shared (a profile already on the hub stays there).",
+                );
+            });
+        }
         form_row(ui, p, "Launch arguments", |ui| {
             let r = widgets::capped(
                 ui,

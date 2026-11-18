@@ -550,3 +550,112 @@ fn logging_out_keeps_the_profiles_but_forgets_the_hub() {
     assert!(matches!(err, Error::NotLoggedIn), "{err}");
     assert!(!a.running(&id));
 }
+
+/// Everything is a team profile unless it says otherwise; a group decides who in the team may use its profiles,
+/// and the hub, not the app, makes it stick.
+#[test]
+fn profiles_are_shared_by_themselves_and_a_groups_rules_hold_on_every_device() {
+    use citro_core::team::GroupAccess;
+    let w = World::new();
+    let a = w.device("Anna's Mac", &w.anna); // anna owns the team
+    let b = w.device("Ben's laptop", &w.ben); // ben is a member
+
+    // anna's local profiles: one normal, one in a VIP group, one she keeps for herself, one in a private group
+    let (vip, private) = store::locked(&a.home, |s| {
+        let vip = s.create_group("VIP", "")?;
+        let private = s.create_group("Private", "")?;
+        Ok((vip.group_id, private.group_id))
+    })
+    .expect("groups");
+    store::locked(&a.home, |s| {
+        for mut x in s.groups().to_vec() {
+            if x.group_id == vip {
+                x.access = GroupAccess { see: TeamRole::Admin, open: TeamRole::Admin, people: vec![] };
+                x.tabs = vec!["https://ads.example/".into()];
+            }
+            if x.group_id == private {
+                x.local_only = true;
+            }
+            s.update_group(x)?;
+        }
+        Ok(())
+    })
+    .expect("rules");
+    for (name, group, local_only) in [
+        ("normal", "0", false),
+        ("big spender", vip.as_str(), false),
+        ("mine", "0", true),
+        ("secret", private.as_str(), false),
+    ] {
+        store::locked(&a.home, |s| {
+            s.create(Profile { name: name.into(), group_id: group.into(), local_only, ..Default::default() })
+        })
+        .expect("create");
+    }
+
+    // nobody pressed Share: one round of the background sync puts every team profile on the hub
+    let shared: Vec<String> = a
+        .hub
+        .share_new()
+        .into_iter()
+        .map(|(e, r)| {
+            r.expect("shared");
+            e.name
+        })
+        .collect();
+    assert_eq!(shared.len(), 2, "{shared:?}");
+    assert!(shared.contains(&"normal".to_owned()) && shared.contains(&"big spender".to_owned()));
+    assert!(a.hub.share_new().is_empty(), "once shared, nothing is shared twice");
+
+    // the VIP group went up with its rules and its start page
+    let on_hub = a.hub.client().groups(&a.hub.login().team_id).expect("groups");
+    let g = on_hub.iter().find(|g| g.name == "VIP").expect("VIP is on the hub");
+    assert_eq!(g.access.see, TeamRole::Admin);
+    assert_eq!(g.settings.tabs, ["https://ads.example/"]);
+    assert!(on_hub.iter().all(|g| g.name != "Private"), "a local-only group stays here");
+
+    // ben, a member, gets the normal profile and nothing of the VIP group
+    let r = b.hub.pull().expect("pull");
+    let names: Vec<&str> = r.added.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, ["normal"], "{r:?}");
+    assert!(Store::open(&b.home).unwrap().groups().iter().all(|g| g.group_name != "VIP"));
+    let vip_id = Store::open(&a.home)
+        .unwrap()
+        .profiles()
+        .iter()
+        .find(|p| p.name == "big spender")
+        .map(|p| p.profile_id.clone())
+        .unwrap();
+    // even asking for it by id gets nothing
+    assert!(b.hub.client().profile(&vip_id, None).is_err());
+    assert!(b.hub.client().lock(&vip_id).is_err());
+
+    // anna makes ben one of the chosen people: now he gets it, and its group's start page comes along
+    let people = a.hub.people().expect("people");
+    let ben_id = people.members.iter().find(|m| m.user_name == "ben").map(|m| m.user_id.clone()).unwrap();
+    store::locked(&a.home, |s| {
+        let mut g = s.groups().iter().find(|g| g.group_name == "VIP").cloned().unwrap();
+        g.access.people = vec![ben_id.clone()];
+        s.update_group(g)
+    })
+    .expect("allow ben");
+    let vip_local =
+        Store::open(&a.home).unwrap().groups().iter().find(|g| g.group_name == "VIP").unwrap().group_id.clone();
+    a.hub.push_group(&vip_local).expect("rules go up");
+    let r = b.hub.pull().expect("pull");
+    assert!(r.added.iter().any(|e| e.name == "big spender"), "{r:?}");
+    let ben_vip = Store::open(&b.home).unwrap().groups().iter().find(|g| g.group_name == "VIP").cloned().expect("VIP");
+    assert_eq!(ben_vip.tabs, ["https://ads.example/"], "the group's settings came along");
+    assert_eq!(ben_vip.access.people, [ben_id]);
+
+    // and ben, a member, cannot change who may use a group
+    store::locked(&b.home, |s| {
+        let mut g = s.groups().iter().find(|g| g.group_name == "VIP").cloned().unwrap();
+        g.access = GroupAccess::default();
+        s.update_group(g)
+    })
+    .expect("local change");
+    let ben_vip_id =
+        Store::open(&b.home).unwrap().groups().iter().find(|g| g.group_name == "VIP").unwrap().group_id.clone();
+    assert!(b.hub.push_group(&ben_vip_id).is_err(), "only owners and admins decide who may use a group");
+}

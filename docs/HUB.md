@@ -516,6 +516,38 @@ browser data come down when the profile is opened. The local copy shows secrets 
 "********"`); the real values arrive only with the lock. A profile that was deleted on the hub is reported
 (`! id name: not on the hub any more. It stays here; citro hub unbind <id> makes it a local profile`) and left alone.
 
+### Automatic sharing, and what stays on one computer
+
+With a hub connected, the desktop app shares every profile with the team by itself (its background sync runs every
+few minutes): nobody has to press *Share*. Two switches keep things on one computer:
+
+* a profile's **Keep this profile on this computer only** (profile editor -> Advanced -> Team);
+* a group's **Keep this group on this computer only** (Groups -> Settings): none of its profiles are shared.
+
+A profile that is open is shared after it is closed (its data goes up with it). From then on every open takes the
+hub's lock (nobody else, not even you on another computer, can open it meanwhile) and every close uploads the
+cookies, tabs and the rest of the browser data.
+
+### Who may use a group's profiles
+
+Each group has rules, set in its Settings by a team owner or admin and **enforced by the hub**:
+
+| Setting | Choices |
+|---|---|
+| Who sees its profiles | everyone, members and up, admins and owners, owners |
+| Who opens and edits them | members and up, admins and owners, owners |
+| Also allowed | chosen members, whatever their role (a viewer among them still only looks) |
+
+Someone a group hides its profiles from does not get them from the hub at all: not in their list, not by id, not
+in the CSV export or the logs, and they cannot lock them, read their data or move a profile into the group. Someone
+who may only look gets them without being able to open or edit them. Owners always see and open everything, so a
+team cannot lock itself out. A hub older than these rules ignores them; the app then refuses to save the rules and
+says the hub needs an update (`deploy/install-hub.sh` upgrades it).
+
+A group also carries settings everybody's app applies: its start pages, its bookmarks and the **defaults for new
+profiles in the group** (Groups -> Settings -> *Set defaults…*; a new profile made while the group is selected starts
+with them instead of Settings' defaults).
+
 ### Open and close
 
 `citro open`, the Local API and the desktop app all go through the same code, and the first thing it does for a hub

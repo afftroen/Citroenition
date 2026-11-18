@@ -111,6 +111,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ExtCmd,
     },
+    /// Plugins (new, in progress): add fields, start pages, bookmarks and extensions from a GitHub repository
+    Plugin {
+        #[command(subcommand)]
+        cmd: PluginCmd,
+    },
     /// Share profiles with a team through a Citroenition hub: one device at a time, the data follows the profile
     Hub {
         #[command(subcommand)]
@@ -235,6 +240,25 @@ enum ExtCmd {
     #[command(visible_alias = "ls")]
     List,
     /// Remove an extension
+    #[command(visible_alias = "rm")]
+    Remove { id: String },
+}
+
+#[derive(Subcommand)]
+enum PluginCmd {
+    /// Install a plugin from a GitHub link (its newest commit) or a local folder, .zip or .tar.gz
+    Add { source: String },
+    /// List installed plugins
+    #[command(visible_alias = "ls")]
+    List,
+    /// Fetch the newest commit of a GitHub plugin and install it (shows what changed first with --check)
+    Update {
+        id: String,
+        /// Only say whether there is a newer commit
+        #[arg(long)]
+        check: bool,
+    },
+    /// Remove a plugin (the values it stored in profiles stay)
     #[command(visible_alias = "rm")]
     Remove { id: String },
 }
@@ -995,6 +1019,7 @@ fn run(cli: Cli) -> Result<()> {
                 );
             }
         }
+        Cmd::Plugin { cmd } => plugin_cmd(&home, cmd)?,
         Cmd::Extension { cmd: ExtCmd::List } => {
             let s = Store::open(&home)?;
             let body: Vec<Vec<String>> = citro_core::extensions::list(&home)
@@ -1097,4 +1122,77 @@ fn main() {
         eprintln!("error: {e:#}");
         std::process::exit(1);
     }
+}
+
+fn plugin_cmd(home: &Home, cmd: PluginCmd) -> anyhow::Result<()> {
+    use citro_core::plugins;
+    use citro_install::github;
+    let timeout = Duration::from_secs(60);
+    let work = home.root.join("plugins").join(format!(".download-{}", std::process::id()));
+    let install = |input: &str| -> anyhow::Result<plugins::Plugin> {
+        let f = github::fetch(input, &work, timeout)?;
+        let root = plugins::find_root(&f.dir).ok_or_else(|| anyhow::anyhow!("no {} in {input}", plugins::MANIFEST))?;
+        let p = plugins::install(home, &root, &f.source, &f.commit)?;
+        let _ = std::fs::remove_dir_all(&work);
+        Ok(p)
+    };
+    match cmd {
+        PluginCmd::Add { source } => {
+            let p = install(&source)?;
+            let m = &p.manifest;
+            println!("installed {} {} ({})", m.name, m.version, m.id);
+            println!(
+                "  adds {} fields, {} start pages, {} bookmarks, {} extensions; switched on for every profile",
+                m.fields.len(),
+                m.start_pages.len(),
+                m.bookmarks.len(),
+                m.extensions.len()
+            );
+            if !p.commit.is_empty() {
+                println!("  pinned to commit {}", &p.commit[..12.min(p.commit.len())]);
+            }
+        }
+        PluginCmd::List => {
+            for p in plugins::list(home) {
+                let pin = if p.commit.is_empty() {
+                    "local".to_owned()
+                } else {
+                    p.commit[..12.min(p.commit.len())].to_owned()
+                };
+                let scope =
+                    if p.all_profiles { "all profiles".to_owned() } else { format!("groups {}", p.groups.join(",")) };
+                println!("{}\t{}\t{}\t{pin}\t{scope}\t{}", p.id(), p.manifest.name, p.manifest.version, p.source);
+            }
+        }
+        PluginCmd::Update { id, check } => {
+            let p = plugins::list(home)
+                .into_iter()
+                .find(|p| p.id() == id)
+                .ok_or_else(|| anyhow::anyhow!("no plugin `{id}`"))?;
+            if !p.is_github() {
+                bail!("{id} was installed from a file: install the new file with `citro plugin add`");
+            }
+            let src = github::GithubSource::parse(&p.source)?;
+            let newest = github::latest_commit(&src, timeout)?;
+            if newest == p.commit {
+                println!("{id} is up to date ({})", &newest[..12]);
+                return Ok(());
+            }
+            println!(
+                "{id}: {} -> {}  changes: {}",
+                &p.commit[..12.min(p.commit.len())],
+                &newest[..12],
+                src.compare_url(&p.commit, &newest)
+            );
+            if !check {
+                let p = install(&p.source)?;
+                println!("updated {} to {}", p.manifest.name, p.manifest.version);
+            }
+        }
+        PluginCmd::Remove { id } => {
+            plugins::remove(home, &id)?;
+            println!("removed {id}");
+        }
+    }
+    Ok(())
 }

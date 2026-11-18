@@ -7,8 +7,8 @@
 use super::error::{ApiError, ApiResult};
 use super::util::{clean_text, ct_eq, random_id, token_hash};
 use crate::model::{
-    Holder, HubGroup, HubProfile, Lease, LockInfo, LogLevel, Member, Team, TeamEntry, TeamRole, UNGROUPED, User,
-    UserRole,
+    GroupAccess, GroupSettings, Holder, HubGroup, HubProfile, Lease, LockInfo, LogLevel, Member, Team, TeamEntry,
+    TeamRole, UNGROUPED, User, UserRole,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -240,11 +240,46 @@ impl State {
     }
 
     /// The profile and the caller's role in its team; `404` for outsiders (they cannot tell it exists).
+    ///
+    /// The profile's group has the last word: someone the group hides it from gets `404` too, and someone who may
+    /// only look at it gets a viewer's role for it (so opening, editing, its data and deleting are refused).
     pub fn profile_role(&self, user: &User, pid: &str) -> ApiResult<(&HubProfile, TeamRole)> {
         let hp = self.profiles.get(pid).ok_or_else(|| ApiError::not_found("no such profile"))?;
-        match self.role_in(user, &hp.team_id) {
-            Some(r) => Ok((hp, r)),
-            None => Err(ApiError::not_found("no such profile")),
+        let role = self.role_in(user, &hp.team_id).ok_or_else(|| ApiError::not_found("no such profile"))?;
+        let role = self
+            .access_of(&hp.team_id, &hp.profile.group_id)
+            .effective(&user.id, role)
+            .ok_or_else(|| ApiError::not_found("no such profile"))?;
+        Ok((hp, role))
+    }
+
+    /// Who may use the profiles of a group (the defaults for ungrouped profiles and unknown groups).
+    pub fn access_of(&self, team_id: &str, group_id: &str) -> GroupAccess {
+        self.groups.get(group_id).filter(|g| g.team_id == team_id).map(|g| g.access.clone()).unwrap_or_default()
+    }
+
+    /// May this person see the profile (the team role and the group's rules)?
+    pub fn may_see_profile(&self, user: &User, hp: &HubProfile) -> bool {
+        self.role_in(user, &hp.team_id)
+            .is_some_and(|r| self.access_of(&hp.team_id, &hp.profile.group_id).may_see(&user.id, r))
+    }
+
+    /// The team's profiles this person may not see (their log lines are left out for them too).
+    pub fn hidden_profiles(&self, user: &User, team_id: &str) -> std::collections::HashSet<String> {
+        self.profiles
+            .values()
+            .filter(|p| p.team_id == team_id && !self.may_see_profile(user, p))
+            .map(|p| p.profile.profile_id.clone())
+            .collect()
+    }
+
+    /// Refuse to put a profile in a group the caller may not open.
+    pub fn require_group_open(&self, user: &User, team_id: &str, group_id: &str) -> ApiResult<()> {
+        let role = self.role_in(user, team_id).ok_or_else(|| ApiError::not_found("no such team"))?;
+        if self.access_of(team_id, group_id).may_open(&user.id, role) {
+            Ok(())
+        } else {
+            Err(ApiError::forbidden("you may not add profiles to this group"))
         }
     }
 
@@ -411,8 +446,14 @@ impl State {
     // ---- groups ------------------------------------------------------------------------------------------------
 
     pub fn groups_of(&self, user: &User, team_id: &str) -> ApiResult<Vec<HubGroup>> {
-        self.require_role(user, team_id, TeamRole::Viewer)?;
-        let mut out: Vec<HubGroup> = self.groups.values().filter(|g| g.team_id == team_id).cloned().collect();
+        let role = self.require_role(user, team_id, TeamRole::Viewer)?;
+        // a group someone may not see is not listed for them either
+        let mut out: Vec<HubGroup> = self
+            .groups
+            .values()
+            .filter(|g| g.team_id == team_id && g.access.may_see(&user.id, role))
+            .cloned()
+            .collect();
         out.sort_by_key(|g| g.id.parse::<u64>().unwrap_or(u64::MAX));
         Ok(out)
     }
@@ -445,14 +486,33 @@ impl State {
     }
 
     pub fn create_group(&mut self, cx: &mut Cx, team_id: &str, name: &str, remark: &str) -> ApiResult<HubGroup> {
+        self.create_group_with(cx, team_id, name, remark, GroupSettings::default())
+    }
+
+    pub fn create_group_with(
+        &mut self,
+        cx: &mut Cx,
+        team_id: &str,
+        name: &str,
+        remark: &str,
+        settings: GroupSettings,
+    ) -> ApiResult<HubGroup> {
         self.require_role(&cx.user, team_id, TeamRole::Member)?;
+        Self::check_settings(&settings)?;
         let name = Self::check_group_text(name, remark)?;
         if self.groups.values().any(|g| g.team_id == team_id && g.name.eq_ignore_ascii_case(&name)) {
             return Err(ApiError::invalid("a group with this name already exists"));
         }
         let id = self.next_group_id.to_string();
         self.next_group_id += 1;
-        let g = HubGroup { id: id.clone(), team_id: team_id.to_owned(), name: name.clone(), remark: remark.to_owned() };
+        let g = HubGroup {
+            id: id.clone(),
+            team_id: team_id.to_owned(),
+            name: name.clone(),
+            remark: remark.to_owned(),
+            access: GroupAccess::default(),
+            settings,
+        };
         self.groups.insert(id, g.clone());
         cx.log(team_id, LogLevel::Info, None, format!("group `{name}` created"));
         Ok(g)
@@ -465,9 +525,57 @@ impl State {
         name: Option<&str>,
         remark: Option<&str>,
     ) -> ApiResult<HubGroup> {
+        self.update_group_with(cx, gid, name, remark, None, None)
+    }
+
+    fn check_settings(s: &GroupSettings) -> ApiResult<()> {
+        if s.tabs.len() > 200 || s.tabs.iter().any(|t| t.len() > 4000) {
+            return Err(ApiError::invalid("a group has at most 200 start pages of up to 4000 bytes"));
+        }
+        if s.bookmarks.len() > 500 {
+            return Err(ApiError::invalid("a group has at most 500 bookmarks"));
+        }
+        if let Some(p) = &s.new_profile {
+            super::profiles::validate_profile(p)?;
+        }
+        Ok(())
+    }
+
+    /// Change a group. Its name, remark and settings: members; who may use it (`access`): team owners and admins
+    /// who may themselves use the group.
+    pub fn update_group_with(
+        &mut self,
+        cx: &mut Cx,
+        gid: &str,
+        name: Option<&str>,
+        remark: Option<&str>,
+        access: Option<GroupAccess>,
+        settings: Option<GroupSettings>,
+    ) -> ApiResult<HubGroup> {
         let (g, role) = self.group_role(&cx.user, gid)?;
+        let current = g.access.clone();
+        if !current.may_open(&cx.user.id, role) {
+            return Err(ApiError::forbidden("you may not change this group"));
+        }
         if role < TeamRole::Member {
             return Err(ApiError::forbidden(forbidden_text(TeamRole::Member)));
+        }
+        if access.as_ref().is_some_and(|a| *a != current) && role < TeamRole::Admin {
+            return Err(ApiError::forbidden("only team owners and admins decide who may use a group"));
+        }
+        if let Some(a) = &access {
+            if a.open < TeamRole::Member {
+                return Err(ApiError::invalid("`open` must be member, admin or owner: viewers open nothing"));
+            }
+            let team = g.team_id.clone();
+            if let Some(stranger) =
+                a.people.iter().find(|u| !self.members.iter().any(|m| m.team_id == team && &m.user_id == *u))
+            {
+                return Err(ApiError::invalid(format!("`{stranger}` is not a member of this team")));
+            }
+        }
+        if let Some(s) = &settings {
+            Self::check_settings(s)?;
         }
         let team_id = g.team_id.clone();
         let new_name = match name {
@@ -483,8 +591,19 @@ impl State {
         if let Some(r) = remark {
             g.remark = r.to_owned();
         }
+        let access_note = match access {
+            Some(a) if a != g.access => {
+                let d = a.describe();
+                g.access = a;
+                format!("; access: {d}")
+            }
+            _ => String::new(),
+        };
+        if let Some(s) = settings {
+            g.settings = s;
+        }
         let out = g.clone();
-        cx.log(&team_id, LogLevel::Info, None, format!("group `{old}` updated (now `{new_name}`)"));
+        cx.log(&team_id, LogLevel::Info, None, format!("group `{old}` updated (now `{new_name}`){access_note}"));
         Ok(out)
     }
 

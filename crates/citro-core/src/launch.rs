@@ -274,7 +274,13 @@ pub fn prepare(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) 
     }
     args.extend(kernel_env::gpu_backend_args(resolved.os, &user_args));
     // the extensions for every profile and for this profile's group
-    let extensions = crate::extensions::folders_for(home, &p.group_id);
+    let mut extensions = crate::extensions::folders_for(home, &p.group_id);
+    let from_plugins = crate::plugins::applied(home, &p.group_id);
+    for e in from_plugins.extensions {
+        if !extensions.contains(&e) {
+            extensions.push(e);
+        }
+    }
     if !extensions.is_empty() {
         let list: Vec<String> = extensions.iter().map(|d| d.display().to_string()).collect();
         args.push(format!("--load-extension={}", list.join(",")));
@@ -306,7 +312,7 @@ pub fn prepare(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) 
         })
         .unwrap_or_default();
     let mut wanted: Vec<String> = Vec::new();
-    for u in group_tabs.iter().chain(&p.tabs).filter_map(|t| start_url(t)) {
+    for u in group_tabs.iter().chain(&from_plugins.start_pages).chain(&p.tabs).filter_map(|t| start_url(t)) {
         if !wanted.contains(&u) {
             wanted.push(u);
         }
@@ -645,7 +651,8 @@ pub fn start(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) ->
             })
             .unwrap_or_default();
         let mut marks: Vec<crate::bookmarks::Bookmark> = Vec::new();
-        for b in group_marks.into_iter().chain(p.bookmarks.iter().cloned()) {
+        let plugin_marks = crate::plugins::applied(home, &p.group_id).bookmarks;
+        for b in group_marks.into_iter().chain(plugin_marks).chain(p.bookmarks.iter().cloned()) {
             if !marks.iter().any(|m| m.url == b.url) {
                 marks.push(b);
             }
@@ -943,6 +950,9 @@ fn stop_quietly(home: &Home, id: &str) -> Result<bool> {
     let Some(r) = running(home, id) else { return Ok(false) };
     let data_dir = data_dir_of(home, id);
     let pid = r.pid as i32;
+    // The record goes first: the thread that reaps the browser retires it only while it is still there, so the
+    // close is recorded once, here, and not a second time when the process is gone.
+    retire(home, id, now());
     signal(pid, libc::SIGTERM);
     let deadline = Instant::now() + Duration::from_secs(10);
     while pid_is_browser(r.pid, &data_dir) && Instant::now() < deadline {
@@ -954,7 +964,6 @@ fn stop_quietly(home: &Home, id: &str) -> Result<bool> {
     while pid_is_browser(r.pid, &data_dir) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
-    retire(home, id, now());
     Ok(true)
 }
 

@@ -31,6 +31,7 @@ pub enum Page {
     Logs,
     Kernel,
     Extensions,
+    Plugins,
     Teams,
     Settings,
 }
@@ -43,6 +44,7 @@ impl Page {
             Page::Logs => "Logs",
             Page::Kernel => "Kernel",
             Page::Extensions => "Extensions",
+            Page::Plugins => "Plugins",
             Page::Teams => "Teams",
             Page::Settings => "Settings",
         }
@@ -55,6 +57,7 @@ impl Page {
             Page::Logs => Icon::Logs,
             Page::Kernel => Icon::Kernel,
             Page::Extensions => Icon::Puzzle,
+            Page::Plugins => Icon::Plug,
             Page::Teams => Icon::Teams,
             Page::Settings => Icon::Settings,
         }
@@ -66,6 +69,7 @@ impl Page {
             StartPage::Logs | StartPage::LogsBrowser => Page::Logs,
             StartPage::Kernel => Page::Kernel,
             StartPage::Extensions => Page::Extensions,
+            StartPage::Plugins => Page::Plugins,
             StartPage::Teams => Page::Teams,
             StartPage::Settings => Page::Settings,
             _ => Page::Profiles,
@@ -183,6 +187,9 @@ pub struct CitroApp {
     pub teams_ui: teams::State,
     pub settings_ui: settings::State,
     pub extensions_ui: extensions::State,
+    pub plugins_ui: super::plugins::State,
+    /// The installed plugins (the editor shows their fields).
+    pub plugins: Vec<citro_core::plugins::Plugin>,
     pub import_ui: import::State,
     pub update: update::State,
 
@@ -248,6 +255,8 @@ impl CitroApp {
             teams_ui: teams::State::default(),
             settings_ui: settings::State::default(),
             extensions_ui: extensions::State::default(),
+            plugins_ui: super::plugins::State::default(),
+            plugins: Vec::new(),
             import_ui: import::State::default(),
             update: update::State::default(),
             scenario: Some(o.start),
@@ -306,6 +315,7 @@ impl CitroApp {
         self.refresh_groups();
         self.refresh_kernel();
         self.refresh_teams();
+        self.refresh_plugins();
         self.last_slow = Instant::now();
     }
 
@@ -329,6 +339,7 @@ impl CitroApp {
         match page {
             Page::Kernel => self.refresh_kernel(),
             Page::Extensions => self.refresh_extensions(),
+            Page::Plugins => self.refresh_plugins(),
             Page::Teams => self.refresh_teams(),
             Page::Logs => self.logs_ui.mark_dirty(),
             _ => {}
@@ -561,6 +572,7 @@ impl eframe::App for CitroApp {
                             Page::Logs => self.logs_page(ui),
                             Page::Kernel => self.kernel_page(ui),
                             Page::Extensions => self.extensions_page(ui),
+                            Page::Plugins => self.plugins_page(ui),
                             Page::Teams => self.teams_page(ui),
                             Page::Settings => self.settings_page(ui),
                         }

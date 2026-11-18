@@ -173,6 +173,13 @@ pub struct Profile {
     /// Where the profile was imported from (`api:<profile id>`), so an import run twice adds nothing twice.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub source: String,
+    /// Never share this profile with the team: it stays on this computer.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub local_only: bool,
+    /// Values kept by plugins, per plugin id then field key (`crate::plugins`). Part of the profile, so team sync
+    /// carries them.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub plugin_data: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     pub created_time: i64,
     /// Unix seconds; `0` = never.
     pub last_open_time: i64,
@@ -222,6 +229,18 @@ pub struct Group {
     pub tabs: Vec<String>,
     /// Bookmarks on the bar of every profile of the group (before the profile's own).
     pub bookmarks: Vec<crate::bookmarks::Bookmark>,
+    /// The settings a new profile in this group starts with (`None` = the app's defaults for new profiles).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_profile: Option<Box<Profile>>,
+    /// Who in the team may see and open the group's profiles (kept by the team hub, shown here).
+    #[serde(skip_serializing_if = "crate::team::GroupAccess::is_default")]
+    pub access: crate::team::GroupAccess,
+    /// Never share this group's profiles with the team: they stay on this computer.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub local_only: bool,
+    /// The team hub's id of this group, once it is on the hub.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub hub_id: String,
 }
 
 #[cfg(test)]

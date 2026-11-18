@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.0 (2026-11-18)
+
+**Plugins, groups that decide who may use their profiles, and profiles that are team profiles by themselves.**
+Update the team hub too (`deploy/install-hub.sh` without arguments): the group rules need the new hub.
+
+* **Every profile is a team profile by itself.** With a team hub connected, the background sync shares each profile
+  that is not on the hub yet (open ones after they close); nobody has to press Share. "Keep this profile on this
+  computer only" (editor -> Advanced) and "Keep this group on this computer only" (group settings) opt out. Opening
+  still takes the hub's lock, so a profile open on one computer cannot be opened on another, and closing uploads its
+  cookies, tabs and data.
+* **Who may use a group's profiles.** A group's settings decide who sees its profiles (everyone, members and up,
+  admins and owners, owners) and who opens and edits them, plus chosen people. The hub enforces it everywhere: the
+  list, a profile by id, locks, data, the CSV export and the logs. Owners always see everything; only owners and
+  admins change the rules; an old hub that cannot keep them is reported instead of silently ignored.
+* **Groups carry their settings to the team**: start pages, bookmarks, and **defaults for new profiles in the group**
+  (a new profile made in a group starts from them instead of Settings' defaults).
+
+* **Plugins (new, in progress).** A Plugins page installs a plugin from a GitHub link or a local folder / archive,
+  shows what it adds before installing, pins it to that commit (Check for update shows the changes; nothing updates
+  by itself) and switches it on for all profiles or chosen groups. A plugin can add fields to each profile (text,
+  secret, note, select; stored in the profile, so team sync carries them), start pages, bookmarks and browser
+  extensions. A notice on the page says plugins are new and unreviewed. `citro plugin add|ls|update|rm`, an example
+  plugin in `examples/plugins/tiktok-pack`, and an author guide in [docs/PLUGINS.md](docs/PLUGINS.md).
+
 ## 0.1.12 (2026-11-18)
 
 * **"Aw, Snap! Error code: 6" fixed for real.** The switch in 0.1.11 does nothing in Clearcote's macOS build: its

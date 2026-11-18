@@ -68,44 +68,7 @@ pub struct Team {
     pub created_at: i64,
 }
 
-/// A role inside one team. The derived order is the privilege order: `Viewer < Member < Admin < Owner`.
-///
-/// * `Viewer` reads (profile list without secrets, groups, logs, CSV) but cannot open, edit or create anything.
-/// * `Member` opens profiles (takes locks, syncs data), creates and edits profiles and groups.
-/// * `Admin` additionally deletes profiles and groups, breaks locks, manages members (but not owners), sees secrets.
-/// * `Owner` additionally manages owners; a team always keeps at least one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TeamRole {
-    Viewer,
-    Member,
-    Admin,
-    Owner,
-}
-
-impl TeamRole {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            TeamRole::Viewer => "viewer",
-            TeamRole::Member => "member",
-            TeamRole::Admin => "admin",
-            TeamRole::Owner => "owner",
-        }
-    }
-}
-
-impl std::str::FromStr for TeamRole {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, String> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "viewer" => Ok(TeamRole::Viewer),
-            "member" => Ok(TeamRole::Member),
-            "admin" => Ok(TeamRole::Admin),
-            "owner" => Ok(TeamRole::Owner),
-            other => Err(format!("unknown team role `{other}` (expected viewer, member, admin or owner)")),
-        }
-    }
-}
+pub use citro_core::team::{GroupAccess, TeamRole};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
@@ -129,13 +92,29 @@ pub struct Me {
     pub teams: Vec<TeamEntry>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct HubGroup {
     pub id: String,
     pub team_id: String,
     pub name: String,
     #[serde(default)]
     pub remark: String,
+    /// Who may see and open the group's profiles (enforced by the hub). Absent on an old hub.
+    #[serde(default)]
+    pub access: GroupAccess,
+    /// What every member's app applies to the group's profiles. Absent on an old hub.
+    #[serde(default)]
+    pub settings: GroupSettings,
+}
+
+/// A group's settings shared with the team: start pages and bookmarks for its profiles, and the settings a new
+/// profile in the group starts with.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GroupSettings {
+    pub tabs: Vec<String>,
+    pub bookmarks: Vec<citro_core::bookmarks::Bookmark>,
+    pub new_profile: Option<citro_core::profile::Profile>,
 }
 
 /// Metadata of the hosted data blob (cookies / session archive) of one profile. `version == 0` = nothing stored.

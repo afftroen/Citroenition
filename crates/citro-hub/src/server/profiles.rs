@@ -112,6 +112,7 @@ impl State {
             .profiles
             .values()
             .filter(|p| p.team_id == team_id)
+            .filter(|p| self.may_see_profile(user, p))
             .filter(|p| group.as_deref().is_none_or(|g| p.profile.group_id == g))
             .filter(|p| needle.as_deref().is_none_or(|n| matches_query(&p.profile, n)))
             .collect();
@@ -149,6 +150,7 @@ impl State {
         let role = self.require_role(&cx.user, team_id, TeamRole::Member)?;
         validate_profile(&p)?;
         p.group_id = self.resolve_group_for_write(team_id, &p.group_id)?;
+        self.require_group_open(&cx.user, team_id, &p.group_id)?;
         let now = cx.now();
         let pid = loop {
             let id = random_id("k", 6);
@@ -229,6 +231,9 @@ impl State {
         new.last_close_time = old.last_close_time;
         validate_profile(&new)?;
         new.group_id = self.resolve_group_for_write(&team_id, &new.group_id)?;
+        if new.group_id != old.group_id {
+            self.require_group_open(&cx.user, &team_id, &new.group_id)?;
+        }
 
         let reveal = role >= TeamRole::Admin || lease.is_some_and(|l| !l.is_empty());
         if new == old {
@@ -501,6 +506,80 @@ mod tests {
             "user_proxy_config": {"proxy_host": "h", "proxy_port": "1", "proxy_password": "px-secret"}
         }))
         .unwrap()
+    }
+
+    /// ann is a member, bob a member made admin, root the server admin (an owner of every team).
+    #[test]
+    fn a_groups_rules_decide_who_sees_and_opens_its_profiles() {
+        use crate::model::GroupAccess;
+        let (mut st, admin, ann, bob, tid) = world();
+        st.add_member(&mut cx(&admin), &tid, "bob", TeamRole::Admin).unwrap();
+        let vip = st.create_group(&mut cx(&ann), &tid, "VIP", "").unwrap();
+        let mut p = prof("big spender");
+        p.group_id = vip.id.clone();
+        let pid = st.create_profile(&mut cx(&ann), &tid, p).unwrap().profile.profile_id;
+        let normal = st.create_profile(&mut cx(&ann), &tid, prof("normal")).unwrap().profile.profile_id;
+
+        // a member may not decide who uses a group
+        let admins_only = GroupAccess { see: TeamRole::Admin, open: TeamRole::Admin, people: vec![] };
+        let e = st.update_group_with(&mut cx(&ann), &vip.id, None, None, Some(admins_only.clone()), None).unwrap_err();
+        assert_eq!(e.code, "forbidden");
+        st.update_group_with(&mut cx(&bob), &vip.id, None, None, Some(admins_only), None).unwrap();
+
+        // ann no longer sees it anywhere: list, detail, lock, data, groups, CSV, logs
+        let names = |st: &State, u: &User| -> Vec<String> {
+            st.list_profiles(u, &tid, &ProfileQuery::default(), 1_000_000)
+                .unwrap()
+                .profiles
+                .into_iter()
+                .map(|p| p.profile.name)
+                .collect()
+        };
+        assert_eq!(names(&st, &ann.user), ["normal"]);
+        assert_eq!(names(&st, &bob.user), ["big spender", "normal"]);
+        assert_eq!(st.profile_detail(&ann.user, &pid, None, 1_000_000).unwrap_err().code, "not_found");
+        assert_eq!(st.lock_profile(&mut cx(&ann), &pid, "d", "Mac").unwrap_err().code, "not_found");
+        assert!(st.groups_of(&ann.user, &tid).unwrap().iter().all(|g| g.id != vip.id));
+        assert!(st.hidden_profiles(&ann.user, &tid).contains(&pid));
+        let csv = String::from_utf8(super::super::csv::export_profiles(&st, &ann.user, &tid, None, false, 0).unwrap())
+            .unwrap();
+        assert!(!csv.contains("big spender") && csv.contains("normal"));
+        // and cannot move a profile into the group, or create one there
+        let e = st.patch_profile(&mut cx(&ann), &normal, &json!({"group_id": vip.id}), None).unwrap_err();
+        assert_eq!(e.code, "forbidden");
+        let mut q = prof("sneaky");
+        q.group_id = vip.id.clone();
+        assert_eq!(st.create_profile(&mut cx(&ann), &tid, q).unwrap_err().code, "forbidden");
+        // the admin and the owner still open it
+        assert!(st.lock_profile(&mut cx(&bob), &pid, "d", "Mac").is_ok());
+        assert!(st.profile_detail(&admin.user, &pid, None, 1_000_000).is_ok());
+
+        // "members may look, admins open": ann sees it but cannot lock or edit it
+        let look = GroupAccess { see: TeamRole::Viewer, open: TeamRole::Admin, people: vec![] };
+        st.update_group_with(&mut cx(&bob), &vip.id, None, None, Some(look), None).unwrap();
+        assert!(st.profile_detail(&ann.user, &pid, None, 1_000_000).is_ok());
+        assert_eq!(st.lock_profile(&mut cx(&ann), &pid, "d2", "Air").unwrap_err().code, "forbidden");
+        assert_eq!(st.patch_profile(&mut cx(&ann), &pid, &json!({"remark": "x"}), None).unwrap_err().code, "forbidden");
+
+        // chosen people get in; a stranger cannot be chosen; viewers can never open
+        let ann_too = GroupAccess { see: TeamRole::Owner, open: TeamRole::Owner, people: vec![ann.user.id.clone()] };
+        st.update_group_with(&mut cx(&bob), &vip.id, None, None, Some(ann_too), None).unwrap();
+        assert!(st.profile_detail(&ann.user, &pid, None, 1_000_000).is_ok());
+        assert_eq!(
+            st.profile_detail(&bob.user, &pid, None, 1_000_000).unwrap_err().code,
+            "not_found",
+            "not even admins"
+        );
+        let stranger = GroupAccess { people: vec!["u9".into()], ..GroupAccess::default() };
+        assert_eq!(
+            st.update_group_with(&mut cx(&admin), &vip.id, None, None, Some(stranger), None).unwrap_err().code,
+            "invalid"
+        );
+        let viewers_open = GroupAccess { see: TeamRole::Viewer, open: TeamRole::Viewer, people: vec![] };
+        assert_eq!(
+            st.update_group_with(&mut cx(&admin), &vip.id, None, None, Some(viewers_open), None).unwrap_err().code,
+            "invalid"
+        );
     }
 
     #[test]

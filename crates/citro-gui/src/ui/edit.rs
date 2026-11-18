@@ -62,6 +62,7 @@ pub struct EditDialog {
     cookie_stored: bool,
     /// The stored cookies as shown in the field; saving them unchanged keeps the stored text.
     cookie_shown: String,
+    local_only: bool,
     cookies_reading: bool,
     cookie_note: Option<Result<String, String>>,
     // proxy
@@ -124,12 +125,19 @@ pub struct EditDialog {
     current: usize,
     /// Editing Settings' defaults for new profiles, not a profile.
     pub template: bool,
+    /// With `template`: the defaults of this group (id, name) instead of the app's.
+    pub group_target: Option<(String, String)>,
     /// What the browser really shows for the persona `probe_key` (read from the browser itself).
     probe: Option<Result<Probe, String>>,
     probe_key: String,
     probing: bool,
     /// A persona the form changed to, and when: it is read once the form has been still for a moment.
     probe_wanted: Option<(String, std::time::Instant)>,
+    /// The installed plugins (their fields show for the profile's group) and the values they keep in this profile.
+    pub plugins: Vec<citro_core::plugins::Plugin>,
+    plugin_data: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    /// Secret plugin fields shown in clear (`plugin/key`).
+    revealed: std::collections::HashSet<String>,
 }
 
 enum Do {
@@ -185,6 +193,7 @@ impl EditDialog {
             cookie: String::new(),
             cookie_stored: false,
             cookie_shown: String::new(),
+            local_only: false,
             cookies_reading: false,
             cookie_note: None,
             url: String::new(),
@@ -235,10 +244,14 @@ impl EditDialog {
             jump: None,
             current: 0,
             template: false,
+            group_target: None,
             probe: None,
             probe_key: String::new(),
             probing: false,
             probe_wanted: None,
+            plugins: Vec::new(),
+            plugin_data: Default::default(),
+            revealed: Default::default(),
         }
     }
 
@@ -275,6 +288,8 @@ impl EditDialog {
         self.country = p.country.trim().to_ascii_lowercase();
         self.tabs = p.tabs.join("\n");
         self.bookmarks = citro_core::bookmarks::to_lines(&p.bookmarks);
+        self.plugin_data = p.plugin_data.clone();
+        self.local_only = p.local_only;
         self.cookie_stored = !p.cookie.is_empty();
         match cookies {
             Some(text) => {
@@ -707,6 +722,14 @@ impl EditDialog {
         p.fingerprint_config = self.fingerprint();
         p.search_engine = self.search_engine.clone();
         p.bookmarks = citro_core::bookmarks::parse_lines(&self.bookmarks);
+        // plugin values: empty ones are dropped; values of plugins not shown here (another group's) stay
+        let mut data = self.plugin_data.clone();
+        for v in data.values_mut() {
+            v.retain(|_, x| !x.trim().is_empty());
+        }
+        data.retain(|_, v| !v.is_empty());
+        p.plugin_data = data;
+        p.local_only = self.local_only;
         Some(p)
     }
 
@@ -746,6 +769,7 @@ impl CitroApp {
     /// Open the editor for a new profile (`None`) or an existing one.
     pub fn open_edit(&mut self, id: Option<String>) {
         let mut d = EditDialog::blank();
+        d.plugins = self.plugins.clone();
         match id {
             Some(id) => {
                 let Some(row) = self.row(&id) else {
@@ -759,10 +783,14 @@ impl CitroApp {
                 });
             }
             None => {
-                if let Some(t) = self.settings.new_profile.clone() {
+                let group = self.profiles.query.group.clone().unwrap_or_else(|| "0".to_owned());
+                // a group's own defaults win over the app's
+                let own =
+                    self.groups.iter().find(|g| g.group_id == group).and_then(|g| g.new_profile.as_deref().cloned());
+                if let Some(t) = own.or_else(|| self.settings.new_profile.clone()) {
                     d.fill(&EditDialog::defaults_of(&t));
                 }
-                d.group = self.profiles.query.group.clone().unwrap_or_else(|| "0".to_owned());
+                d.group = group;
                 d.focus_name = true;
                 // its own seed from the start, so the Overview can show the machine it will be
                 d.new_fingerprint();
@@ -813,7 +841,19 @@ impl CitroApp {
             Do::Save if d.template => {
                 d.tried = true;
                 if let Some(profile) = d.build() {
-                    self.settings.new_profile = Some(EditDialog::defaults_of(&profile));
+                    let defaults = EditDialog::defaults_of(&profile);
+                    if let Some((gid, gname)) = d.group_target.clone() {
+                        let Some(mut g) = self.groups.iter().find(|g| g.group_id == gid).cloned() else { return };
+                        g.new_profile = Some(Box::new(defaults));
+                        self.run_op(
+                            Vec::new(),
+                            format!("Saved the defaults of {gname}"),
+                            super::tasks::Refresh::ROWS_GROUPS,
+                            move |b| b.save_group(g).map(|_| ()),
+                        );
+                        return;
+                    }
+                    self.settings.new_profile = Some(defaults);
                     self.save_settings();
                     return;
                 }
@@ -1029,6 +1069,23 @@ mod tests {
         assert_eq!(d.build().unwrap().cookie, "x=1");
         d.cookie.clear();
         assert_eq!(d.build().unwrap().cookie, "", "emptying the field deletes them");
+    }
+
+    #[test]
+    fn plugin_values_round_trip_and_empty_ones_are_dropped() {
+        let mut src = Profile { name: "p".into(), ..Default::default() };
+        src.plugin_data.entry("tiktok-pack".into()).or_default().insert("email".into(), "a@b.c".into());
+        src.plugin_data.entry("other".into()).or_default().insert("k".into(), "kept".into());
+        let mut d = EditDialog::blank();
+        d.fill(&src);
+        d.plugin_data.get_mut("tiktok-pack").unwrap().insert("status".into(), "active".into());
+        d.plugin_data.entry("tiktok-pack".into()).or_default().insert("twofa".into(), "  ".into());
+        d.plugin_data.entry("empty".into()).or_default().insert("x".into(), String::new());
+        let out = d.build().unwrap();
+        let t = &out.plugin_data["tiktok-pack"];
+        assert_eq!((t["email"].as_str(), t["status"].as_str()), ("a@b.c", "active"));
+        assert!(!t.contains_key("twofa") && !out.plugin_data.contains_key("empty"));
+        assert_eq!(out.plugin_data["other"]["k"], "kept", "another group's plugin keeps its values");
     }
 
     #[test]

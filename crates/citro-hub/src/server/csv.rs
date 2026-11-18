@@ -28,6 +28,7 @@ pub fn export_profiles(
         .profiles
         .values()
         .filter(|p| p.team_id == team_id && group_id.as_deref().is_none_or(|g| p.profile.group_id == g))
+        .filter(|p| st.may_see_profile(user, p))
         .collect();
     profiles.sort_by_key(|p| p.profile.serial_number);
 

@@ -439,6 +439,8 @@ struct GroupBody {
     name: String,
     #[serde(default)]
     remark: String,
+    #[serde(default)]
+    settings: crate::model::GroupSettings,
 }
 
 async fn create_group(
@@ -449,13 +451,15 @@ async fn create_group(
     body: Body,
 ) -> ApiResult<Json<HubGroup>> {
     let b: GroupBody = read_json(&app, &headers, body).await?;
-    Ok(Json(app.run(&c, move |st, cx| st.create_group(cx, &tid, &b.name, &b.remark)).await?))
+    Ok(Json(app.run(&c, move |st, cx| st.create_group_with(cx, &tid, &b.name, &b.remark, b.settings)).await?))
 }
 
 #[derive(Deserialize)]
 struct GroupPatch {
     name: Option<String>,
     remark: Option<String>,
+    access: Option<crate::model::GroupAccess>,
+    settings: Option<crate::model::GroupSettings>,
 }
 
 async fn update_group(
@@ -466,7 +470,12 @@ async fn update_group(
     body: Body,
 ) -> ApiResult<Json<HubGroup>> {
     let b: GroupPatch = read_json(&app, &headers, body).await?;
-    Ok(Json(app.run(&c, move |st, cx| st.update_group(cx, &gid, b.name.as_deref(), b.remark.as_deref())).await?))
+    Ok(Json(
+        app.run(&c, move |st, cx| {
+            st.update_group_with(cx, &gid, b.name.as_deref(), b.remark.as_deref(), b.access, b.settings)
+        })
+        .await?,
+    ))
 }
 
 async fn delete_group(
@@ -1084,9 +1093,16 @@ async fn team_logs(
 ) -> ApiResult<Json<Vec<LogRecord>>> {
     let q = log_query(parse_query(&uri)?)?;
     let t = tid.clone();
-    app.read(&c, move |st, cx| st.require_role(&cx.user, &t, TeamRole::Viewer).map(|_| ())).await?;
+    let hidden = app
+        .read(&c, move |st, cx| {
+            st.require_role(&cx.user, &t, TeamRole::Viewer)?;
+            Ok(st.hidden_profiles(&cx.user, &t))
+        })
+        .await?;
     let store = app.store.clone();
-    Ok(Json(blocking(move || store.query_logs(&tid, &q)).await??))
+    let mut lines = blocking(move || store.query_logs(&tid, &q)).await??;
+    lines.retain(|l| l.profile_id.as_ref().is_none_or(|p| !hidden.contains(p)));
+    Ok(Json(lines))
 }
 
 /// `GET /v1/logs?team=&profile=&kind=&level=&since=&limit=`: the same as the team endpoint with the team as a
@@ -1107,11 +1123,15 @@ async fn logs(State(app): State<App>, Extension(c): Extension<Caller>, uri: Uri)
                 None if visible.len() == 1 => &visible[0],
                 None => return Err(ApiError::invalid("pass ?team=ID (or the team name): you are in several teams")),
             };
-            Ok(entry.team.id.clone())
+            Ok((entry.team.id.clone(), st.hidden_profiles(&cx.user, &entry.team.id)))
         })
         .await?;
+    let (tid, hidden) = tid;
     let store = app.store.clone();
-    Ok(Json(blocking(move || store.query_logs(&tid, &q)).await??))
+    let mut lines = blocking(move || store.query_logs(&tid, &q)).await??;
+    // log lines about profiles someone may not see are not shown to them
+    lines.retain(|l| l.profile_id.as_ref().is_none_or(|p| !hidden.contains(p)));
+    Ok(Json(lines))
 }
 
 /// Server-level events (failed logins, start-ups) that belong to no team; server admins only.

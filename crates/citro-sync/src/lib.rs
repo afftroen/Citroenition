@@ -16,7 +16,7 @@ mod session;
 mod state;
 
 pub use error::{Error, LockedBy, Result};
-pub use hub::{Entry, Hub, LockRow, PullReport, PushReport, delete, edit, log_out, unbind};
+pub use hub::{Entry, Hub, LockRow, People, PullReport, PushReport, delete, edit, log_out, unbind};
 pub use session::{
     CloseReport, Outcome, catch_signals, close, is_syncing, open, recover, shutdown, take_finished, wait,
 };

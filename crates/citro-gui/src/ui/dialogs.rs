@@ -383,13 +383,8 @@ impl CitroApp {
                         format!("Moved {} to new group {name}", plural(n, "profile", "profiles")),
                         Refresh::ROWS_GROUPS,
                         move |b| {
-                            let g = b.save_group(Group {
-                                group_id: String::new(),
-                                group_name: name2,
-                                remark: String::new(),
-                                tabs: Vec::new(),
-                                bookmarks: Vec::new(),
-                            })?;
+                            let g =
+                                b.save_group(Group { group_id: String::new(), group_name: name2, ..Group::default() })?;
                             b.move_to_group(&ids2, &g.group_id)
                         },
                     );

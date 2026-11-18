@@ -291,8 +291,7 @@ impl MockBackend {
                 group_id: (i + 1).to_string(),
                 group_name: (*n).into(),
                 remark: (*r).into(),
-                tabs: Vec::new(),
-                bookmarks: Vec::new(),
+                ..Group::default()
             })
             .collect();
         let mut profiles = Vec::new();
@@ -648,6 +647,27 @@ impl Backend for MockBackend {
         }
         Self::log(&mut st, Level::Info, Some(id), format!("cleared the cache of {name}"));
         Ok(())
+    }
+
+    fn team_people(&self) -> BResult<Option<citro_sync::People>> {
+        use citro_core::team::TeamRole;
+        let m = |id: &str, name: &str, role| citro_hub::model::Member {
+            team_id: "t1".into(),
+            user_id: id.into(),
+            user_name: name.into(),
+            role,
+        };
+        Ok(Some(citro_sync::People {
+            me: "u1".into(),
+            role: TeamRole::Owner,
+            members: vec![
+                m("u1", "mia", TeamRole::Owner),
+                m("u2", "sam", TeamRole::Admin),
+                m("u3", "lena", TeamRole::Member),
+                m("u4", "tom", TeamRole::Member),
+                m("u5", "ivy", TeamRole::Viewer),
+            ],
+        }))
     }
 
     fn probe(&self, p: &Profile) -> BResult<citro_core::probe::Probe> {

@@ -33,6 +33,7 @@ pub enum StartPage {
     LogsBrowser,
     Kernel,
     Extensions,
+    Plugins,
     Teams,
     Settings,
     /// The profiles page with the edit dialog open on the first profile.
@@ -54,6 +55,7 @@ impl StartPage {
             "logs-browser" | "browser" => StartPage::LogsBrowser,
             "kernel" => StartPage::Kernel,
             "extensions" => StartPage::Extensions,
+            "plugins" => StartPage::Plugins,
             "teams" => StartPage::Teams,
             "settings" => StartPage::Settings,
             "edit" => StartPage::Edit,

@@ -440,6 +440,32 @@ impl Client {
         self.patch_json(&format!("/v1/groups/{}", seg(group_id)?), &json!({ "name": name, "remark": remark }), None)
     }
 
+    /// Create a group with its shared settings.
+    pub fn create_group_with(
+        &self,
+        team_id: &str,
+        name: &str,
+        remark: &str,
+        settings: &crate::model::GroupSettings,
+    ) -> Result<HubGroup> {
+        let body = json!({ "name": name, "remark": remark, "settings": settings });
+        self.post_json(&format!("/v1/teams/{}/groups", seg(team_id)?), &body, None)
+    }
+
+    /// Change a group: its name, remark, shared settings and (team owners and admins) who may use it. `None` keeps a
+    /// part as it is.
+    pub fn update_group_with(
+        &self,
+        group_id: &str,
+        name: Option<&str>,
+        remark: Option<&str>,
+        access: Option<&crate::model::GroupAccess>,
+        settings: Option<&crate::model::GroupSettings>,
+    ) -> Result<HubGroup> {
+        let body = json!({ "name": name, "remark": remark, "access": access, "settings": settings });
+        self.patch_json(&format!("/v1/groups/{}", seg(group_id)?), &body, None)
+    }
+
     /// Delete a group; its profiles become ungrouped. Returns how many moved.
     pub fn delete_group(&self, group_id: &str) -> Result<usize> {
         let v: Value = self.delete_json(&format!("/v1/groups/{}", seg(group_id)?))?;

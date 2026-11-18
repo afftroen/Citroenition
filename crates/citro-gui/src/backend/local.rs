@@ -7,8 +7,8 @@ use super::local_hub::{self, CLOSE_PATIENCE, HubState};
 use super::proxycheck;
 use super::{
     BResult, Backend, BackendError, BackendInfo, BackendKind, Caps, HubStatus, KernelInfo, KernelStatus, Level,
-    LogKind, LogLine, LogQuery, MASK, Notice, OpenError, OpenOpts, ProxyCheck, Query, Row, RunInfo, RunState, TeamInfo,
-    redact,
+    LogKind, LogLine, LogQuery, MASK, Notice, OpenError, OpenOpts, PluginPreview, ProxyCheck, Query, Row, RunInfo,
+    RunState, TeamInfo, redact,
 };
 use crate::eventlog::EventLog;
 use crate::installer::{KernelInstaller, StubInstaller};
@@ -571,6 +571,62 @@ impl Backend for LocalBackend {
         citro_core::cookies::export_live(&r.ws).map_err(BackendError::Invalid)
     }
 
+    fn plugins(&self) -> BResult<Vec<citro_core::plugins::Plugin>> {
+        Ok(citro_core::plugins::list(&self.home))
+    }
+
+    fn fetch_plugin(&self, input: &str) -> BResult<PluginPreview> {
+        use citro_core::plugins;
+        let work = plugins::root(&self.home).join(format!(".download-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        let f = citro_install::github::fetch(input, &work, Duration::from_secs(60))
+            .map_err(|e| BackendError::Other(e.to_string()))?;
+        let dir = plugins::find_root(&f.dir)
+            .ok_or_else(|| BackendError::Invalid(format!("there is no {} in {}", plugins::MANIFEST, f.source)))?;
+        let manifest = plugins::read_manifest(&dir)?;
+        let existing = plugins::list(&self.home).into_iter().find(|p| p.id() == manifest.id);
+        Ok(PluginPreview { manifest, source: f.source, commit: f.commit, dir, existing })
+    }
+
+    fn install_plugin(&self, p: &PluginPreview) -> BResult<citro_core::plugins::Plugin> {
+        let installed = citro_core::plugins::install(&self.home, &p.dir, &p.source, &p.commit)?;
+        let work = citro_core::plugins::root(&self.home).join(format!(".download-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        self.events.info(
+            None,
+            format!(
+                "installed plugin {} {} from {}",
+                installed.manifest.name, installed.manifest.version, installed.source
+            ),
+        );
+        Ok(installed)
+    }
+
+    fn remove_plugin(&self, id: &str) -> BResult<()> {
+        citro_core::plugins::remove(&self.home, id)?;
+        self.events.info(None, format!("removed plugin {id}"));
+        Ok(())
+    }
+
+    fn set_plugin_scope(&self, id: &str, all_profiles: bool, groups: Vec<String>) -> BResult<()> {
+        Ok(citro_core::plugins::set_scope(&self.home, id, all_profiles, groups)?)
+    }
+
+    fn newest_plugin_commit(&self, id: &str) -> BResult<Option<(String, String)>> {
+        use citro_install::github;
+        let p = citro_core::plugins::list(&self.home)
+            .into_iter()
+            .find(|p| p.id() == id)
+            .ok_or_else(|| BackendError::NotFound(format!("plugin {id}")))?;
+        if !p.is_github() {
+            return Ok(None);
+        }
+        let src = github::GithubSource::parse(&p.source).map_err(|e| BackendError::Other(e.to_string()))?;
+        let newest =
+            github::latest_commit(&src, Duration::from_secs(30)).map_err(|e| BackendError::Other(e.to_string()))?;
+        Ok((newest != p.commit).then(|| (newest.clone(), src.compare_url(&p.commit, &newest))))
+    }
+
     fn move_data(&self, to: &str) -> BResult<()> {
         let to = crate::util::expand_tilde(to.trim(), crate::util::home_dir().as_deref());
         store::move_data(&self.home, &to)?;
@@ -608,8 +664,7 @@ impl Backend for LocalBackend {
             return Ok(created);
         }
         let id = g.group_id.clone();
-        let mut saved =
-            Group { group_id: id.clone(), group_name: name.clone(), remark, tabs, bookmarks: g.bookmarks.clone() };
+        let mut saved = Group { group_id: id.clone(), group_name: name.clone(), remark, tabs, ..g.clone() };
         edit_store_file(&self.home, |doc| {
             let arr = group_array(doc)?;
             let others: Vec<Group> = arr.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect();
@@ -624,10 +679,34 @@ impl Backend for LocalBackend {
             slot["remark"] = Value::String(saved.remark.clone());
             slot["tabs"] = serde_json::json!(saved.tabs);
             slot["bookmarks"] = serde_json::json!(saved.bookmarks);
+            // the rules, defaults and "this computer only"; the hub id stays what it is
+            let set = |slot: &mut Value, k: &str, v: Value, empty: bool| {
+                if empty {
+                    if let Some(o) = slot.as_object_mut() {
+                        o.remove(k);
+                    }
+                } else {
+                    slot[k] = v;
+                }
+            };
+            set(slot, "new_profile", serde_json::json!(saved.new_profile), saved.new_profile.is_none());
+            set(slot, "access", serde_json::json!(saved.access), saved.access.is_default());
+            set(slot, "local_only", Value::Bool(true), !saved.local_only);
             saved = serde_json::from_value(slot.clone()).unwrap_or(saved.clone());
             Ok(())
         })?;
         self.events.info(None, format!("updated group {}", saved.group_name));
+        // a team group goes to the hub too: everybody's profiles of the group follow its settings
+        if !saved.local_only
+            && let Ok(Some(hub)) = citro_sync::Hub::connect(&self.home)
+        {
+            if let Err(e) = hub.push_group(&saved.group_id) {
+                let msg = BackendError::from(e).to_string();
+                self.events.warn(None, format!("group {} saved here, not on the team hub: {msg}", saved.group_name));
+                return Err(BackendError::Other(format!("Saved on this computer, but the team hub refused it: {msg}")));
+            }
+            self.hub.stale();
+        }
         Ok(saved)
     }
 
@@ -746,6 +825,13 @@ impl Backend for LocalBackend {
 
     fn force_unlock(&self, profile_id: &str) -> BResult<()> {
         self.hub_force_unlock(profile_id)
+    }
+
+    fn team_people(&self) -> BResult<Option<citro_sync::People>> {
+        match citro_sync::Hub::connect(&self.home)? {
+            Some(hub) => Ok(Some(hub.people()?)),
+            None => Ok(None),
+        }
     }
 
     fn pull_team(&self) -> BResult<String> {
@@ -967,7 +1053,7 @@ mod tests {
                 group_name: "eBay Germany".into(),
                 remark: "new remark".into(),
                 tabs: vec![" https://www.ebay.de/ ".into(), "".into()],
-                bookmarks: Vec::new(),
+                ..Default::default()
             })
             .unwrap();
         assert_eq!((renamed.group_name.as_str(), renamed.remark.as_str()), ("eBay Germany", "new remark"));
@@ -983,7 +1069,7 @@ mod tests {
             group_name: "Vinted FR".into(),
             remark: "x".into(),
             tabs: Vec::new(),
-            bookmarks: Vec::new(),
+            ..Default::default()
         })
         .unwrap();
         assert!(

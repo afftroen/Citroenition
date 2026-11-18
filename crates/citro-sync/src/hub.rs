@@ -10,10 +10,12 @@ use crate::session::{self, Outcome};
 use crate::state::{self, Bound, Login};
 use citro_core::Result as CoreResult;
 use citro_core::launch;
+use citro_core::profile::Group;
 use citro_core::profile::Profile;
 use citro_core::store::{self, Home, Store};
+use citro_core::team::TeamRole;
 use citro_hub::client::Client;
-use citro_hub::model::{HubProfile, MASK, ProfileFilter, TeamEntry, UNGROUPED};
+use citro_hub::model::{GroupSettings, HubGroup, HubProfile, MASK, Member, ProfileFilter, TeamEntry, UNGROUPED};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
@@ -23,6 +25,16 @@ pub struct Hub {
     pub(crate) home: Home,
     pub(crate) client: Client,
     pub(crate) login: Login,
+}
+
+/// The team as the group rules editor needs it.
+#[derive(Debug, Clone, Default)]
+pub struct People {
+    /// This person's user id.
+    pub me: String,
+    /// Their role in the team.
+    pub role: TeamRole,
+    pub members: Vec<Member>,
 }
 
 /// A profile named in a report.
@@ -197,37 +209,122 @@ impl Hub {
         }
     }
 
-    fn group_names(&self) -> Result<HashMap<String, String>> {
-        Ok(self.client.groups(&self.login.team_id)?.into_iter().map(|g| (g.id, g.name)).collect())
+    /// The team's groups into the local store, rules and settings included (the hub has the last word for a team
+    /// group). Returns hub group id -> local group id.
+    fn pull_groups(&self) -> Result<HashMap<String, String>> {
+        let groups = self.client.groups(&self.login.team_id)?;
+        let mut map = HashMap::new();
+        store::locked(&self.home, |s| {
+            for g in &groups {
+                if g.name.trim().is_empty() {
+                    continue;
+                }
+                let local = Group {
+                    group_name: g.name.clone(),
+                    remark: g.remark.clone(),
+                    tabs: g.settings.tabs.clone(),
+                    bookmarks: g.settings.bookmarks.clone(),
+                    new_profile: g.settings.new_profile.clone().map(Box::new),
+                    access: g.access.clone(),
+                    hub_id: g.id.clone(),
+                    ..Group::default()
+                };
+                map.insert(g.id.clone(), s.upsert_hub_group(&local)?);
+            }
+            Ok(())
+        })?;
+        Ok(map)
     }
 
-    /// The hub's id of the group called `name` (made when there is none); `""` = no group.
-    fn hub_group_id(&self, name: &str) -> Result<String> {
-        let name = name.trim();
-        if name.is_empty() || name == UNGROUPED || name.eq_ignore_ascii_case("ungrouped") {
+    /// Put a local group on the hub (or bring the hub's copy up to date): its name, remark, start pages, bookmarks,
+    /// defaults for new profiles and, from a team owner or admin, who may use it. Returns the hub's group.
+    pub fn push_group(&self, group_id: &str) -> Result<HubGroup> {
+        let g = Store::open(&self.home)?
+            .groups()
+            .iter()
+            .find(|g| g.group_id == group_id)
+            .cloned()
+            .ok_or_else(|| Error::Invalid(format!("no group {group_id}")))?;
+        if g.local_only {
+            return Err(Error::Invalid(format!("{} is kept on this computer only", g.group_name)));
+        }
+        let settings = GroupSettings {
+            tabs: g.tabs.clone(),
+            bookmarks: g.bookmarks.clone(),
+            new_profile: g.new_profile.as_deref().cloned(),
+        };
+        let on_hub = self.client.groups(&self.login.team_id)?;
+        let existing = on_hub
+            .iter()
+            .find(|h| !g.hub_id.is_empty() && h.id == g.hub_id)
+            .or_else(|| on_hub.iter().find(|h| h.name.eq_ignore_ascii_case(g.group_name.trim())));
+        let out = match existing {
+            None => {
+                let created =
+                    self.client.create_group_with(&self.login.team_id, &g.group_name, &g.remark, &settings)?;
+                if g.access.is_default() {
+                    created
+                } else {
+                    self.client.update_group_with(&created.id, None, None, Some(&g.access), None)?
+                }
+            }
+            Some(h) => {
+                let access = (h.access != g.access).then_some(&g.access);
+                self.client.update_group_with(&h.id, Some(&g.group_name), Some(&g.remark), access, Some(&settings))?
+            }
+        };
+        // an old hub drops what it does not know; rules it silently ignored would be a false sense of safety
+        if out.access != g.access {
+            return Err(Error::Invalid(
+                "the team hub did not keep the group's access rules: update the hub (deploy/install-hub.sh)".into(),
+            ));
+        }
+        store::locked(&self.home, |s| s.set_group_hub_id(group_id, &out.id))?;
+        Ok(out)
+    }
+
+    /// The hub's id for the local group `group_id` (it is put on the hub first when it is not there yet).
+    fn hub_group_id(&self, group_id: &str) -> Result<String> {
+        if group_id.is_empty() || group_id == UNGROUPED {
             return Ok(UNGROUPED.to_owned());
         }
-        let groups = self.client.groups(&self.login.team_id)?;
-        if let Some(g) = groups.iter().find(|g| g.name.eq_ignore_ascii_case(name)) {
-            return Ok(g.id.clone());
-        }
-        Ok(self.client.create_group(&self.login.team_id, name, "")?.id)
+        Ok(self.push_group(group_id)?.id)
+    }
+
+    /// Who is in the team and what this person may do there (for the group rules editor).
+    pub fn people(&self) -> Result<People> {
+        let me = self.client.me()?;
+        let role = me.teams.iter().find(|t| t.team.id == self.login.team_id).map(|t| t.role).unwrap_or_default();
+        Ok(People { me: me.user.id, role, members: self.client.members(&self.login.team_id)? })
+    }
+
+    /// Share every profile that is not on the hub yet, except ones kept on this computer (the profile's or its
+    /// group's "keep on this computer only") and ones that are open (they go up after they are closed).
+    pub fn share_new(&self) -> Vec<(Entry, Result<PushReport>)> {
+        let Ok(local) = Store::open(&self.home) else { return Vec::new() };
+        let kept: BTreeSet<&str> =
+            local.groups().iter().filter(|g| g.local_only).map(|g| g.group_id.as_str()).collect();
+        let todo: Vec<Entry> = local
+            .profiles()
+            .iter()
+            .filter(|p| !p.local_only && !kept.contains(p.group_id.as_str()))
+            .filter(|p| !self.home.hub_bound(&p.profile_id) && launch::running(&self.home, &p.profile_id).is_none())
+            .map(|p| Entry { id: p.profile_id.clone(), name: p.name.clone() })
+            .collect();
+        todo.into_iter().map(|e| (e.clone(), self.push(&e.id))).collect()
     }
 
     /// Bring the team's profiles (names, remarks, groups, proxies, last open/close times) into the local store.
     /// Cookies and browser data are not touched: they come down when the profile is opened.
     pub fn pull(&self) -> Result<PullReport> {
-        let groups = self.group_names()?;
+        let groups = self.pull_groups()?;
         let all = self.all_profiles()?;
         let mut report = PullReport::default();
         store::locked(&self.home, |s| {
             for hp in &all {
                 let mut p = hp.profile.clone();
                 let (id, name) = (p.profile_id.clone(), p.name.clone());
-                p.group_id = match groups.get(&p.group_id).filter(|n| !n.trim().is_empty()) {
-                    Some(group) => s.group_id_for(group)?,
-                    None => "0".into(),
-                };
+                p.group_id = groups.get(&p.group_id).cloned().unwrap_or_else(|| "0".into());
                 let existing = s.profiles().iter().find(|x| x.profile_id == id).cloned();
                 keep_unmasked(existing.as_ref(), &mut p);
                 s.upsert_synced(p)?;
@@ -256,12 +353,8 @@ impl Hub {
     /// Put a local profile on the hub: the hub gives it its id (the persona seed is pinned to the old one, so the
     /// browser keeps its identity), and its cookies and data go up. From now on it belongs to the hub.
     pub fn push(&self, key: &str) -> Result<PushReport> {
-        let (mut payload, group_name) = {
-            let s = store::Store::open(&self.home)?;
-            let p = s.get(key)?.clone();
-            let group = s.group_name(&p.group_id);
-            (p, group)
-        };
+        let mut payload = store::Store::open(&self.home)?.get(key)?.clone();
+        let local_group = payload.group_id.clone();
         let old_id = payload.profile_id.clone();
         if self.home.hub_bound(&old_id) {
             return Err(Error::Invalid(format!("{old_id} is on a team hub already")));
@@ -273,7 +366,7 @@ impl Hub {
         if !pinned {
             payload.fingerprint_config.0.insert("seed".into(), json!(old_id));
         }
-        payload.group_id = self.hub_group_id(&group_name)?;
+        payload.group_id = self.hub_group_id(&local_group)?;
         let created = self.client.create_profile(&self.login.team_id, &payload)?;
         let new_id = created.profile.profile_id.clone();
 
@@ -336,16 +429,13 @@ impl Hub {
             return Ok(old);
         }
         if patch.contains_key("group_id") {
-            patch.insert("group_id".into(), json!(self.hub_group_id(&local.group_name(&new.group_id))?));
+            patch.insert("group_id".into(), json!(self.hub_group_id(&new.group_id)?));
         }
         let hp = self.client.patch_profile(&old.profile_id, &Value::Object(patch), None)?;
-        let groups = self.group_names()?;
+        let groups = self.pull_groups()?;
         let mut synced = hp.profile;
         store::locked(&self.home, |s| {
-            synced.group_id = match groups.get(&synced.group_id).filter(|n| !n.trim().is_empty()) {
-                Some(group) => s.group_id_for(group)?,
-                None => "0".into(),
-            };
+            synced.group_id = groups.get(&synced.group_id).cloned().unwrap_or_else(|| "0".into());
             keep_unmasked(Some(&old), &mut synced);
             s.upsert_synced(synced)
         })

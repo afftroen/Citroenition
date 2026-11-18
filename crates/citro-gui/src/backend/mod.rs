@@ -507,6 +507,39 @@ pub trait Backend: Send + Sync {
         Err(BackendError::Unsupported("reading cookies".into()))
     }
 
+    /// The team (members, this person's role), when this device is logged in to a hub.
+    fn team_people(&self) -> BResult<Option<citro_sync::People>> {
+        Ok(None)
+    }
+
+    /// Installed plugins.
+    fn plugins(&self) -> BResult<Vec<citro_core::plugins::Plugin>> {
+        Ok(Vec::new())
+    }
+
+    /// Download a plugin (a GitHub link: its newest commit; or a local folder / archive) and read it, without
+    /// installing it yet.
+    fn fetch_plugin(&self, _input: &str) -> BResult<PluginPreview> {
+        Err(BackendError::Unsupported("plugins".into()))
+    }
+
+    fn install_plugin(&self, _p: &PluginPreview) -> BResult<citro_core::plugins::Plugin> {
+        Err(BackendError::Unsupported("plugins".into()))
+    }
+
+    fn remove_plugin(&self, _id: &str) -> BResult<()> {
+        Err(BackendError::Unsupported("plugins".into()))
+    }
+
+    fn set_plugin_scope(&self, _id: &str, _all_profiles: bool, _groups: Vec<String>) -> BResult<()> {
+        Err(BackendError::Unsupported("plugins".into()))
+    }
+
+    /// For a GitHub plugin: the newest commit and the page with the changes, when it differs from the pinned one.
+    fn newest_plugin_commit(&self, _id: &str) -> BResult<Option<(String, String)>> {
+        Err(BackendError::Unsupported("plugins".into()))
+    }
+
     /// Move all data to `to` (a new or empty folder) and use it from now on; refused while a browser runs.
     fn move_data(&self, _to: &str) -> BResult<()> {
         Err(BackendError::Unsupported("moving the data folder".into()))
@@ -566,6 +599,18 @@ pub trait Backend: Send + Sync {
 
 // ---------------------------------------------------------------------------------------------------------------
 // helpers shared by the backends
+
+/// A downloaded plugin, read but not installed yet.
+#[derive(Debug, Clone)]
+pub struct PluginPreview {
+    pub manifest: citro_core::plugins::Manifest,
+    pub source: String,
+    pub commit: String,
+    /// The folder holding the manifest.
+    pub dir: std::path::PathBuf,
+    /// The installed plugin with the same id (this is then an update).
+    pub existing: Option<citro_core::plugins::Plugin>,
+}
 
 pub const MASK: &str = "********";
 
@@ -668,7 +713,7 @@ mod tests {
             group_name: "Vinted FR".into(),
             remark: String::new(),
             tabs: Vec::new(),
-            bookmarks: Vec::new(),
+            ..Default::default()
         }];
         assert_eq!(group_label(&g, "3"), "Vinted FR");
         assert_eq!(group_label(&g, "0"), "Ungrouped");
