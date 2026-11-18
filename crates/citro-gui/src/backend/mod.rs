@@ -509,6 +509,16 @@ pub trait Backend: Send + Sync {
         Err(BackendError::Unsupported("reading cookies".into()))
     }
 
+    /// The hub's version and update state; `None` without a hub.
+    fn hub_upgrade(&self) -> BResult<Option<HubUpgrade>> {
+        Ok(None)
+    }
+
+    /// Ask the hub's server to install the newest release.
+    fn request_hub_upgrade(&self) -> BResult<()> {
+        Err(BackendError::Unsupported("updating the hub".into()))
+    }
+
     /// Invite someone to the team: a new account on the hub. Returns their token (shown this once).
     fn invite_member(&self, _team_id: &str, _name: &str, _role: Role) -> BResult<String> {
         Err(BackendError::Unsupported("inviting people".into()))
@@ -620,6 +630,24 @@ pub trait Backend: Send + Sync {
 
 // ---------------------------------------------------------------------------------------------------------------
 // helpers shared by the backends
+
+/// The team hub's own version and its update button (for hub operators).
+#[derive(Debug, Clone, Default)]
+pub struct HubUpgrade {
+    /// The hub's version.
+    pub version: String,
+    /// The newest Citroenition release (`None` when GitHub could not be asked).
+    pub latest: Option<String>,
+    /// This person runs the hub (may press Update).
+    pub operator: bool,
+    /// The server can update itself (installed with a new enough install-hub.sh).
+    pub helper: bool,
+    /// An update was asked for and has not started yet.
+    pub requested: bool,
+    /// The last update: `running`, `done` or `failed`, and what it said.
+    pub state: String,
+    pub message: String,
+}
 
 /// A downloaded plugin, read but not installed yet.
 #[derive(Debug, Clone)]

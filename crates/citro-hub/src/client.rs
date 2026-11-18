@@ -423,6 +423,16 @@ impl Client {
         )
     }
 
+    /// The hub's own version and its last update (hub operators).
+    pub fn upgrade_status(&self) -> Result<Value> {
+        self.get_json("/v1/admin/upgrade", None)
+    }
+
+    /// Ask the hub's server to install the newest release (hub operators).
+    pub fn request_upgrade(&self) -> Result<Value> {
+        self.post_json("/v1/admin/upgrade", &json!({}), None)
+    }
+
     /// Invite someone: a new account in the team. Returns the member and their token (shown this once).
     pub fn invite(&self, team_id: &str, name: &str, role: TeamRole) -> Result<(Member, String)> {
         let v: Value = self.post_json(

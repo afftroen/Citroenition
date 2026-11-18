@@ -1188,6 +1188,48 @@ async fn admin_users(State(app): State<App>, Extension(c): Extension<Caller>) ->
     ))
 }
 
+/// The upgrade helper `install-hub.sh` puts on the server (it runs as root when the hub asks).
+const UPGRADE_HELPER: &str = "/usr/local/sbin/citro-hub-upgrade";
+
+fn upgrade_status(dir: &std::path::Path) -> Value {
+    let result =
+        std::fs::read(dir.join("upgrade-result.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        // a hub installed before the button existed has no helper: install-hub.sh, run once by hand, adds it
+        "helper": std::path::Path::new(UPGRADE_HELPER).is_file(),
+        "requested": dir.join("upgrade-requested").exists(),
+        "result": result,
+    })
+}
+
+/// `GET /v1/admin/upgrade` (hub operators): this hub's version and what the last update did.
+async fn upgrade_get(State(app): State<App>, Extension(c): Extension<Caller>) -> ApiResult<Json<Value>> {
+    require_server_admin(&app, &c).await?;
+    Ok(Json(upgrade_status(app.store.dir())))
+}
+
+/// `POST /v1/admin/upgrade` (hub operators): ask the server to install the newest release. The hub only leaves a
+/// note in its data directory; the root helper installs a release checked against SHA256SUMS, never an older one.
+async fn upgrade_post(State(app): State<App>, Extension(c): Extension<Caller>) -> ApiResult<Json<Value>> {
+    require_server_admin(&app, &c).await?;
+    if !std::path::Path::new(UPGRADE_HELPER).is_file() {
+        return Err(ApiError::invalid(
+            "this hub was installed before it could update itself: run deploy/install-hub.sh on the server once",
+        ));
+    }
+    let dir = app.store.dir().to_path_buf();
+    let who = app.read(&c, |_, cx| Ok(cx.user.name.clone())).await?;
+    blocking(move || {
+        let _ = std::fs::remove_file(dir.join("upgrade-result.json"));
+        std::fs::write(dir.join("upgrade-requested"), format!("requested by {who}\n"))
+    })
+    .await?
+    .map_err(|e| ApiError::internal(format!("cannot leave the update request: {e}")))?;
+    tracing::info!("hub update requested");
+    Ok(Json(upgrade_status(app.store.dir())))
+}
+
 async fn require_server_admin(app: &App, c: &Caller) -> ApiResult<()> {
     app.read(c, |_, cx| {
         if cx.user.role == UserRole::Admin { Ok(()) } else { Err(ApiError::forbidden("this needs a server admin")) }
@@ -1272,6 +1314,7 @@ pub fn router(store: Arc<Store>) -> Router {
         .route("/logs", get(logs).post(post_logs))
         .route("/admin/logs", get(admin_logs))
         .route("/admin/users", get(admin_users))
+        .route("/admin/upgrade", get(upgrade_get).post(upgrade_post))
         .layer(middleware::from_fn_with_state(app.clone(), authenticate));
     Router::new()
         .route("/healthz", get(healthz))

@@ -619,6 +619,12 @@ pub fn start(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) ->
     };
     let mut prep = prepare(home, kernel, p, opts)?;
     let _ = fs::remove_file(prep.data_dir.join("DevToolsActivePort"));
+    // data that comes from a computer whose cookie key this one does not have (a Mac's data on Linux, ...): its
+    // cookie database cannot be read here, so it is set aside and the readable copy goes in after the start
+    let other_key = foreign_cookie_key(&prep.data_dir);
+    if other_key.is_some() {
+        set_foreign_cookies_aside(&prep.data_dir);
+    }
 
     let log_path = kernel_log(home, &p.profile_id);
     let log = OpenOptions::new().create(true).append(true).mode(0o600).open(&log_path)?;
@@ -752,6 +758,10 @@ pub fn start(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) ->
         }
     }
     import_cookies(&pdir, &log_path, p, &prep.start_urls, &r.ws);
+    if let Some(from) = other_key {
+        bring_cookies_over(&prep.data_dir, &log_path, &from, &r.ws);
+    }
+    let _ = fs::write(prep.data_dir.join(COOKIE_KEY_MARK), cookie_key_here());
 
     // macOS keeps an app running after its last window closes; a profile browser must not linger like that
     // (still "open", cookies and session not written out). When every window is gone, save the cookies and quit.
@@ -777,6 +787,77 @@ pub fn start(home: &Home, kernel: &Kernel, p: &Profile, opts: &LaunchOptions) ->
 
 /// The tabs that were open when the user closed the last window; the next launch opens them.
 const REOPEN_TABS: &str = "reopen-tabs.json";
+
+/// A readable copy of the browser's cookies inside its data directory, so they move with the data: the cookie
+/// database is encrypted with a key that belongs to the computer (a Mac's keychain, Linux's built-in key,
+/// Windows' DPAPI), so another kind of computer cannot read it.
+pub const COOKIE_CARRY: &str = ".citro-cookies.json";
+/// Which key wrote the cookie database next to it.
+pub const COOKIE_KEY_MARK: &str = ".citro-cookie-key";
+
+/// The cookie key of this computer, as written to [`COOKIE_KEY_MARK`].
+fn cookie_key_here() -> String {
+    if cfg!(target_os = "macos") {
+        // `--use-mock-keychain`: one fixed key on every Mac
+        "macos-mock-keychain".to_owned()
+    } else if cfg!(target_os = "windows") {
+        // DPAPI: per user and machine
+        format!("windows-dpapi-{}", std::env::var("COMPUTERNAME").unwrap_or_default())
+    } else {
+        // the POSIX provider: a constant built into Chromium
+        "linux-builtin".to_owned()
+    }
+}
+
+fn carry_cookies(data_dir: &Path, text: &str) {
+    let path = data_dir.join(COOKIE_CARRY);
+    if fs::read_to_string(&path).is_ok_and(|old| old == text) {
+        return;
+    }
+    let _ = write_private(&path, text.as_bytes());
+}
+
+/// `Some(key)` when the cookie database here was written with another computer's key.
+fn foreign_cookie_key(data_dir: &Path) -> Option<String> {
+    let mark = fs::read_to_string(data_dir.join(COOKIE_KEY_MARK)).ok()?;
+    let mark = mark.trim();
+    (!mark.is_empty() && mark != cookie_key_here()).then(|| mark.to_owned())
+}
+
+/// Before the start: the unreadable cookie databases go aside (not deleted).
+fn set_foreign_cookies_aside(data_dir: &Path) {
+    for rel in
+        ["Default/Cookies", "Default/Cookies-journal", "Default/Network/Cookies", "Default/Network/Cookies-journal"]
+    {
+        let p = data_dir.join(rel);
+        if p.exists() {
+            let _ = fs::rename(
+                &p,
+                p.with_file_name(format!(
+                    "{}.other-computer",
+                    p.file_name().and_then(|n| n.to_str()).unwrap_or("Cookies")
+                )),
+            );
+        }
+    }
+}
+
+/// After the start: the readable copy into the browser, which encrypts it with this computer's key.
+fn bring_cookies_over(data_dir: &Path, log_path: &Path, from: &str, ws: &str) {
+    use std::io::Write;
+    let text = fs::read_to_string(data_dir.join(COOKIE_CARRY)).unwrap_or_default();
+    let line = if text.trim().is_empty() {
+        format!("the data comes from another kind of computer ({from}) and carries no readable cookies: sign in again")
+    } else {
+        match crate::cookies::parse(&text, "").and_then(|c| crate::cookies::import(ws, &c)) {
+            Ok(n) => format!("brought {n} cookies over from another kind of computer ({from})"),
+            Err(e) => format!("could not bring the cookies over from {from}: {e}"),
+        }
+    };
+    if let Ok(mut f) = OpenOptions::new().append(true).open(log_path) {
+        let _ = writeln!(f, "citroenition: {line}");
+    }
+}
 
 /// Quit the browser `pid` once it has no window left. On macOS the window server is asked (the red button closes
 /// the window but leaves the app running in the Dock, and pages such as an extension's can outlive the window);
@@ -832,6 +913,9 @@ fn watch_windows(home: Home, id: String, ws: String, pid: u32) {
                 if polls % 3 == 1
                     && let Ok(t) = crate::cookies::export_live(&ws)
                 {
+                    if !t.is_empty() {
+                        carry_cookies(&data_dir_of(&home, &id), &t);
+                    }
                     last = t;
                 }
                 continue;
@@ -919,9 +1003,6 @@ pub fn stop(home: &Home, id: &str) -> Result<bool> {
 /// next launch does not put them back over newer ones. Team profiles (the hub keeps their data) and a store
 /// someone else is writing are left alone.
 pub fn save_cookies(home: &Home, id: &str, ws: &str) {
-    if home.hub_bound(id) {
-        return;
-    }
     if let Ok(text) = crate::cookies::export_live(ws) {
         keep_cookies(home, id, &text);
     }
@@ -930,7 +1011,12 @@ pub fn save_cookies(home: &Home, id: &str, ws: &str) {
 /// Store cookie text read from the browser (see [`save_cookies`]).
 fn keep_cookies(home: &Home, id: &str, text: &str) {
     use sha2::Digest;
-    if text.is_empty() || home.hub_bound(id) {
+    if text.is_empty() {
+        return;
+    }
+    // always: the readable copy that travels with the data (a team profile's data goes up at the close)
+    carry_cookies(&data_dir_of(home, id), text);
+    if home.hub_bound(id) {
         return;
     }
     let saved = crate::store::try_locked(home, |s| {

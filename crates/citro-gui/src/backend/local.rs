@@ -827,6 +827,35 @@ impl Backend for LocalBackend {
         self.hub_force_unlock(profile_id)
     }
 
+    fn hub_upgrade(&self) -> BResult<Option<crate::backend::HubUpgrade>> {
+        let Some(hub) = citro_sync::Hub::connect(&self.home)? else { return Ok(None) };
+        let c = hub.client();
+        let operator = c.me().map(|m| m.user.role == citro_hub::model::UserRole::Admin).unwrap_or(false);
+        let latest = citro_install::app_update::latest_app_release(Duration::from_secs(15)).ok().map(|r| r.version);
+        let mut u = crate::backend::HubUpgrade { operator, latest, ..Default::default() };
+        match c.upgrade_status() {
+            Ok(v) => {
+                u.version = v["version"].as_str().unwrap_or_default().to_owned();
+                u.helper = v["helper"].as_bool().unwrap_or(false);
+                u.requested = v["requested"].as_bool().unwrap_or(false);
+                u.state = v["result"]["state"].as_str().unwrap_or_default().to_owned();
+                u.message = v["result"]["message"].as_str().unwrap_or_default().to_owned();
+            }
+            // not an operator, or a hub older than the button: its version is public
+            Err(_) => {
+                u.version = c.healthz().unwrap_or_default();
+            }
+        }
+        Ok(Some(u))
+    }
+
+    fn request_hub_upgrade(&self) -> BResult<()> {
+        let hub = citro_sync::Hub::connect(&self.home)?.ok_or(citro_sync::Error::NotLoggedIn)?;
+        hub.client().request_upgrade().map_err(citro_sync::Error::from)?;
+        self.events.info(None, "asked the team hub to update itself to the newest release".to_owned());
+        Ok(())
+    }
+
     fn invite_member(&self, team_id: &str, name: &str, role: crate::backend::Role) -> BResult<String> {
         let hub = citro_sync::Hub::connect(&self.home)?.ok_or(citro_sync::Error::NotLoggedIn)?;
         let (m, token) = hub.client().invite(team_id, name, team_role(role)).map_err(citro_sync::Error::from)?;

@@ -21,11 +21,16 @@ fn bad(m: impl Into<String>) -> io::Error {
 impl Cdp {
     /// Connect to `ws://127.0.0.1:<port>/<path>`.
     pub fn connect(url: &str) -> io::Result<Cdp> {
+        Self::connect_within(url, TIMEOUT)
+    }
+
+    /// [`Cdp::connect`] with another limit for every read and write (a quick question to a browser that may hang).
+    pub fn connect_within(url: &str, timeout: Duration) -> io::Result<Cdp> {
         let rest = url.strip_prefix("ws://").ok_or_else(|| bad("not a ws:// URL"))?;
         let (hostport, path) = rest.split_once('/').map_or((rest, "/".to_owned()), |(h, p)| (h, format!("/{p}")));
         let tcp = TcpStream::connect(hostport)?;
-        tcp.set_read_timeout(Some(TIMEOUT))?;
-        tcp.set_write_timeout(Some(TIMEOUT))?;
+        tcp.set_read_timeout(Some(timeout))?;
+        tcp.set_write_timeout(Some(timeout))?;
         let mut stream = BufReader::new(tcp);
         let key = crate::kernel_env::base64(&std::process::id().to_be_bytes().repeat(4));
         write!(

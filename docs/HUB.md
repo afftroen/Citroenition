@@ -262,6 +262,16 @@ citro hub login --url https://hub.example.com --device-name ben-laptop
 
 The scripts do not set up [backups](#backups-and-restore): copy `/var/lib/citro-hub` as that section describes.
 
+### Updating from the app
+
+The Teams page of the desktop app has a **Sync server** card: the hub's version, the newest release and, for a hub
+operator, an **Update hub** button. Pressed, the hub leaves a note (`upgrade-requested`) in its data directory;
+`citro-hub-upgrade.path` (systemd) sees it and runs `/usr/local/sbin/citro-hub-upgrade --requested` as root, a copy
+of `install-hub.sh` that installs the **newest** release only (checked against `SHA256SUMS`, never older than what
+runs) and restarts the hub, the data kept. What happened is in `upgrade-result.json`, which the card shows, and in
+`journalctl -u citro-hub-upgrade`. The hub itself cannot write outside its data directory: the note is all it can do.
+A hub installed before this existed gets the helper by running `install-hub.sh` (no arguments) once.
+
 ## Users, teams and tokens
 
 Everything here is `citro-hub admin …` on the data directory. `--data-dir` (or `CITRO_HUB_DATA`) says which one.

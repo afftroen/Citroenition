@@ -33,6 +33,11 @@ pub struct State {
     invite_error: Option<String>,
     /// The token to hand over, shown once: (name, token, a new account?).
     pub handover: Option<(String, String, bool)>,
+    /// The hub's version and update state (asked when the page opens), and when it was last asked.
+    upgrade: Option<Result<Option<crate::backend::HubUpgrade>, String>>,
+    upgrade_asked: Option<std::time::Instant>,
+    /// "Update hub" was pressed: the page asks again every few seconds until it is done.
+    upgrading: bool,
 }
 
 impl State {
@@ -175,6 +180,8 @@ impl CitroApp {
                 }
             }
             unlock = self.locks_card(ui, &p, can_unlock);
+            ui.add_space(12.0);
+            self.hub_card(ui, &p);
         });
         if let Some(l) = unlock {
             self.confirm = Some(Confirm {
@@ -188,6 +195,114 @@ impl CitroApp {
                 button: "Force unlock".to_owned(),
                 danger: true,
                 action: ConfirmAction::ForceUnlock(l.id),
+            });
+        }
+    }
+
+    pub fn hub_upgrade_loaded(&mut self, r: crate::backend::BResult<Option<crate::backend::HubUpgrade>>) {
+        let s = &mut self.teams_ui;
+        if s.upgrading
+            && let Ok(Some(u)) = &r
+        {
+            let at_latest = u.latest.as_deref().is_some_and(|l| l == u.version);
+            if u.state == "failed" || (at_latest && !u.requested && u.state != "running") {
+                s.upgrading = false;
+            }
+        }
+        s.upgrade = Some(r.map_err(|e| e.to_string()));
+    }
+
+    fn ask_hub_upgrade(&mut self) {
+        self.teams_ui.upgrade_asked = Some(std::time::Instant::now());
+        self.tasks.spawn(false, |w| w.send(Msg::HubUpgrade(w.backend.hub_upgrade())));
+    }
+
+    /// The sync server: its version, the newest release and (for hub operators) the update button.
+    fn hub_card(&mut self, ui: &mut Ui, p: &Palette) {
+        let every = if self.teams_ui.upgrading { 4 } else { 300 };
+        if self.teams_ui.upgrade_asked.is_none_or(|t| t.elapsed().as_secs() >= every) {
+            self.ask_hub_upgrade();
+        }
+        if self.teams_ui.upgrading {
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+        }
+        let mut press = false;
+        widgets::card(ui, p, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("Sync server").size(17.0).strong());
+            ui.add_space(6.0);
+            match &self.teams_ui.upgrade {
+                None | Some(Ok(None)) => {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new().size(14.0));
+                        ui.label(dim(p, "Asking the hub\u{2026}"));
+                    });
+                }
+                Some(Err(e)) => {
+                    ui.label(RichText::new(format!("The hub did not answer: {e}")).color(p.warn));
+                }
+                Some(Ok(Some(u))) => {
+                    let newer = u
+                        .latest
+                        .as_deref()
+                        .is_some_and(|l| citro_install::compare_versions(l, &u.version) == std::cmp::Ordering::Greater);
+                    ui.horizontal(|ui| {
+                        ui.label(dim(p, "Hub version"));
+                        ui.label(RichText::new(if u.version.is_empty() { "unknown" } else { &u.version }).strong());
+                        match &u.latest {
+                            Some(l) if newer => {
+                                widgets::badge(ui, &format!("{l} is out"), p.warn);
+                            }
+                            Some(_) => {
+                                widgets::badge(ui, "up to date", p.ok);
+                            }
+                            None => {
+                                ui.label(small_dim(p, "(could not ask GitHub for the newest release)"));
+                            }
+                        }
+                    });
+                    if self.teams_ui.upgrading || u.requested || u.state == "running" {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Spinner::new().size(14.0));
+                            ui.label(dim(
+                                p,
+                                "Updating: the hub restarts and is back in a minute; team members stay signed in.",
+                            ));
+                        });
+                    } else if u.state == "failed" {
+                        ui.label(
+                            RichText::new(format!("The last update failed: {}", u.message)).color(p.err).size(12.5),
+                        );
+                    } else if u.state == "done" && !u.message.is_empty() {
+                        ui.label(small_dim(p, format!("Last update: {}", u.message)));
+                    }
+                    if !u.operator {
+                        ui.label(small_dim(p, "Only the person who runs the hub (a hub operator) can update it."));
+                    } else if !u.helper {
+                        ui.label(small_dim(
+                            p,
+                            "This server was set up before the hub could update itself. Run deploy/install-hub.sh \
+                             on it once (no arguments); after that this button updates it.",
+                        ));
+                    } else if newer && !self.teams_ui.upgrading && !u.requested && u.state != "running" {
+                        let label = format!("Update hub to {}", u.latest.clone().unwrap_or_default());
+                        if widgets::primary_button(ui, p, &label, true).clicked() {
+                            press = true;
+                        }
+                        ui.label(small_dim(
+                            p,
+                            "The server downloads the release, checks it against its published checksums and restarts \
+                             the hub; its data stays.",
+                        ));
+                    }
+                }
+            }
+        });
+        if press {
+            self.teams_ui.upgrading = true;
+            self.tasks.spawn(true, |w| {
+                let r = w.backend.request_hub_upgrade();
+                w.send(Msg::HubUpgrade(r.and_then(|_| w.backend.hub_upgrade())));
             });
         }
     }

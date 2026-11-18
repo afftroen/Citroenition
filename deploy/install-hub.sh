@@ -4,6 +4,7 @@
 #   bash install-hub.sh --owner NAME --team "TEAM NAME"    first install: creates the hub, its owner and a team
 #   bash install-hub.sh                                    upgrade to the newest release; the data stays
 #   bash install-hub.sh --version 0.1.7                    a specific release instead of the newest
+#   bash install-hub.sh --requested                         what the "Update hub" button of the app runs (below)
 #
 # Run it as root (Ubuntu / Debian with systemd, x86_64). It creates, and nothing else:
 #
@@ -15,6 +16,12 @@
 #   command  /usr/local/sbin/citro-hub-admin
 #                                       `citro-hub admin ...` run as the hub's own user (run as root it would write
 #                                       files the service could not open)
+#   upgrade  /usr/local/sbin/citro-hub-upgrade  (a copy of this script)
+#            /etc/systemd/system/citro-hub-upgrade.{path,service}
+#                                       "Update hub" in the app: the hub (a hub operator asked) writes
+#                                       /var/lib/citro-hub/upgrade-requested; systemd then runs this script as root with
+#                                       --requested, which installs the NEWEST release only (checked against
+#                                       SHA256SUMS), never an older one, and writes upgrade-result.json for the app.
 #
 # It does not touch nginx, the firewall or any other user's files. expose-hub.sh puts the hub on HTTPS.
 # The owner's token is printed ONCE at the end, to this terminal only. Copy it into a password manager.
@@ -26,6 +33,7 @@ DATA=$DESTDIR/var/lib/citro-hub
 BINDIR=$DESTDIR/usr/local/bin
 SBINDIR=$DESTDIR/usr/local/sbin
 UNIT=$DESTDIR/etc/systemd/system/citro-hub.service
+UNITDIR=$DESTDIR/etc/systemd/system
 WORK=""
 
 say() { printf '\n== %s\n' "$*"; }
@@ -116,6 +124,44 @@ WantedBy=multi-user.target
 UNIT
 }
 
+upgrade_units() {
+  cat > "$UNITDIR/citro-hub-upgrade.path" <<'PATHUNIT'
+[Unit]
+Description=Citroenition team hub: an update was requested from the app
+
+[Path]
+PathExists=/var/lib/citro-hub/upgrade-requested
+Unit=citro-hub-upgrade.service
+
+[Install]
+WantedBy=multi-user.target
+PATHUNIT
+  cat > "$UNITDIR/citro-hub-upgrade.service" <<'SVC'
+[Unit]
+Description=Citroenition team hub: install the newest release (asked for from the app)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/citro-hub-upgrade --requested
+SVC
+  chmod 0644 "$UNITDIR/citro-hub-upgrade.path" "$UNITDIR/citro-hub-upgrade.service"
+}
+
+# result STATE MESSAGE: what the app shows after "Update hub" (readable by the hub, which serves it).
+result() {
+  local f=$DATA/upgrade-result.json m
+  # plain text only: quotes, backslashes and control characters would break the JSON
+  m=$(printf '%s' "$2" | tr -d '"\\' | tr -c '[:print:]' ' ')
+  printf '{"state":"%s","message":"%s","at":%s}\n' "$1" "$m" "$(date +%s)" > "$f.tmp"
+  chown citro-hub:citro-hub "$f.tmp" 2>/dev/null || true
+  chmod 0600 "$f.tmp"
+  mv -f "$f.tmp" "$f"
+}
+
+# ver_ge A B: A >= B as versions.
+ver_ge() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" = "$2" ]; }
+
 wrapper_text() {
   cat <<'WRAPPER'
 #!/bin/sh
@@ -127,12 +173,13 @@ WRAPPER
 }
 
 main() {
-  local version="" owner="" team="" c fresh="" token="" out="" work team_id=""
+  local version="" owner="" team="" c fresh="" token="" out="" work team_id="" requested="" current=""
   while [ $# -gt 0 ]; do
     case $1 in
       --version) version=${2:?--version needs a value}; shift 2 ;;
       --owner)   owner=${2:?--owner needs a name};      shift 2 ;;
       --team)    team=${2:?--team needs a name};        shift 2 ;;
+      --requested) requested=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *) usage >&2; die "unknown option: $1" ;;
     esac
@@ -145,6 +192,15 @@ main() {
   done
 
   [ -f "$DATA/state.json" ] || fresh=1
+  if [ -n "$requested" ]; then
+    # asked for by the hub: only ever the newest release, only on an existing hub, never older than what runs
+    rm -f "$DATA/upgrade-requested"
+    [ -z "$fresh" ] || die "no hub here"
+    version=""
+    result running "installing the newest release"
+    trap 'result failed "the update did not finish: see journalctl -u citro-hub-upgrade"' ERR
+    current=$("$BINDIR/citro-hub" --version 2>/dev/null | awk '{print $2}') || current=""
+  fi
   if [ -n "$fresh" ] && [ -z "$owner" ]; then
     usage >&2
     die "this server has no hub yet: give its first user with --owner NAME (and a team with --team)"
@@ -157,6 +213,10 @@ main() {
     version=$(latest_version) || die "could not read the newest release from GitHub; name one with --version X.Y.Z"
   fi
   [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "the version must look like 0.1.7"
+  if [ -n "$requested" ] && [ -n "$current" ] && ver_ge "$current" "$version"; then
+    result done "already on $current, the newest release"
+    exit 0
+  fi
 
   # download and check first: a bad download or a failed checksum must leave the system exactly as it was
   say "download v$version and check it against SHA256SUMS"
@@ -180,6 +240,10 @@ main() {
   chmod 0755 "$SBINDIR/citro-hub-admin"
   unit_text > "$UNIT"
   chmod 0644 "$UNIT"
+  # the "Update hub" button: this script as the upgrade helper, and the units that run it when the hub asks
+  install -m 0755 -o root -g root "${BASH_SOURCE[0]}" "$SBINDIR/citro-hub-upgrade.new"
+  mv -f "$SBINDIR/citro-hub-upgrade.new" "$SBINDIR/citro-hub-upgrade"
+  upgrade_units
 
   if [ -n "$fresh" ]; then
     # `citro-hub serve` refuses an empty data directory, so the first user has to exist before the service starts.
@@ -194,6 +258,7 @@ main() {
   say "start"
   systemctl daemon-reload
   systemctl enable citro-hub >/dev/null 2>&1
+  systemctl enable --now citro-hub-upgrade.path >/dev/null 2>&1 || true
   systemctl restart citro-hub
   for _ in $(seq 1 40); do
     if out=$(curl -fsS --max-time 2 http://127.0.0.1:8470/healthz 2>/dev/null); then break; fi
@@ -205,6 +270,10 @@ main() {
     die "the hub did not come up; its log is above"
   fi
   echo "the hub answers: $out"
+  if [ -n "$requested" ]; then
+    result done "updated to $version"
+    exit 0
+  fi
 
   say "done"
   cat <<EOF

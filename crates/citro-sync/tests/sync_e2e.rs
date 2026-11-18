@@ -690,3 +690,20 @@ fn an_owner_invites_someone_and_can_give_them_a_new_token() {
     fs::create_dir_all(&home2.root).unwrap();
     assert!(Hub::log_in(&home2, &w.url(), &fresh, Some("new"), None).is_ok());
 }
+
+/// "Update hub" on the Teams page: hub operators read the hub's version and ask for an update; nobody else may.
+/// (The root helper is not on a test machine, so the request is refused with what to do instead.)
+#[test]
+fn only_hub_operators_see_and_ask_for_hub_updates() {
+    let w = World::new();
+    let a = w.device("Anna's Mac", &w.anna);
+    let b = w.device("Ben's laptop", &w.ben);
+    let st = a.hub.client().upgrade_status().expect("anna runs the hub");
+    assert_eq!(st["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(st["helper"], false, "no root helper on a test machine");
+    let e = a.hub.client().request_upgrade().expect_err("no helper");
+    assert!(e.to_string().contains("install-hub.sh"), "{e}");
+    assert!(b.hub.client().upgrade_status().is_err(), "a team member is no hub operator");
+    assert!(b.hub.client().request_upgrade().is_err());
+    assert_eq!(b.hub.client().healthz().expect("public"), env!("CARGO_PKG_VERSION"));
+}

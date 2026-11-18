@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.2 (2026-11-18)
+
+* **Cookies survive moving between a Mac and Linux.** Chromium encrypts the cookie database with a key that belongs
+  to the kind of computer (the Mac keychain key, Linux's built-in key, Windows' DPAPI), so a profile synced from a Mac
+  arrived on Linux with every cookie dropped: signed out everywhere. A readable copy of the cookies now travels inside
+  the profile's data (saved while it is open and when it closes, team profiles too), with a note of which key wrote
+  the database. Opened on another kind of computer, the unreadable database is set aside and the cookies go back in
+  through the browser, encrypted with this computer's key. Saved passwords are encrypted the same way and do not
+  come over.
+* **Update the sync server from the Teams page.** A Sync server card shows the hub's version and the newest release;
+  a hub operator presses Update hub and the server installs the newest release (checked against its SHA256SUMS,
+  never an older one) and restarts the hub, its data kept. `install-hub.sh` adds the root helper and the systemd
+  path unit that run it; a hub installed before needs `install-hub.sh` once by hand. `GET`/`POST /v1/admin/upgrade`.
+* Reading a browser's cookies at its close gives up after a second, so a browser that does not answer does not hold
+  up its close.
+
 ## 0.2.1 (2026-11-18)
 
 * **Invite people from the Teams page.** Team owners and admins type a name, pick a role and press Invite: the hub

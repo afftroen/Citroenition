@@ -649,6 +649,16 @@ impl Backend for MockBackend {
         Ok(())
     }
 
+    fn hub_upgrade(&self) -> BResult<Option<crate::backend::HubUpgrade>> {
+        Ok(Some(crate::backend::HubUpgrade {
+            version: "0.2.0".into(),
+            latest: Some("0.2.1".into()),
+            operator: true,
+            helper: true,
+            ..Default::default()
+        }))
+    }
+
     fn invite_member(&self, _team_id: &str, _name: &str, _role: Role) -> BResult<String> {
         self.nap(0.4);
         Ok("citro_demo_token_shown_once_0000000000000000".into())

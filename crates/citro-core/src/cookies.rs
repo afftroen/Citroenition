@@ -193,7 +193,9 @@ pub fn to_json(cookies: &[Value]) -> String {
 
 /// Every cookie of the browser whose DevTools browser endpoint is `ws`, as [`to_json`] text.
 pub fn export_live(ws: &str) -> Result<String, String> {
-    let mut cdp = Cdp::connect(ws).map_err(|e| format!("cannot reach the browser: {e}"))?;
+    // a quick question: a browser that does not answer must not hold up its own close
+    let mut cdp = Cdp::connect_within(ws, std::time::Duration::from_secs(1))
+        .map_err(|e| format!("cannot reach the browser: {e}"))?;
     let r =
         cdp.call("Storage.getCookies", json!({})).map_err(|e| format!("the browser did not give its cookies: {e}"))?;
     let list = r.get("cookies").and_then(Value::as_array).cloned().unwrap_or_default();
