@@ -415,6 +415,36 @@ async fn add_member(
     Ok(Json(app.run(&c, move |st, cx| st.add_member(cx, &tid, &b.user_name, b.role)).await?))
 }
 
+#[derive(Deserialize)]
+struct InviteBody {
+    name: String,
+    #[serde(default = "member_role")]
+    role: TeamRole,
+}
+
+/// `POST /v1/teams/{tid}/invite`: a new account in the team; the answer carries its token, shown this once.
+async fn invite(
+    State(app): State<App>,
+    Extension(c): Extension<Caller>,
+    Path(tid): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> ApiResult<Json<Value>> {
+    let b: InviteBody = read_json(&app, &headers, body).await?;
+    let (m, token) = app.run(&c, move |st, cx| st.invite(cx, &tid, &b.name, b.role)).await?;
+    Ok(Json(serde_json::json!({ "member": m, "token": token })))
+}
+
+/// `POST /v1/teams/{tid}/members/{uid}/token`: a new token for a member (the old one stops working).
+async fn member_token(
+    State(app): State<App>,
+    Extension(c): Extension<Caller>,
+    Path((tid, uid)): Path<(String, String)>,
+) -> ApiResult<Json<Value>> {
+    let (user, token) = app.run(&c, move |st, cx| st.new_member_token(cx, &tid, &uid)).await?;
+    Ok(Json(serde_json::json!({ "user": user, "token": token })))
+}
+
 async fn remove_member(
     State(app): State<App>,
     Extension(c): Extension<Caller>,
@@ -1223,6 +1253,8 @@ pub fn router(store: Arc<Store>) -> Router {
         .route("/teams", get(list_teams).post(create_team))
         .route("/teams/{tid}/members", get(list_members).post(add_member))
         .route("/teams/{tid}/members/{uid}", delete(remove_member))
+        .route("/teams/{tid}/members/{uid}/token", post(member_token))
+        .route("/teams/{tid}/invite", post(invite))
         .route("/teams/{tid}/groups", get(list_groups).post(create_group))
         .route("/groups/{gid}", patch(update_group).delete(delete_group))
         .route("/teams/{tid}/profiles", get(list_profiles).post(create_profile))

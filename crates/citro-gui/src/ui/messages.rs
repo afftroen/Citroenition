@@ -171,6 +171,7 @@ impl CitroApp {
             Msg::Extensions(r) => self.extensions_loaded(r),
             Msg::Plugins(r) => self.plugins_loaded(r),
             Msg::TeamPeople(r) => self.groups_ui.people = Some(r),
+            Msg::MemberToken { name, invited, result } => self.member_token(name, invited, result),
             Msg::PluginFetched(r) => self.plugin_fetched(r),
             Msg::PluginInstalled(r) => self.plugin_installed(r),
             Msg::PluginNewest { id, result } => self.plugin_newest(id, result),

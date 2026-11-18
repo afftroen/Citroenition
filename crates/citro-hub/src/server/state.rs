@@ -5,7 +5,7 @@
 //! first and mutate afterwards: when it returns `Err` the state is unchanged.
 
 use super::error::{ApiError, ApiResult};
-use super::util::{clean_text, ct_eq, random_id, token_hash};
+use super::util::{clean_text, ct_eq, new_token, random_id, token_hash, valid_user_name};
 use crate::model::{
     GroupAccess, GroupSettings, Holder, HubGroup, HubProfile, Lease, LockInfo, LogLevel, Member, Team, TeamEntry,
     TeamRole, UNGROUPED, User, UserRole,
@@ -400,6 +400,84 @@ impl State {
         Ok(m)
     }
 
+    /// Invite someone: a new user (server role member) in this team with `role`, and their token, shown this once.
+    /// Team owners and admins; only owners make owners.
+    pub fn invite(&mut self, cx: &mut Cx, team_id: &str, name: &str, role: TeamRole) -> ApiResult<(Member, String)> {
+        let caller = self.require_role(&cx.user, team_id, TeamRole::Admin)?;
+        let name = name.trim();
+        if !valid_user_name(name) {
+            return Err(ApiError::invalid("a user name has 1-64 characters out of letters, digits and . _ - @"));
+        }
+        if self.user_by_name(name).is_some() {
+            return Err(ApiError::invalid(format!(
+                "`{name}` already has an account on this hub: add them with their name instead"
+            )));
+        }
+        if role == TeamRole::Owner && caller < TeamRole::Owner {
+            return Err(ApiError::forbidden("only an owner can make someone an owner"));
+        }
+        let token = new_token();
+        let user = User {
+            id: loop {
+                let id = random_id("u", 8);
+                if !self.users.iter().any(|u| u.user.id == id) {
+                    break id;
+                }
+            },
+            name: name.to_owned(),
+            role: UserRole::Member,
+            disabled: false,
+            created_at: cx.now(),
+        };
+        self.users.push(UserRec { user: user.clone(), token_hash: token_hash(&token) });
+        let m = Member { team_id: team_id.to_owned(), user_id: user.id, user_name: user.name, role };
+        self.members.push(m.clone());
+        cx.log(
+            team_id,
+            LogLevel::Info,
+            None,
+            format!("`{}` invited `{}` as {}", cx.user.name, m.user_name, role.as_str()),
+        );
+        Ok((m, token))
+    }
+
+    /// A new token for a member who lost theirs (the old one stops working; their locks stay theirs). Only when the
+    /// caller is an owner or admin of every team the member is in, and the member is no hub operator: otherwise a
+    /// team admin could take over someone's account in another team.
+    pub fn new_member_token(&mut self, cx: &mut Cx, team_id: &str, user_id: &str) -> ApiResult<(User, String)> {
+        let caller = self.require_role(&cx.user, team_id, TeamRole::Admin)?;
+        let target = self.members.iter().find(|m| m.team_id == team_id && m.user_id == user_id).cloned();
+        let Some(target) = target else { return Err(ApiError::not_found("no such member")) };
+        if target.role == TeamRole::Owner && caller < TeamRole::Owner {
+            return Err(ApiError::forbidden("only an owner can give an owner a new token"));
+        }
+        let rec =
+            self.users.iter().find(|u| u.user.id == user_id).ok_or_else(|| ApiError::not_found("no such user"))?;
+        if rec.user.role == UserRole::Admin || rec.user.disabled {
+            return Err(ApiError::forbidden("this account is managed on the server (citro-hub admin rotate-token)"));
+        }
+        let elsewhere: Vec<String> = self
+            .members
+            .iter()
+            .filter(|m| m.user_id == user_id && m.team_id != team_id)
+            .filter(|m| self.role_in(&cx.user, &m.team_id).is_none_or(|r| r < TeamRole::Admin))
+            .map(|m| self.team_name(&m.team_id))
+            .collect();
+        if !elsewhere.is_empty() {
+            return Err(ApiError::forbidden(format!(
+                "{} is also in {}: ask a hub operator for a new token",
+                target.user_name,
+                elsewhere.join(", ")
+            )));
+        }
+        let token = new_token();
+        let rec = self.users.iter_mut().find(|u| u.user.id == user_id).expect("found above");
+        rec.token_hash = token_hash(&token);
+        let user = rec.user.clone();
+        cx.log(team_id, LogLevel::Warn, None, format!("`{}` gave `{}` a new token", cx.user.name, user.name));
+        Ok((user, token))
+    }
+
     /// Remove a member (or let a member leave). Locks the user holds in the team are released.
     pub fn remove_member(&mut self, cx: &mut Cx, team_id: &str, user_id: &str) -> ApiResult<Member> {
         let caller = self.require_role(&cx.user, team_id, TeamRole::Viewer)?;
@@ -668,6 +746,41 @@ pub(crate) mod testkit {
 mod tests {
     use super::testkit::{cx, user};
     use super::*;
+
+    #[test]
+    fn team_admins_invite_people_and_give_them_new_tokens_within_their_teams() {
+        let (mut st, admin, ann, bob) = world();
+        let tid = st.create_team(&mut cx(&admin), "Alpha").unwrap().team.id;
+        let other = st.create_team(&mut cx(&admin), "Beta").unwrap().team.id;
+        st.add_member(&mut cx(&admin), &tid, "ann", TeamRole::Admin).unwrap();
+        st.add_member(&mut cx(&admin), &tid, "bob", TeamRole::Member).unwrap();
+
+        // an admin invites; the token works at once, the account is a plain member of the hub
+        let (m, token) = st.invite(&mut cx(&ann), &tid, "cara", TeamRole::Member).unwrap();
+        assert_eq!((m.user_name.as_str(), m.role), ("cara", TeamRole::Member));
+        assert!(token.len() >= 32, "a real token");
+        let cara = st.user_by_token(&token).expect("the new token works").user.clone();
+        assert_eq!(cara.role, UserRole::Member);
+        assert_eq!(st.role_in(&cara, &tid), Some(TeamRole::Member));
+        assert!(st.role_in(&cara, &other).is_none(), "only in the team she was invited to");
+
+        // members cannot invite, admins cannot make owners, a name is taken once
+        assert_eq!(st.invite(&mut cx(&bob), &tid, "dan", TeamRole::Member).unwrap_err().code, "forbidden");
+        assert_eq!(st.invite(&mut cx(&ann), &tid, "dan", TeamRole::Owner).unwrap_err().code, "forbidden");
+        assert_eq!(st.invite(&mut cx(&ann), &tid, "cara", TeamRole::Member).unwrap_err().code, "invalid");
+        assert_eq!(st.invite(&mut cx(&ann), &tid, "bad name!", TeamRole::Member).unwrap_err().code, "invalid");
+
+        // a lost token: a new one, the old one dies
+        let fresh = st.new_member_token(&mut cx(&ann), &tid, &cara.id).unwrap().1;
+        assert!(st.user_by_token(&token).is_none() && st.user_by_token(&fresh).is_some());
+        // but not for someone who is also in a team the admin does not run, and never for a hub operator
+        st.add_member(&mut cx(&admin), &other, "cara", TeamRole::Member).unwrap();
+        let e = st.new_member_token(&mut cx(&ann), &tid, &cara.id).unwrap_err();
+        assert_eq!(e.code, "forbidden");
+        assert!(st.new_member_token(&mut cx(&admin), &tid, &cara.id).is_ok(), "the hub operator runs every team");
+        st.add_member(&mut cx(&admin), &tid, "root", TeamRole::Member).ok();
+        assert_eq!(st.new_member_token(&mut cx(&bob), &tid, &cara.id).unwrap_err().code, "forbidden");
+    }
 
     fn world() -> (State, UserRec, UserRec, UserRec) {
         let mut st = State::default();

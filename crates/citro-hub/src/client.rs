@@ -423,6 +423,25 @@ impl Client {
         )
     }
 
+    /// Invite someone: a new account in the team. Returns the member and their token (shown this once).
+    pub fn invite(&self, team_id: &str, name: &str, role: TeamRole) -> Result<(Member, String)> {
+        let v: Value = self.post_json(
+            &format!("/v1/teams/{}/invite", seg(team_id)?),
+            &json!({ "name": name, "role": role }),
+            None,
+        )?;
+        let m: Member = serde_json::from_value(v["member"].clone())
+            .map_err(|e| Error::Invalid(format!("the hub sent an odd answer: {e}")))?;
+        Ok((m, v["token"].as_str().unwrap_or_default().to_owned()))
+    }
+
+    /// A new token for a member who lost theirs; the old one stops working at once.
+    pub fn new_member_token(&self, team_id: &str, user_id: &str) -> Result<String> {
+        let v: Value =
+            self.post_json(&format!("/v1/teams/{}/members/{}/token", seg(team_id)?, seg(user_id)?), &json!({}), None)?;
+        Ok(v["token"].as_str().unwrap_or_default().to_owned())
+    }
+
     pub fn remove_member(&self, team_id: &str, user_id: &str) -> Result<()> {
         let _: Value = self.delete_json(&format!("/v1/teams/{}/members/{}", seg(team_id)?, seg(user_id)?))?;
         Ok(())

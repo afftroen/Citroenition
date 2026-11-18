@@ -15,6 +15,9 @@ pub enum ConfirmAction {
     DeleteGroup(String),
     ClearCache(Vec<String>),
     ForceUnlock(String),
+    /// Team id, user id, name.
+    RemoveMember(String, String, String),
+    NewMemberToken(String, String, String),
 }
 
 pub struct Confirm {
@@ -64,6 +67,8 @@ impl CitroApp {
             self.move_modal(ctx);
         } else if self.remark_dlg.is_some() {
             self.remark_modal(ctx);
+        } else if self.teams_ui.handover.is_some() {
+            self.handover_modal(ctx);
         } else if self.proxy_dlg.is_some() {
             self.proxy_modal(ctx);
         } else if self.bulk_dlg.is_some() {
@@ -281,6 +286,17 @@ impl CitroApp {
                 let name = self.name_of(&id);
                 let id2 = id.clone();
                 self.run_op(vec![id], format!("Unlocked {name}"), Refresh::TEAMS, move |b| b.force_unlock(&id2));
+            }
+            ConfirmAction::RemoveMember(team, user, name) => {
+                self.run_op(Vec::new(), format!("Removed {name} from the team"), Refresh::TEAMS, move |b| {
+                    b.remove_member(&team, &user)
+                });
+            }
+            ConfirmAction::NewMemberToken(team, user, name) => {
+                self.tasks.spawn(true, move |w| {
+                    let result = w.backend.new_member_token(&team, &user);
+                    w.send(Msg::MemberToken { name, invited: false, result });
+                });
             }
         }
     }

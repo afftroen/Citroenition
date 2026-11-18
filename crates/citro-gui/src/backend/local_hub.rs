@@ -326,7 +326,7 @@ impl LocalBackend {
             .members(&team_id)
             .unwrap_or_default()
             .into_iter()
-            .map(|m| Member { name: m.user_name, role: role(m.role) })
+            .map(|m| Member { id: m.user_id, name: m.user_name, role: role(m.role) })
             .collect();
         let profile_count = hub
             .client()

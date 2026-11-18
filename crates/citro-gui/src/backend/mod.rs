@@ -365,6 +365,8 @@ impl Role {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Member {
+    /// The hub's user id (empty in demo data).
+    pub id: String,
     pub name: String,
     pub role: Role,
 }
@@ -505,6 +507,25 @@ pub trait Backend: Send + Sync {
     /// The cookies of an open profile's browser, as JSON (one cookie per line).
     fn live_cookies(&self, _id: &str) -> BResult<String> {
         Err(BackendError::Unsupported("reading cookies".into()))
+    }
+
+    /// Invite someone to the team: a new account on the hub. Returns their token (shown this once).
+    fn invite_member(&self, _team_id: &str, _name: &str, _role: Role) -> BResult<String> {
+        Err(BackendError::Unsupported("inviting people".into()))
+    }
+
+    /// Change a member's role.
+    fn set_member_role(&self, _team_id: &str, _name: &str, _role: Role) -> BResult<()> {
+        Err(BackendError::Unsupported("changing roles".into()))
+    }
+
+    fn remove_member(&self, _team_id: &str, _user_id: &str) -> BResult<()> {
+        Err(BackendError::Unsupported("removing people".into()))
+    }
+
+    /// A new token for a member who lost theirs; the old one stops working.
+    fn new_member_token(&self, _team_id: &str, _user_id: &str) -> BResult<String> {
+        Err(BackendError::Unsupported("new tokens".into()))
     }
 
     /// The team (members, this person's role), when this device is logged in to a hub.

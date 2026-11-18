@@ -659,3 +659,34 @@ fn profiles_are_shared_by_themselves_and_a_groups_rules_hold_on_every_device() {
         Store::open(&b.home).unwrap().groups().iter().find(|g| g.group_name == "VIP").unwrap().group_id.clone();
     assert!(b.hub.push_group(&ben_vip_id).is_err(), "only owners and admins decide who may use a group");
 }
+
+/// Inviting from the app: the owner makes an account in the team and gets its token once; the token logs a new
+/// device in at once; a new token replaces it.
+#[test]
+fn an_owner_invites_someone_and_can_give_them_a_new_token() {
+    let w = World::new();
+    let a = w.device("Anna's Mac", &w.anna);
+    let team = a.hub.login().team_id.clone();
+    let (m, token) = a.hub.client().invite(&team, "cara", TeamRole::Member).expect("invite");
+    assert_eq!((m.user_name.as_str(), m.role), ("cara", TeamRole::Member));
+
+    // cara fills in the hub address and the token: she is in the team
+    let c = w.device("Cara's laptop", &token);
+    assert_eq!(c.hub.login().team_id, team);
+    a.publish("shop-1");
+    assert_eq!(c.hub.pull().expect("pull").added.len(), 1, "she gets the team's profiles");
+
+    // ben, a member, may not invite
+    let b = w.device("Ben's laptop", &w.ben);
+    assert!(b.hub.client().invite(&team, "dan", TeamRole::Member).is_err());
+
+    // she lost her token: a new one, and the old one stops working
+    let fresh = a.hub.client().new_member_token(&team, &m.user_id).expect("new token");
+    assert_ne!(fresh, token);
+    let home = Home { root: w.tmp.0.join("dev-cara-old") };
+    fs::create_dir_all(&home.root).unwrap();
+    assert!(Hub::log_in(&home, &w.url(), &token, Some("old"), None).is_err(), "the old token is dead");
+    let home2 = Home { root: w.tmp.0.join("dev-cara-new") };
+    fs::create_dir_all(&home2.root).unwrap();
+    assert!(Hub::log_in(&home2, &w.url(), &fresh, Some("new"), None).is_ok());
+}

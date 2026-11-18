@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1 (2026-11-18)
+
+* **Invite people from the Teams page.** Team owners and admins type a name, pick a role and press Invite: the hub
+  makes the account, puts it in the team and shows the token once, together with the hub address and team name to
+  send. The member list changes roles (only owners make or touch owners), removes people and gives someone a new
+  token when they lost theirs (only when you run every team they are in, so a team admin cannot take over an account
+  elsewhere). New hub endpoints: `POST /v1/teams/{tid}/invite`, `POST /v1/teams/{tid}/members/{uid}/token`.
+
 ## 0.2.0 (2026-11-18)
 
 **Plugins, groups that decide who may use their profiles, and profiles that are team profiles by themselves.**

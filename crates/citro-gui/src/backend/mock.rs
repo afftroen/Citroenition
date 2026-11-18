@@ -386,11 +386,11 @@ impl MockBackend {
             name: "Vinted Ops".into(),
             role: Role::Owner,
             members: vec![
-                Member { name: me.into(), role: Role::Owner },
-                Member { name: "jonas".into(), role: Role::Admin },
-                Member { name: "lena".into(), role: Role::Member },
-                Member { name: "omar".into(), role: Role::Member },
-                Member { name: "sofia".into(), role: Role::Viewer },
+                Member { id: "u1".into(), name: me.into(), role: Role::Owner },
+                Member { id: "u2".into(), name: "jonas".into(), role: Role::Admin },
+                Member { id: "u3".into(), name: "lena".into(), role: Role::Member },
+                Member { id: "u4".into(), name: "omar".into(), role: Role::Member },
+                Member { id: "u5".into(), name: "sofia".into(), role: Role::Viewer },
             ],
             profile_count: shared.len(),
         }];
@@ -646,6 +646,15 @@ impl Backend for MockBackend {
             return Err(BackendError::Invalid(format!("close {name} before clearing its cache")));
         }
         Self::log(&mut st, Level::Info, Some(id), format!("cleared the cache of {name}"));
+        Ok(())
+    }
+
+    fn invite_member(&self, _team_id: &str, _name: &str, _role: Role) -> BResult<String> {
+        self.nap(0.4);
+        Ok("citro_demo_token_shown_once_0000000000000000".into())
+    }
+
+    fn set_member_role(&self, _team_id: &str, _name: &str, _role: Role) -> BResult<()> {
         Ok(())
     }
 

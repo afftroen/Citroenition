@@ -512,6 +512,7 @@ impl CitroApp {
             || self.remark_dlg.is_some()
             || self.proxy_dlg.is_some()
             || self.bulk_dlg.is_some()
+            || self.teams_ui.handover.is_some()
             || self.update.dialog
             || self.profiles.tags_for.is_some()
             || !self.failures.is_empty();

@@ -116,6 +116,12 @@ pub enum Msg {
     Extensions(BResult<Vec<crate::backend::Extension>>),
     Plugins(BResult<Vec<citro_core::plugins::Plugin>>),
     TeamPeople(Result<Option<citro_sync::People>, String>),
+    /// A token to hand to someone: a fresh invite (`invited`) or a replacement.
+    MemberToken {
+        name: String,
+        invited: bool,
+        result: BResult<String>,
+    },
     PluginFetched(BResult<crate::backend::PluginPreview>),
     PluginInstalled(BResult<citro_core::plugins::Plugin>),
     PluginNewest {

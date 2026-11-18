@@ -166,7 +166,17 @@ impl Store {
         }
         match read_state(&self.dir) {
             Ok(disk) => {
+                // the admin tool's users win; users this server invited since (not on disk yet) are kept (the tool
+                // never deletes a user, it only revokes)
+                let mine: Vec<_> = inner
+                    .state
+                    .users
+                    .iter()
+                    .filter(|u| !disk.users.iter().any(|d| d.user.id == u.user.id || d.user.name == u.user.name))
+                    .cloned()
+                    .collect();
                 inner.state.users = disk.users;
+                inner.state.users.extend(mine);
                 let State { users, locks, .. } = &mut inner.state;
                 let before = locks.len();
                 locks.retain(|_, l| users.iter().any(|u| u.user.id == l.user_id && !u.user.disabled));

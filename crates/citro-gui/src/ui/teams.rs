@@ -27,6 +27,12 @@ pub struct State {
     device: String,
     seeded: bool,
     tried: bool,
+    invite_name: String,
+    invite_role: crate::backend::Role,
+    inviting: bool,
+    invite_error: Option<String>,
+    /// The token to hand over, shown once: (name, token, a new account?).
+    pub handover: Option<(String, String, bool)>,
 }
 
 impl State {
@@ -162,8 +168,8 @@ impl CitroApp {
                     );
                 }
                 (Some(t), None) => {
-                    for team in t {
-                        self.team_card(ui, &p, team, &hub.user);
+                    for team in t.clone() {
+                        self.team_card(ui, &p, &team, &hub.user);
                         ui.add_space(12.0);
                     }
                 }
@@ -186,7 +192,80 @@ impl CitroApp {
         }
     }
 
-    fn team_card(&self, ui: &mut Ui, p: &Palette, team: &TeamInfo, me: &str) {
+    pub fn member_token(&mut self, name: String, invited: bool, r: crate::backend::BResult<String>) {
+        let s = &mut self.teams_ui;
+        s.inviting = false;
+        match r {
+            Ok(token) => {
+                s.handover = Some((name, token, invited));
+                s.invite_name.clear();
+                s.invite_error = None;
+                self.refresh_teams();
+            }
+            Err(e) => s.invite_error = Some(e.to_string()),
+        }
+    }
+
+    /// The token, once, with everything the new person fills in.
+    pub fn handover_modal(&mut self, ctx: &egui::Context) {
+        let Some((name, token, invited)) = self.teams_ui.handover.clone() else { return };
+        let p = self.pal;
+        let team = self.teams.as_ref().and_then(|t| t.first()).map(|t| t.name.clone()).unwrap_or_default();
+        let url = self.hub.url.clone();
+        let text = format!("Hub address: {url}\nToken: {token}\nTeam: {team}");
+        let mut close = false;
+        let r = widgets::modal(ctx, &p, "member-token", 560.0, |ui| {
+            ui.label(widgets::semibold(
+                if invited { format!("{name} is invited") } else { format!("A new token for {name}") },
+                18.0,
+            ));
+            ui.add_space(6.0);
+            ui.label(dim(
+                &p,
+                format!(
+                    "Send this to {name} privately: the token works like a password and is shown only now. They \
+                     fill it in on Citroenition's Teams page.{}",
+                    if invited { "" } else { " Their old token no longer works." }
+                ),
+            ));
+            ui.add_space(10.0);
+            egui::Frame::NONE
+                .fill(p.raised)
+                .corner_radius(egui::CornerRadius::same(8))
+                .inner_margin(egui::Margin::same(12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    Grid::new("handover").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
+                        for (k, v) in
+                            [("Hub address", url.as_str()), ("Token", token.as_str()), ("Team", team.as_str())]
+                        {
+                            ui.label(dim(&p, k));
+                            ui.add(egui::Label::new(mono(v)).selectable(true).wrap());
+                            ui.end_row();
+                        }
+                    });
+                });
+            widgets::footer(ui, |ui| {
+                if widgets::primary_button(ui, &p, "Copy and close", true).clicked() {
+                    ui.ctx().copy_text(text.clone());
+                    close = true;
+                }
+                if widgets::button(ui, "Copy", true).clicked() {
+                    ui.ctx().copy_text(text.clone());
+                }
+            });
+        });
+        if close || r.should_close() {
+            self.teams_ui.handover = None;
+        }
+    }
+
+    fn team_card(&mut self, ui: &mut Ui, p: &Palette, team: &TeamInfo, me: &str) {
+        use crate::backend::Role;
+        let admin = matches!(team.role, Role::Owner | Role::Admin);
+        let owner = team.role == Role::Owner;
+        let mut act: Option<(&'static str, crate::backend::Member)> = None;
+        let mut role_change: Option<(String, Role)> = None;
         widgets::card(ui, p, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -214,12 +293,118 @@ impl CitroApp {
                                 ui.label(small_dim(p, "you"));
                             }
                         });
-                        widgets::badge(ui, m.role.label(), col);
+                        // owners and admins manage the others (only owners touch owners)
+                        let manage = admin && m.name != me && !m.id.is_empty() && (owner || m.role != Role::Owner);
+                        if manage {
+                            ui.horizontal(|ui| {
+                                let mut r = m.role;
+                                egui::ComboBox::from_id_salt(("member-role", &m.id))
+                                    .width(110.0)
+                                    .icon(widgets::chevron_icon)
+                                    .selected_text(r.label())
+                                    .show_ui(ui, |ui| {
+                                        for x in [Role::Viewer, Role::Member, Role::Admin, Role::Owner] {
+                                            if x != Role::Owner || owner {
+                                                ui.selectable_value(&mut r, x, x.label());
+                                            }
+                                        }
+                                    });
+                                if r != m.role {
+                                    role_change = Some((m.name.clone(), r));
+                                }
+                                if ui.small_button("New token").on_hover_text("For someone who lost theirs").clicked() {
+                                    act = Some(("token", m.clone()));
+                                }
+                                if ui.small_button(RichText::new("Remove").color(p.err)).clicked() {
+                                    act = Some(("remove", m.clone()));
+                                }
+                            });
+                        } else {
+                            widgets::badge(ui, m.role.label(), col);
+                        }
                         ui.end_row();
                     }
                 },
             );
+            if admin {
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.label(widgets::semibold("Invite someone", 14.0));
+                let s = &mut self.teams_ui;
+                ui.horizontal(|ui| {
+                    let r = ui.add(
+                        TextEdit::singleline(&mut s.invite_name)
+                            .hint_text("their name, e.g. ben or ben@shop.com")
+                            .margin(egui::Margin::symmetric(10, 7))
+                            .desired_width(240.0),
+                    );
+                    egui::ComboBox::from_id_salt("invite-role")
+                        .width(110.0)
+                        .icon(widgets::chevron_icon)
+                        .selected_text(s.invite_role.label())
+                        .show_ui(ui, |ui| {
+                            for x in [Role::Viewer, Role::Member, Role::Admin, Role::Owner] {
+                                if x != Role::Owner || owner {
+                                    ui.selectable_value(&mut s.invite_role, x, x.label());
+                                }
+                            }
+                        });
+                    let ready = !s.invite_name.trim().is_empty() && !s.inviting;
+                    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                    if widgets::primary_button(ui, p, "Invite", ready).clicked() || (enter && ready) {
+                        s.inviting = true;
+                        s.invite_error = None;
+                        let (team_id, name, role) = (team.id.clone(), s.invite_name.trim().to_owned(), s.invite_role);
+                        self.tasks.spawn(true, move |w| {
+                            let result = w.backend.invite_member(&team_id, &name, role);
+                            w.send(Msg::MemberToken { name, invited: true, result });
+                        });
+                    }
+                    if s.inviting {
+                        ui.add(egui::Spinner::new().size(14.0));
+                    }
+                });
+                if let Some(e) = &self.teams_ui.invite_error {
+                    ui.label(RichText::new(e).color(p.err).size(12.5));
+                } else {
+                    ui.label(small_dim(
+                        p,
+                        "Makes their account on the hub and shows the token to send them. Viewers look, members \
+                         open and edit, admins also manage people and group rules, owners everything.",
+                    ));
+                }
+            }
         });
+        if let Some((name, role)) = role_change {
+            let team_id = team.id.clone();
+            self.run_op(
+                Vec::new(),
+                format!("{name} is now {}", role.label()),
+                super::tasks::Refresh::TEAMS,
+                move |b| b.set_member_role(&team_id, &name, role),
+            );
+        }
+        if let Some((what, m)) = act {
+            let (tid, uid, name) = (team.id.clone(), m.id.clone(), m.name.clone());
+            self.confirm = Some(if what == "remove" {
+                Confirm {
+                    title: format!("Remove {name} from the team?"),
+                    body: format!("{name} no longer sees the team's profiles; profiles they have open are freed."),
+                    button: "Remove".to_owned(),
+                    danger: true,
+                    action: ConfirmAction::RemoveMember(tid, uid, name),
+                }
+            } else {
+                Confirm {
+                    title: format!("A new token for {name}?"),
+                    body: format!("{name}'s current token stops working at once; you get a new one to send them."),
+                    button: "New token".to_owned(),
+                    danger: false,
+                    action: ConfirmAction::NewMemberToken(tid, uid, name),
+                }
+            });
+        }
     }
 
     fn locks(&self) -> Vec<Lock> {

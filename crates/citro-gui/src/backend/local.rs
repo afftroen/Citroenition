@@ -827,6 +827,32 @@ impl Backend for LocalBackend {
         self.hub_force_unlock(profile_id)
     }
 
+    fn invite_member(&self, team_id: &str, name: &str, role: crate::backend::Role) -> BResult<String> {
+        let hub = citro_sync::Hub::connect(&self.home)?.ok_or(citro_sync::Error::NotLoggedIn)?;
+        let (m, token) = hub.client().invite(team_id, name, team_role(role)).map_err(citro_sync::Error::from)?;
+        self.events.info(None, format!("invited {} to the team as {}", m.user_name, m.role.as_str()));
+        Ok(token)
+    }
+
+    fn set_member_role(&self, team_id: &str, name: &str, role: crate::backend::Role) -> BResult<()> {
+        let hub = citro_sync::Hub::connect(&self.home)?.ok_or(citro_sync::Error::NotLoggedIn)?;
+        hub.client().add_member(team_id, name, team_role(role)).map_err(citro_sync::Error::from)?;
+        self.events.info(None, format!("{name} is now {}", role.label().to_lowercase()));
+        Ok(())
+    }
+
+    fn remove_member(&self, team_id: &str, user_id: &str) -> BResult<()> {
+        let hub = citro_sync::Hub::connect(&self.home)?.ok_or(citro_sync::Error::NotLoggedIn)?;
+        hub.client().remove_member(team_id, user_id).map_err(citro_sync::Error::from)?;
+        self.events.info(None, "removed a member from the team".to_owned());
+        Ok(())
+    }
+
+    fn new_member_token(&self, team_id: &str, user_id: &str) -> BResult<String> {
+        let hub = citro_sync::Hub::connect(&self.home)?.ok_or(citro_sync::Error::NotLoggedIn)?;
+        Ok(hub.client().new_member_token(team_id, user_id).map_err(citro_sync::Error::from)?)
+    }
+
     fn team_people(&self) -> BResult<Option<citro_sync::People>> {
         match citro_sync::Hub::connect(&self.home)? {
             Some(hub) => Ok(Some(hub.people()?)),
@@ -888,6 +914,16 @@ impl Backend for LocalBackend {
     fn set_kernel_override(&self, path: Option<String>) {
         *self.kernel_override.lock().unwrap_or_else(|e| e.into_inner()) =
             path.map(|p| crate::util::expand_tilde(&p, crate::util::home_dir().as_deref()));
+    }
+}
+
+fn team_role(r: crate::backend::Role) -> citro_core::team::TeamRole {
+    use citro_core::team::TeamRole;
+    match r {
+        crate::backend::Role::Owner => TeamRole::Owner,
+        crate::backend::Role::Admin => TeamRole::Admin,
+        crate::backend::Role::Member => TeamRole::Member,
+        crate::backend::Role::Viewer => TeamRole::Viewer,
     }
 }
 
